@@ -1,31 +1,44 @@
 # Archive
 
-行程 × 日记 的 local-first 移动应用。纯前端工具，无后端依赖：所有数据落本地（expo-sqlite + 文件系统），数据结构自第一天按「将来可加云同步」预留（UUID 主键 + updated_at + 软删除）。Expo SDK 58 + React Native + expo-router + NativeWind + zustand，复制自 `/workspace/mobile` 模板（Hatch Mobile）。
+行程 × 日记 的 local-first 移动应用（商业版形态）。纯前端工具，无后端依赖：所有数据落本地（expo-sqlite + OPFS/file-storage），结构自第一天按「将来可加云同步」预留（UUID 主键 + updated_at + 软删除）。Expo SDK 58 + React Native + expo-router + NativeWind v4 + zustand，复制自 `/workspace/mobile` 模板（Hatch Mobile）。
 
 - **Expo 项目根在 `src/`**：`cd src && pnpm typecheck`
 - **工程规范（强制）**：先读 [AGENTS.md](AGENTS.md)（硬规则 H1–H11），全文见 [docs/standards/](docs/standards/README.md)
-- **UI 设计技能**：[docs/design-skills/index.md](docs/design-skills/index.md)（10 个 agent 设计技能 + 选用规则）
-- **三端差异矩阵**：[docs/platform-parity.md](docs/platform-parity.md)（core 能力的 iOS/Android/Web 行为差异与缓解）
+- **UI 设计技能**：[docs/design-skills/index.md](docs/design-skills/index.md)（10 个 agent 设计技能 + 选用规则）；本仓库 UI 基线 = action panel 纪律 + app-screens 房规
 - **service 层协议文档**（模板继承的基础设施，当前业务未接后端）：[docs/core-api.md](docs/core-api.md) / [docs/service-api.md](docs/service-api.md)
+
+## 产品形态
+
+**两个导航：Archive / Me**（≥1024px 桌面侧栏，窄屏底部标签栏；三端一致）。
+
+- **Archive**：行程与当前日记两张卡，重叠、左右若隐若现——点前卡直接进内容，点后卡交换。`+` 号选择「今天的日记 / 新的行程」。
+- **日记 = 连续容器**：一天一篇、块结构（文本 + 行内图片/视频混排），想到什么写什么；800ms 防抖自动保存；**当天 24:00（本地时区）自动收笔**，或手动「完成」提前结束；收笔后只读。
+- **行程**：图标（emoji 组）+ 封面视频 + 描述 + 逐日骨架（建行程自动生成 D1…Dn）；每天有计划清单（勾选）与当天的日记页；行程状态由日期派生（计划中 / 进行中 / 回忆）。
+- **Me**：连续记录 streak / 日记天数 / 累计字数 / 行程进行中数，最近 30 天写作量曲线（SVG），日记内容与行程全文检索，行程完成度列表，外观偏好（跟随系统 / 浅色灰白 / 深色）。
+
+**设计令牌**：`ink`（浅色灰白，默认类名）+ `inkd`（深色，`dark:` 变体，对齐 action panel 纪律）；唯一强调色 = 冷蓝渐变（`#2563EB→#3B82F6` / 深色 `#2E6FD9→#5B9DFF`），只用于主行动与品牌标记；绿色已全面退场。
 
 ## 结构
 
 ```
 src/
-├── app/                路由层（expo-router 页面壳：tabs + trip/[id] + trip/new + write + trip/[id]/write/[date]）
-├── features/archive/   业务域（db/ 自建表、logic 纯逻辑、store、屏与 UI 原子组件）
+├── app/                路由层（tabs: archive/me + trip/[id] + trip/new + trip/[id]/edit
+│                       + write + trip/[id]/write/[date] + journal/[id]）
+├── features/archive/   业务域（db/ 自建表 v2、logic 纯逻辑、store、五屏、ui 原子组件）
 ├── service/            服务层（通用网络传输：post / socket，URL 与鉴权外部注入）
-├── config/             配置层（每业务域一目录：archive）
-├── core/               基础设施层（18 个通用能力，见 docs/standards/glossary.md §3）
+├── config/             配置层（每业务域一目录：archive；含 ui.theme 主题偏好）
+├── core/               基础设施层（18 个通用能力，见 docs/standards/glossary.md §3；
+│                       file-storage web 底座 = OPFS 直连）
 └── assets/             静态资产（fonts / images）
 ```
 
-## 产品规划（里程碑）
+## 数据模型（schema v2，`features/archive/db/`，R9）
 
-- **M1 核心闭环（已交付 2026-11-05）**：数据模型（trips / entries / photos / day_plans，`features/archive/db/` 自建表 + migration）→ 建行程自动生成天骨架 → 每日计划勾选 → 碎片式写日记（文字 + 心情 + 图片，按日期自动聚合）→ 时间线 / 行程列表 / 行程详情
-- **M2 媒体与组织**：图片压缩策略细化、行程封面、日历视图、碎片编辑/删除入口、On This Day
-- **M3 体验与信任**：写作引导、App 锁（面容/指纹）、JSON / PDF 导出、触感反馈（expo-haptics）
-- **M4 云同步**：schema 的 UUID + updated_at + 软删除已预留，届时只补传输层
+- `trips`：图标 / 封面视频 / 描述 / 起止日期（状态由日期派生，不落库）
+- `journals`：一天一篇的连续容器（blocks JSON、open/closed、word_count 冗余指标）
+- `journal_media`：行内媒体（图/视频 → file-storage key，二进制不进库）
+- `day_plans`：每日计划（勾选）
+- v1 碎片流（entries/photos）为灰度前形态，v2 迁移直接重置（无生产数据）
 
 ## 运行
 
@@ -33,7 +46,13 @@ src/
 cd src
 pnpm install
 pnpm start            # Expo Go 扫码即跑 Android / iOS（开发客户端）
-pnpm android          # Android
-pnpm ios              # iOS
-pnpm web              # web 开发
+pnpm android / pnpm ios / pnpm web
+pnpm exec expo export --platform web   # web 生产静态包（SPA；桌面侧栏 / 窄屏底栏自适应）
 ```
+
+## 产品规划（里程碑）
+
+- **M1 已交付（2026-11-05）**：天骨架行程 + 碎片日记时间线（已被 v2 形态取代）
+- **M2 商业版已交付（2026-11-05）**：双导航 IA、连续日记容器 + 24:00 自动收笔、共享块编辑器、行程图标/视频/描述、Me 指标曲线检索、灰白/深色双主题、桌面响应式、OPFS web 文件底座
+- **M3 待办**：真机手感验收（按压回弹 / modal 转场 / 键盘避让）、视频转 GIF、行程封面图、App 锁（面容/指纹）、JSON/PDF 导出、expo-haptics 触感
+- **M4 云同步**：UUID + updated_at + 软删除已预留，届时只补传输层

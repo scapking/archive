@@ -1,38 +1,45 @@
 import { create } from 'zustand';
 import { crypto } from '@/core/crypto';
-import { fileStorage } from '@/core/file-storage';
+import { fileStorage, readUriBytes } from '@/core/file-storage';
 import { imageManipulator } from '@/core/image-manipulator';
 import * as db from './db';
-import type { EntryMood } from './db';
-import { decorateTrip, todayLocal, type Trip } from './trip-logic';
-import { groupEntriesByDate, type TimelineGroup } from './entry-logic';
+import type { JournalBlock, JournalMediaKind } from './db';
+import { addDaysLocal, decorateTrip, pickDeckTrip, todayLocal, type Trip } from './trip-logic';
+import {
+    curveSeries,
+    parseBlocks,
+    serializeBlocks,
+    streakFromDates,
+    wordCount,
+    type JournalRow,
+} from './journal-logic';
 
 /**
  * archive 域会话状态（glossary §2：state 归 feature 内 zustand store）。
  * 数据真身在 archive.db；store 只做加载/变更编排 + 响应式通知。
- * mutation 后统一 bump revision——行程详情屏等自持状态的界面据此重载。
+ * mutation 后统一 bump revision——行程详情等自持状态的界面据此重载。
  */
 
-/** 长边上限：时间线缩略图与落盘体积的平衡点（超出才缩，不放大）。 */
-const PHOTO_MAX_WIDTH = 2048;
+/** 图片长边上限：时间线缩略图与落盘体积的平衡点（超出才缩，不放大）。 */
+const IMAGE_MAX_WIDTH = 2048;
 
 export interface TripCard extends Trip {
-    entryCount: number;
+    journalDays: number;
+    plansTotal: number;
+    plansDone: number;
 }
 
-/** 撰写中的图片（picker 产物，保存时统一压缩落盘）。 */
-export interface PickedPhoto {
-    uri: string;
-    width: number;
-    height: number;
+export interface MeMetrics {
+    streak: number;
+    journalDays: number;
+    totalWords: number;
+    curve: Array<{ date: string; value: number }>;
 }
 
-export interface CreateEntryInput {
-    tripId: string | null;
-    localDate: string;
-    content: string;
-    mood: EntryMood | null;
-    photos: PickedPhoto[];
+/** 载入后的 deck 数据：当前日记（今天，可能还没有）+ 选中的行程卡。 */
+export interface DeckData {
+    todayJournal: JournalRow | null;
+    deckTrip: TripCard | null;
 }
 
 interface ArchiveStore {
@@ -41,11 +48,23 @@ interface ArchiveStore {
     error: string | null;
     revision: number;
     trips: TripCard[];
-    timeline: TimelineGroup[];
+    metrics: MeMetrics;
 
     loadAll(): Promise<void>;
-    createTrip(input: { title: string; startDate: string; endDate: string; note: string }): Promise<Trip | null>;
-    createEntry(input: CreateEntryInput): Promise<boolean>;
+    /** deck 数据由屏层派生：trips + 今天日记（loadAll 后即可取）。 */
+    deck(): DeckData;
+    createTrip(input: { title: string; startDate: string; endDate: string; description: string; icon: string | null }): Promise<Trip | null>;
+    updateTrip(id: string, patch: { title?: string; startDate?: string; endDate?: string; description?: string; icon?: string | null; videoKey?: string | null }): Promise<boolean>;
+    deleteTrip(id: string): Promise<boolean>;
+    /** 行程封面视频：落 file-storage，回写 video_key。 */
+    attachTripVideo(tripId: string, uri: string): Promise<boolean>;
+    ensureTodayJournal(): Promise<JournalRow | null>;
+    ensureJournal(tripId: string | null, date: string): Promise<JournalRow | null>;
+    /** 编辑器防抖保存入口（blocks 已在内存，这里只落库）。 */
+    saveJournalBlocks(journalId: string, blocks: JournalBlock[]): Promise<void>;
+    completeJournal(journalId: string): Promise<void>;
+    /** 编辑器插图/视频：落 file-storage + 建媒体行，返回 mediaId 供块引用。 */
+    attachJournalMedia(journalId: string, kind: JournalMediaKind, uri: string, width: number | null, height: number | null): Promise<string | null>;
 }
 
 function toMessage(error: unknown): string {
@@ -58,25 +77,35 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
     error: null,
     revision: 0,
     trips: [],
-    timeline: [],
+    metrics: { streak: 0, journalDays: 0, totalWords: 0, curve: [] },
 
     async loadAll() {
         try {
-            const [tripRows, entryCounts, entries, entryIds] = await (async () => {
-                const tripRows = await db.listTrips();
-                const entryCounts = await db.countEntriesByTrip();
-                const entries = await db.listRecentEntries();
-                return [tripRows, entryCounts, entries, entries.map((e) => e.id)] as const;
-            })();
-            const photosByEntry = await db.listPhotosByEntries(entryIds);
+            const today = todayLocal();
+            // 本地时区 24:00 自动收笔：加载即收口昨日及更早的 open 日记
+            await db.closeStaleOpenJournals(today);
+            const [tripRows, stats, totals, dates] = await Promise.all([
+                db.listTrips(),
+                db.tripStats(),
+                db.journalTotals(),
+                db.journalDates(),
+            ]);
+            // 曲线窗口覆盖最近 30 天
+            const window30 = await db.wordCountByDate(addDaysLocal(today, -29));
             set({
                 ready: true,
                 error: null,
-                trips: tripRows.map((row) => ({
-                    ...decorateTrip(row),
-                    entryCount: entryCounts.get(row.id) ?? 0,
-                })),
-                timeline: groupEntriesByDate(entries, photosByEntry),
+                trips: tripRows.map((row) => {
+                    const trip = decorateTrip(row);
+                    const s = stats.get(row.id);
+                    return { ...trip, journalDays: s?.journalDays ?? 0, plansTotal: s?.plansTotal ?? 0, plansDone: s?.plansDone ?? 0 };
+                }),
+                metrics: {
+                    streak: streakFromDates(dates, today),
+                    journalDays: totals.journalDays,
+                    totalWords: totals.totalWords,
+                    curve: curveSeries(window30, 30, today),
+                },
             });
         } catch (error) {
             // 降级语义：数据可重试加载，界面上以 error 文案提示（R3 ②）
@@ -84,14 +113,25 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         }
     },
 
-    async createTrip({ title, startDate, endDate, note }) {
+    deck(): DeckData {
+        const { trips } = get();
+        return {
+            deckTrip: pickDeckTrip(trips),
+            todayJournal: null, // 屏层经 useTodayJournal() 异步获取
+        };
+    },
+
+    async createTrip({ title, startDate, endDate, description, icon }) {
         const now = Date.now();
         const row = {
             id: crypto.randomUUID(),
             title: title.trim(),
             start_date: startDate,
             end_date: endDate,
-            note: note.trim(),
+            note: '',
+            description: description.trim(),
+            icon,
+            video_key: null,
             cover_key: null,
             created_at: now,
             updated_at: now,
@@ -103,59 +143,142 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             return null;
         }
         set({ error: null, revision: get().revision + 1 });
+        await get().loadAll();
         return decorateTrip(row);
     },
 
-    async createEntry({ tripId, localDate, content, mood, photos }) {
-        const now = Date.now();
-        const entryId = crypto.randomUUID();
-
-        // 先落文件再插行：文件不可事务化，行插入失败只会留下无主文件（可离线清理，不影响一致性）
-        const photoRows: Omit<db.PhotoRow, 'deleted_at'>[] = [];
+    async updateTrip(id, patch) {
         try {
-            for (let i = 0; i < photos.length; i++) {
-                const picked = photos[i];
-                const actions =
-                    picked.width > PHOTO_MAX_WIDTH ? [{ resize: { width: PHOTO_MAX_WIDTH } }] : [];
-                const manipulated = await imageManipulator.manipulateAsync(picked.uri, actions);
-                const fileKey = `photos/${entryId}/${i}.jpg`;
-                await fileStorage.put(fileKey, manipulated.bytes);
-                photoRows.push({
-                    id: crypto.randomUUID(),
-                    entry_id: entryId,
-                    file_key: fileKey,
-                    width: manipulated.width,
-                    height: manipulated.height,
-                    sort_order: i,
-                    created_at: now,
-                });
-            }
-            await db.insertEntry({
-                id: entryId,
-                trip_id: tripId,
-                local_date: localDate,
-                content: content.trim(),
-                mood,
-                created_at: now,
-                updated_at: now,
+            await db.updateTrip(id, {
+                ...(patch.title !== undefined ? { title: patch.title.trim() } : {}),
+                ...(patch.startDate !== undefined ? { start_date: patch.startDate } : {}),
+                ...(patch.endDate !== undefined ? { end_date: patch.endDate } : {}),
+                ...(patch.description !== undefined ? { description: patch.description.trim() } : {}),
+                ...(patch.icon !== undefined ? { icon: patch.icon } : {}),
+                ...(patch.videoKey !== undefined ? { video_key: patch.videoKey } : {}),
             });
-            for (const row of photoRows) await db.insertPhoto(row);
         } catch (error) {
-            set({ error: `碎片保存失败：${toMessage(error)}` });
+            set({ error: `行程保存失败：${toMessage(error)}` });
             return false;
         }
-        set({ revision: get().revision + 1 });
+        set({ error: null, revision: get().revision + 1 });
         await get().loadAll();
         return true;
     },
+
+    async deleteTrip(id) {
+        try {
+            await db.softDeleteTrip(id);
+        } catch (error) {
+            set({ error: `行程删除失败：${toMessage(error)}` });
+            return false;
+        }
+        set({ error: null, revision: get().revision + 1 });
+        await get().loadAll();
+        return true;
+    },
+
+    async attachTripVideo(tripId, uri) {
+        try {
+            const key = `trip-video/${tripId}.mp4`;
+            await fileStorage.putFromUri(key, uri);
+            return await get().updateTrip(tripId, { videoKey: key });
+        } catch (error) {
+            set({ error: `视频上传失败：${toMessage(error)}` });
+            return false;
+        }
+    },
+
+    async ensureTodayJournal() {
+        return get().ensureJournal(null, todayLocal());
+    },
+
+    /** 取或建某归属日的日记（日常 null / 行程内某天）；open 状态才可写。 */
+    async ensureJournal(tripId: string | null, date: string) {
+        try {
+            const existing = await db.getJournalByDate(tripId, date);
+            if (existing) return existing;
+            const now = Date.now();
+            const row: JournalRow = {
+                id: crypto.randomUUID(),
+                trip_id: tripId,
+                local_date: date,
+                blocks: serializeBlocks([{ t: 'p', text: '' }]),
+                status: 'open',
+                word_count: 0,
+                created_at: now,
+                updated_at: now,
+                completed_at: null,
+                deleted_at: null,
+            };
+            await db.insertJournal(row);
+            set({ revision: get().revision + 1 });
+            return row;
+        } catch (error) {
+            set({ error: `日记初始化失败：${toMessage(error)}` });
+            return null;
+        }
+    },
+
+    async saveJournalBlocks(journalId, blocks) {
+        try {
+            await db.updateJournalBlocks(journalId, serializeBlocks(blocks), wordCount(blocks));
+        } catch (error) {
+            set({ error: `保存失败：${toMessage(error)}` });
+            return;
+        }
+        set({ error: null, revision: get().revision + 1 });
+    },
+
+    async completeJournal(journalId) {
+        try {
+            await db.completeJournal(journalId);
+        } catch (error) {
+            set({ error: `收笔失败：${toMessage(error)}` });
+            return;
+        }
+        set({ error: null, revision: get().revision + 1 });
+        await get().loadAll();
+    },
+
+    async attachJournalMedia(journalId, kind, uri, width, height) {
+        try {
+            const ext = kind === 'video' ? 'mp4' : 'jpg';
+            let w = width;
+            let h = height;
+            let bytes: Uint8Array;
+            if (kind === 'image') {
+                const actions = width && width > IMAGE_MAX_WIDTH ? [{ resize: { width: IMAGE_MAX_WIDTH } }] : [];
+                const manipulated = await imageManipulator.manipulateAsync(uri, actions);
+                bytes = manipulated.bytes;
+                w = manipulated.width;
+                h = manipulated.height;
+            } else {
+                // 视频不经 manipulator：源文件字节直落
+                bytes = await readUriBytes(uri);
+            }
+            const mediaId = crypto.randomUUID();
+            const key = `journal-media/${journalId}/${mediaId}.${ext}`;
+            await fileStorage.put(key, bytes);
+            await db.insertJournalMedia({
+                id: mediaId,
+                journal_id: journalId,
+                file_key: key,
+                kind,
+                width: w,
+                height: h,
+                created_at: Date.now(),
+            });
+            set({ error: null, revision: get().revision + 1 });
+            return mediaId;
+        } catch (error) {
+            set({ error: `媒体上传失败：${toMessage(error)}` });
+            return null;
+        }
+    },
 }));
 
-/** 供时间线之外的自持界面感知数据变化（如行程详情在写碎片返回后重载）。 */
+/** 供时间线之外的自持界面感知数据变化（如行程详情在写日记返回后重载）。 */
 export function useArchiveRevision(): number {
     return useArchiveStore((state) => state.revision);
-}
-
-/** 行程归属的碎片日期默认值：详情入口带 date 参数，时间线入口归今天。 */
-export function defaultEntryDate(date?: string): string {
-    return date ?? todayLocal();
 }

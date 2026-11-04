@@ -26,13 +26,13 @@ export function ScreenHeader({
                     {back ? (
                         <BouncyPressable onPress={() => router.back()} scaleTo={0.9}>
                             <View className="-ml-2 mr-2 h-9 w-9 items-center justify-center">
-                                <LucideBack size={22} color="#9BA1A0" />
+                                <LucideBack size={22} color="#8B939C" />
                             </View>
                         </BouncyPressable>
                     ) : null}
                     <Text
                         numberOfLines={1}
-                        className="flex-1 text-[17px] font-semibold text-hatch-text"
+                        className="flex-1 text-[17px] font-semibold text-ink-text dark:text-inkd-text"
                     >
                         {title}
                     </Text>
@@ -40,7 +40,9 @@ export function ScreenHeader({
                 </View>
             </View>
             {subtitle ? (
-                <Text className="mt-1 text-[13px] text-hatch-secondary">{subtitle}</Text>
+                <Text className="mt-1 text-[13px] text-ink-secondary dark:text-inkd-secondary">
+                    {subtitle}
+                </Text>
             ) : null}
         </View>
     );

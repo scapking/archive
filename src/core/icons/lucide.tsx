@@ -30,6 +30,11 @@ import Dices from 'lucide-react-native/icons/dices';
 import Shapes from 'lucide-react-native/icons/shapes';
 import Sparkles from 'lucide-react-native/icons/sparkles';
 import ChevronRight from 'lucide-react-native/icons/chevron-right';
+import Video from 'lucide-react-native/icons/video';
+import Play from 'lucide-react-native/icons/play';
+import BookOpen from 'lucide-react-native/icons/book-open';
+import TrendingUp from 'lucide-react-native/icons/trending-up';
+import Clock from 'lucide-react-native/icons/clock';
 
 import {
     __iconData as houseData,
@@ -37,6 +42,21 @@ import {
 import {
     __iconData as searchData,
 } from 'lucide-react-native/icons/search';
+import {
+    __iconData as videoData,
+} from 'lucide-react-native/icons/video';
+import {
+    __iconData as playData,
+} from 'lucide-react-native/icons/play';
+import {
+    __iconData as bookOpenData,
+} from 'lucide-react-native/icons/book-open';
+import {
+    __iconData as trendingUpData,
+} from 'lucide-react-native/icons/trending-up';
+import {
+    __iconData as clockData,
+} from 'lucide-react-native/icons/clock';
 import {
     __iconData as bellData,
 } from 'lucide-react-native/icons/bell';
@@ -72,7 +92,11 @@ export {
     Shapes as LucideShapes,
     Sparkles as LucideSparkles,
     ChevronRight as LucideChevronRight,
-};
+    Video as LucideVideo,
+    Play as LucidePlay,
+    BookOpen as LucideBookOpen,
+    TrendingUp as LucideTrendingUp,
+    Clock as LucideClock,};
 
 export { MorphIcon, type MorphIconProps, type MorphHandle } from 'morphicons/react-native';
 

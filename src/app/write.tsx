@@ -1,6 +1,6 @@
-import { EntryNewScreen } from '@/features/archive';
+import { JournalEditScreen } from '@/features/archive';
 
-/** 时间线入口写碎片：无参数 → 归今天、不挂行程。 */
+/** 时间线入口：今天的一页（无则创建）。 */
 export default function WriteRoute() {
-    return <EntryNewScreen />;
+    return <JournalEditScreen />;
 }

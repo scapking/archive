@@ -3,13 +3,29 @@ import { Platform } from 'react-native';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { openDatabase } from '@/core/database';
+import { opfsBackend } from './web-opfs';
 import { FileStorageError, toFileStorageError } from './errors';
+
+/** web 分流标记：SDK 58 expo-file-system 的 web 变体是纯 stub（见 web-opfs.ts 头注）。 */
+const WEB = Platform.OS === 'web';
+
+/**
+ * SDK 58 native 变体 web 缺失引发的兼容层（web 由 OPFS 承担后，以下 polyfill
+ * 仅对 native 生效路径保留防御意义；上游修复后移除，见 AGENTS.md 偏差表）。
+ */
+if (!WEB) {
+    for (const klass of [Directory, File]) {
+        if (typeof klass.prototype.validatePath !== 'function') {
+            (klass.prototype as { validatePath?: () => void }).validatePath = () => undefined;
+        }
+    }
+}
 
 /**
  * web 端申请持久化存储：OPFS 与 IndexedDB 一样，未申请时可能被浏览器清除。
  */
 function requestWebPersistentStorage(): void {
-    if (Platform.OS !== 'web') return;
+    if (!WEB) return;
     if (globalThis.navigator?.storage?.persist === undefined) return;
     void globalThis.navigator.storage.persist().catch(() => undefined);
 }
@@ -49,7 +65,7 @@ interface MetaRow {
 /**
  * 通用文件调用接口：二进制/文本内容的持久化（mp4、jpg、pdf…）。
  * API 形态对齐 S3/Supabase Storage 社区惯例（put/get/stat/list/remove）。
- * 底层 expo-file-system File/Directory 类，三端同一路径（web 走 OPFS）。
+ * 底座：native = expo-file-system File/Directory 类；web = OPFS 直连（glossary §3）。
  *
  * 存储 key 是相对路径（"a/b/c.mp4"），直接映射到存储根目录下的子路径，
  * 严禁 `..` 与绝对路径（见 validateKey）。
@@ -86,29 +102,40 @@ export interface StoredFileInfo {
 /** put 接受的内容形态：二进制或 UTF-8 文本。 */
 export type FileContent = Uint8Array | ArrayBuffer | string;
 
-/**
- * SDK 58 web 变体的 FileSystemDirectory/File 基类未实现 validatePath
- * （native 由原生模块实现，build/ExpoFileSystem.web.js 缺该方法），
- * 任何 Directory/File 实例化都会 TypeError，import 即炸。
- * 按 web 语义补 no-op：web 路径均由 OPFS URI 构造，无额外非法形态。
- * 上游修复后移除（见 AGENTS.md 偏差表）。
- */
-if (Platform.OS === 'web') {
-    for (const klass of [Directory, File]) {
-        if (typeof klass.prototype.validatePath !== 'function') {
-            (klass.prototype as { validatePath?: () => void }).validatePath = () => undefined;
-        }
+function toBytes(content: FileContent): Uint8Array {
+    return typeof content === 'string'
+        ? new TextEncoder().encode(content)
+        : content instanceof Uint8Array
+            ? content
+            : new Uint8Array(content);
+}
+
+/** 本地文件 URI → 字节（picker/manipulator 产物落盘用；web 走 fetch，native 走 File API）。 */
+export async function readUriBytes(uri: string): Promise<Uint8Array> {
+    if (WEB) {
+        const response = await fetch(uri);
+        return new Uint8Array(await response.arrayBuffer());
     }
+    return new File(uri).bytes();
+}
+
+/** putFromUri 复用同一通道。 */
+async function bytesFromUri(uri: string): Promise<Uint8Array> {
+    return readUriBytes(uri);
 }
 
 let rootDirectory: Directory | null = null;
 
-/** 存储根目录（懒初始化：模块级实例化会拖慢冷启动，web 首帧不可行）。 */
+/** 存储根目录（native 专用，懒初始化；web 走 OPFS 无此概念）。 */
 function storageRoot(): Directory {
     if (!rootDirectory) {
         rootDirectory = new Directory(Paths.document, 'almightydb', 'files');
     }
     return rootDirectory;
+}
+
+function resolve(key: string): File {
+    return new File(storageRoot(), ...key.split('/'));
 }
 
 export const fileStorage = {
@@ -117,10 +144,22 @@ export const fileStorage = {
         requestWebPersistentStorage();
         validateKey(key, 'put');
         try {
-            const file = resolve(key);
-            file.parentDirectory.create({ idempotent: true, intermediates: true });
-            await file.write(content);
-            const info = await infoFromContent(key, file, content);
+            const bytes = toBytes(content);
+            const info: StoredFileInfo = {
+                key,
+                size: bytes.byteLength,
+                checksum: bytesToHex(sha256(bytes)),
+                modifiedAt: null,
+            };
+            if (WEB) {
+                await opfsBackend.put(key, bytes);
+                info.modifiedAt = Date.now();
+            } else {
+                const file = resolve(key);
+                file.parentDirectory.create({ idempotent: true, intermediates: true });
+                await file.write(bytes);
+                info.modifiedAt = file.modificationTime;
+            }
             await upsertMeta(info);
             return info;
         } catch (error) {
@@ -128,21 +167,50 @@ export const fileStorage = {
         }
     },
 
+    /** 从本地文件 URI 直接入库（picker / 变换产物，免二次中转）。 */
+    async putFromUri(key: string, uri: string): Promise<StoredFileInfo> {
+        return fileStorage.put(key, await bytesFromUri(uri));
+    },
+
     /** 读取二进制内容。不存在时抛 not-found（区别于 stat 的 null）。 */
     async get(key: string): Promise<Uint8Array> {
         validateKey(key, 'get');
+        if (WEB) {
+            try {
+                return await opfsBackend.get(key);
+            } catch (error) {
+                if (error instanceof DOMException && error.name === 'NotFoundError') {
+                    throw new FileStorageError('file-storage/not-found', `fileStorage: 不存在 "${key}"`);
+                }
+                throw toFileStorageError(error, `fileStorage(${key})`);
+            }
+        }
         return withExisting(key, (file) => file.bytes());
     },
 
     /** 读取文本内容。 */
     async getText(key: string): Promise<string> {
-        validateKey(key, 'getText');
-        return withExisting(key, (file) => file.text());
+        const bytes = await fileStorage.get(key);
+        return new TextDecoder().decode(bytes);
     },
 
     /** 查询元数据；不存在返回 null，不抛错。checksum 为三端统一的 SHA-256。 */
     async stat(key: string): Promise<StoredFileInfo | null> {
         validateKey(key, 'stat');
+        if (WEB) {
+            const info = await opfsBackend.info(key);
+            if (!info) {
+                await deleteMeta(key);
+                return null;
+            }
+            const meta = await getMeta(key);
+            return {
+                key,
+                size: info.size,
+                checksum: meta?.sha256 ?? null,
+                modifiedAt: info.modifiedAt,
+            };
+        }
         const file = resolve(key);
         if (!file.exists) {
             await deleteMeta(key);
@@ -163,12 +231,18 @@ export const fileStorage = {
     },
 
     async exists(key: string): Promise<boolean> {
+        if (WEB) return opfsBackend.exists(key);
         return (await fileStorage.stat(key)) !== null;
     },
 
     /** 删除；目标不存在也视为成功（幂等，对齐 S3 DeleteObject 语义）。 */
     async remove(key: string): Promise<void> {
         validateKey(key, 'remove');
+        if (WEB) {
+            await opfsBackend.remove(key);
+            await deleteMeta(key);
+            return;
+        }
         const file = resolve(key);
         if (file.exists) {
             try {
@@ -183,6 +257,17 @@ export const fileStorage = {
     /** 递归列出；prefix 为空时列出全部。结果按 key 字典序，checksum 来自元数据表。 */
     async list(prefix?: string): Promise<StoredFileInfo[]> {
         if (prefix !== undefined) validateKey(prefix, 'list');
+        if (WEB) {
+            const keys = await opfsBackend.list(prefix);
+            const metas = await listMeta();
+            return keys
+                .filter((key) => prefix === undefined || key.startsWith(prefix))
+                .sort((a, b) => (a < b ? -1 : 1))
+                .map((key) => {
+                    const meta = metas.get(key);
+                    return { key, size: meta?.size ?? 0, checksum: meta?.sha256 ?? null, modifiedAt: meta?.modified_at ?? null };
+                });
+        }
         const root = storageRoot();
         if (!root.exists) return [];
         const metas = await listMeta(prefix);
@@ -200,12 +285,11 @@ export const fileStorage = {
     /** 可用于预览/分享的本地 URL：native 为 file://，web 为本会话有效的 blob: URL。 */
     async url(key: string): Promise<string> {
         validateKey(key, 'url');
-        return withExisting(key, (file) => {
-            if (globalThis.URL?.createObjectURL) {
-                return globalThis.URL.createObjectURL(new Blob([file]));
-            }
-            return file.uri;
-        });
+        if (WEB) {
+            const bytes = await fileStorage.get(key);
+            return globalThis.URL.createObjectURL(new Blob([bytes as BlobPart]));
+        }
+        return withExisting(key, (file) => file.uri);
     },
 
     /** 释放 url() 产生的 blob 引用；native 上为空操作。 */
@@ -218,6 +302,13 @@ export const fileStorage = {
     async move(from: string, to: string): Promise<void> {
         validateKey(from, 'move.from');
         validateKey(to, 'move.to');
+        if (WEB) {
+            const bytes = await fileStorage.get(from);
+            await opfsBackend.put(to, bytes);
+            await opfsBackend.remove(from);
+            await renameMeta(from, to);
+            return;
+        }
         await relocate(from, to, 'move');
         await renameMeta(from, to);
     },
@@ -225,6 +316,15 @@ export const fileStorage = {
     async copy(from: string, to: string): Promise<void> {
         validateKey(from, 'copy.from');
         validateKey(to, 'copy.to');
+        if (WEB) {
+            const bytes = await fileStorage.get(from);
+            await opfsBackend.put(to, bytes);
+            const meta = await getMeta(from);
+            if (meta) {
+                await upsertMeta({ key: to, size: meta.size, checksum: meta.sha256, modifiedAt: meta.modified_at });
+            }
+            return;
+        }
         await relocate(from, to, 'copy');
         const meta = await getMeta(from);
         if (meta) {
@@ -237,16 +337,15 @@ export const fileStorage = {
     },
 
     /**
-     * 存储根目录。仅供同类基础设施（migration）组合使用，业务层勿用。
+     * 存储根目录。仅供同类基础设施（migration）组合使用，业务层勿用；web 走 OPFS 无此概念。
      */
     rootDirectory(): Directory {
+        if (WEB) {
+            throw new FileStorageError('file-storage/io', 'fileStorage.rootDirectory: web 端走 OPFS，无 native 根目录');
+        }
         return storageRoot();
     },
 };
-
-function resolve(key: string): File {
-    return new File(storageRoot(), ...key.split('/'));
-}
 
 async function relocate(from: string, to: string, action: 'move' | 'copy'): Promise<void> {
     validateKey(from, `${action}.from`);
@@ -281,22 +380,6 @@ function syncInfo(key: string, file: File): StoredFileInfo {
         key,
         size: file.size,
         checksum: null,
-        modifiedAt: file.modificationTime,
-    };
-}
-
-/** 完整快照：从内存内容直接计算 SHA-256（put 路径，避免回读大文件）。 */
-async function infoFromContent(key: string, file: File, content: FileContent): Promise<StoredFileInfo> {
-    const bytes =
-        typeof content === 'string'
-            ? new TextEncoder().encode(content)
-            : content instanceof Uint8Array
-                ? content
-                : new Uint8Array(content);
-    return {
-        key,
-        size: bytes.byteLength,
-        checksum: bytesToHex(sha256(bytes)),
         modifiedAt: file.modificationTime,
     };
 }

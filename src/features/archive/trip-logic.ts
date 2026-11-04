@@ -109,6 +109,16 @@ export function decorateTrip(row: Omit<TripRow, 'deleted_at'>, today = todayLoca
     };
 }
 
+/** archive 页行程卡选卡：进行中 > 最近的计划中 > 刚结束的。 */
+export function pickDeckTrip<T extends Trip>(trips: T[]): T | null {
+    const ongoing = trips.filter((trip) => trip.status === 'ongoing').sort((a, b) => (a.start_date < b.start_date ? -1 : 1));
+    if (ongoing.length > 0) return ongoing[0];
+    const planning = trips.filter((trip) => trip.status === 'planning').sort((a, b) => (a.start_date < b.start_date ? -1 : 1));
+    if (planning.length > 0) return planning[0];
+    const finished = trips.filter((trip) => trip.status === 'finished').sort((a, b) => (a.end_date > b.end_date ? -1 : 1));
+    return finished[0] ?? null;
+}
+
 // ─── 输入校验 ────────────────────────────────────────────────────────────────
 
 export interface TripInput {

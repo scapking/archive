@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react';
 import { fileStorage } from '@/core/file-storage';
+import { mediaByJournalIds } from '../db';
+import { useArchiveRevision } from '../store';
+import type { JournalMediaRow } from '../db';
 
 /**
  * file-storage key → 可渲染 URI（native: file://，web: blob:）。
@@ -23,7 +26,7 @@ export function useFileUrl(key: string | null): string | null {
                 if (active) setUri(resolved);
             })
             .catch(() => {
-                // 缺文件时静默置空是安全的：photo 行在、二进制缺失属可自愈状态
+                // 缺文件时静默置空是安全的：媒体行在、二进制缺失属可自愈状态
                 if (active) setUri(null);
             });
         return () => {
@@ -33,4 +36,24 @@ export function useFileUrl(key: string | null): string | null {
     }, [key]);
 
     return uri;
+}
+
+/** 某篇日记的媒体行（revision 变化自动重载）。 */
+export function useJournalMedia(journalId: string | null): JournalMediaRow[] {
+    const [rows, setRows] = useState<JournalMediaRow[]>([]);
+    const revision = useArchiveRevision();
+    useEffect(() => {
+        if (!journalId) {
+            setRows([]);
+            return;
+        }
+        let active = true;
+        mediaByJournalIds([journalId]).then((grouped) => {
+            if (active) setRows(grouped.get(journalId) ?? []);
+        });
+        return () => {
+            active = false;
+        };
+    }, [journalId, revision]);
+    return rows;
 }

@@ -1,5 +1,5 @@
-import { TripNewScreen } from '@/features/archive';
+import { TripFormScreen } from '@/features/archive';
 
 export default function TripNewRoute() {
-    return <TripNewScreen />;
+    return <TripFormScreen />;
 }

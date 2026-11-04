@@ -35,13 +35,15 @@ export function DateInput({
         <View className="flex-row items-center gap-2">
             {segments.map((seg, index) => (
                 <View key={seg.key} className="flex-row items-center gap-2">
-                    {index > 0 ? <Text className="text-hatch-muted">-</Text> : null}
+                    {index > 0 ? (
+                        <Text className="text-ink-muted dark:text-inkd-muted">-</Text>
+                    ) : null}
                     <TextInput
                         ref={seg.next ?? undefined}
-                        className="h-12 w-16 rounded-lg border border-hatch-border bg-hatch-surface px-3 text-center text-[15px] text-hatch-text"
+                        className="h-12 w-16 rounded-lg border border-ink-border bg-ink-surface text-center text-[15px] text-ink-text dark:border-inkd-border dark:bg-inkd-surface dark:text-inkd-text"
                         value={seg.val}
-                        placeholder={index === 0 ? placeholder : seg.pad === 2 ? '--' : '----'}
-                        placeholderTextColor="#5F6664"
+                        placeholder={index === 0 ? placeholder : '--'}
+                        placeholderTextColor="#8B939C"
                         keyboardType="number-pad"
                         maxLength={seg.max}
                         onChangeText={(raw) => {

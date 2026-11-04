@@ -1,5 +1,5 @@
-import { TimelineScreen } from '@/features/archive';
+import { ArchiveScreen } from '@/features/archive';
 
-export default function TimelineRoute() {
-    return <TimelineScreen />;
+export default function ArchiveRoute() {
+    return <ArchiveScreen />;
 }

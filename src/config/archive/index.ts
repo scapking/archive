@@ -15,6 +15,8 @@ export const archiveConfig = createConfigStore(
         'project.client.name': '',
         'project.client.key': '',
         'project.client.heartbeat': '',
+        // 主题偏好：system（跟随系统）/ light（灰白）/ dark
+        'ui.theme': 'system',
     },
     {
         secure: ['zookeeper.key', 'gateway.key', 'project.client.key'],
