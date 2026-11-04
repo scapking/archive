@@ -1,0 +1,13 @@
+# 仓库根忽略项（src/ 内部的构建产物见 src/.gitignore）
+
+# OS / 编辑器
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+*.code-workspace
+
+# 本地临时
+*.log
+tmp/
