@@ -15,15 +15,17 @@ export function PrimaryButton({
 }) {
     const [from, to] = useAccentGradient();
     return (
-        <BouncyPressable onPress={disabled ? undefined : onPress} scaleTo={0.97}>
+        <BouncyPressable onPress={disabled ? undefined : onPress} scaleTo={0.98}>
             <LinearGradient
                 start={{ x: 0, y: 0.5 }}
                 end={{ x: 1, y: 0.5 }}
                 colors={[from, to]}
-                className="h-12 items-center justify-center rounded-lg"
-                style={{ opacity: disabled ? 0.45 : 1 }}
+                className="h-[52px] items-center justify-center rounded-xl"
+                style={{ opacity: disabled ? 0.4 : 1 }}
+                accessibilityRole="button"
+                accessibilityLabel={label}
             >
-                <Text className="text-[15px] font-semibold text-ink-base dark:text-inkd-base">
+                <Text className="text-[16px] font-semibold text-ink-base dark:text-inkd-base">
                     {label}
                 </Text>
             </LinearGradient>

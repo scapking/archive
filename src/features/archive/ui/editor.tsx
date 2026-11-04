@@ -1,42 +1,68 @@
 import { useState } from 'react';
-import { Pressable, Text, TextInput, View } from 'react-native';
-import { BouncyPressable, LucideImage, LucideTrash, LucideVideo } from '@/core/icons';
+import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
+import { BouncyPressable, LucideImage, LucidePlus, LucideTrash, LucideVideo } from '@/core/icons';
 import type { JournalBlock, JournalMediaRow } from '../db';
 import { MediaBlock } from './media-view';
 
 /**
- * 共享连续编辑器（行程日记 / 日常日记通用）：块模型自上而下——
- * 文本段（自动增高）与行内媒体（图/视频）混排；末段持续写入，媒体随写随插。
- * 纯受控组件：blocks / media 由屏持有，媒体选取由屏编排（store 落盘后追加块）。
+ * 共享连续编辑器（行程日记 / 日常日记通用）——大厂编辑器规格：
+ *
+ * - 画布无盒子：正文直接落在页面底上（16px/28 行高，journaling 可读性口径），
+ *   媒体块通栏圆角，插入缝有淡蓝插入线提示；
+ * - 块模型自上而下：文本段（自动增高、可聚焦续写）与行内媒体（图/视频）混排，
+ *   媒体插入即显示 pending 占位（上传中不阻塞继续写字）；
+ * - 删除 afforded：媒体右上角小圆 chip（40pt 命中区），确认后移块不删文件；
+ * - 纯受控组件：blocks/media 由屏持有，媒体选取由屏编排（store 落盘后回填）。
  */
+
+/** 插入中占位 id（屏层上传完成回填真实 mediaId）。 */
+export const PENDING_MEDIA_ID = '__pending__';
 
 function TextBlockInput({
     value,
     editable,
+    autoFocus,
     onChange,
+    onFocus,
     placeholder,
 }: {
     value: string;
     editable: boolean;
+    autoFocus?: boolean;
     onChange(text: string): void;
+    onFocus?(): void;
     placeholder: string;
 }) {
-    const [height, setHeight] = useState(96);
+    const [height, setHeight] = useState(72);
     return (
         <TextInput
             multiline
             value={value}
             editable={editable}
+            autoFocus={autoFocus}
             onChangeText={onChange}
+            onFocus={onFocus}
             onContentSizeChange={(event) =>
-                setHeight(Math.max(96, event.nativeEvent.contentSize.height))
+                setHeight(Math.max(72, event.nativeEvent.contentSize.height))
             }
             placeholder={placeholder}
             placeholderTextColor="#8B939C"
-            className="text-[15px] leading-7 text-ink-text dark:text-inkd-text"
+            className="text-[16px] leading-7 text-ink-text dark:text-inkd-text"
             style={{ height }}
             textAlignVertical="top"
         />
+    );
+}
+
+/** 媒体上传占位（虚线框 + spinner + 文案，与大厂上传态一致）。 */
+function PendingMediaBlock() {
+    return (
+        <View className="h-[132px] items-center justify-center gap-2 rounded-xl border border-dashed border-ink-accent/40 bg-ink-accent-bg/40 dark:border-inkd-accent/40 dark:bg-inkd-accent-bg/40">
+            <ActivityIndicator color="#3B82F6" />
+            <Text className="text-[12px] text-ink-secondary dark:text-inkd-secondary">
+                正在上传…
+            </Text>
+        </View>
     );
 }
 
@@ -44,7 +70,9 @@ export function BlockEditor({
     blocks,
     mediaById,
     editable,
+    focusTextIndex,
     onChange,
+    onFocusText,
     onPickImage,
     onPickVideo,
     busy = false,
@@ -52,23 +80,30 @@ export function BlockEditor({
     blocks: JournalBlock[];
     mediaById: Map<string, JournalMediaRow>;
     editable: boolean;
+    /** 需要聚焦的文本块下标（媒体插入后自动续写）。 */
+    focusTextIndex?: number | null;
     onChange(blocks: JournalBlock[]): void;
+    onFocusText?(index: number): void;
     onPickImage(): void;
     onPickVideo(): void;
-    /** 媒体落盘中（防抖保存照常，工具条禁用防重复插） */
     busy?: boolean;
 }) {
     const updateText = (index: number, text: string) => {
-        const next = blocks.map((block, i) => (i === index && block.t === 'p' ? { t: 'p' as const, text } : block));
+        const next = blocks.map((block, i) =>
+            i === index && block.t === 'p' ? { t: 'p' as const, text } : block,
+        );
         onChange(next);
     };
     const removeMedia = (index: number) => {
-        // 块移除；媒体行与文件保留（软删除语义，防误删丢失）
+        // 移块不删文件：媒体行与二进制保留（软删除语义，防误删丢失）
         onChange(blocks.filter((_, i) => i !== index));
     };
 
+    const isPending = (block: JournalBlock) =>
+        block.t === 'media' && block.mediaId === PENDING_MEDIA_ID;
+
     return (
-        <View className="gap-3">
+        <View className="gap-1">
             {blocks.map((block, index) => {
                 if (block.t === 'p') {
                     const isLast = index === blocks.length - 1;
@@ -77,23 +112,26 @@ export function BlockEditor({
                             key={`p-${index}`}
                             value={block.text}
                             editable={editable}
+                            autoFocus={focusTextIndex === index}
                             onChange={(text) => updateText(index, text)}
+                            onFocus={() => onFocusText?.(index)}
                             placeholder={
                                 isLast && blocks.length === 1
-                                    ? '从这里开始写。想到什么写什么，图片和视频随时插入。'
+                                    ? '想到什么写什么，图片和视频随时插进来。'
                                     : '继续写…'
                             }
                         />
                     );
                 }
+                if (isPending(block)) return <PendingMediaBlock key={`pending-${index}`} />;
                 const media = mediaById.get(block.mediaId);
                 if (!media) return null;
                 return (
-                    <View key={`m-${block.mediaId}`}>
+                    <View key={`m-${block.mediaId}`} className="my-2">
                         <MediaBlock media={media} />
                         {editable ? (
                             <BouncyPressable onPress={() => removeMedia(index)} scaleTo={0.85}>
-                                <View className="absolute right-2 top-2 h-7 w-7 items-center justify-center rounded-full border border-ink-border bg-ink-base/90 dark:border-inkd-border dark:bg-inkd-base/90">
+                                <View className="absolute right-2.5 top-2.5 h-8 w-8 items-center justify-center rounded-full border border-ink-border bg-ink-base/95 dark:border-inkd-border dark:bg-inkd-base/95">
                                     <LucideTrash size={13} color="#DC4A5E" />
                                 </View>
                             </BouncyPressable>
@@ -102,30 +140,63 @@ export function BlockEditor({
                 );
             })}
 
-            {editable ? (
-                <View className="mt-2 flex-row items-center gap-2">
-                    <ToolButton
-                        label="图片"
-                        icon={<LucideImage size={15} color="#5A626B" />}
-                        disabled={busy}
-                        onPress={onPickImage}
-                    />
-                    <ToolButton
-                        label="视频"
-                        icon={<LucideVideo size={15} color="#5A626B" />}
-                        disabled={busy}
-                        onPress={onPickVideo}
-                    />
-                    {busy ? (
-                        <Text className="text-[11px] text-ink-muted dark:text-inkd-muted">上传中…</Text>
-                    ) : null}
+            {/* 插入缝：媒体块与末段之间的提示线（只在编辑态且有媒体时出现） */}
+            {editable && blocks.some((b) => b.t === 'media') ? (
+                <View className="my-1 flex-row items-center gap-2 opacity-60">
+                    <View className="h-px flex-1 bg-ink-accent/30 dark:bg-inkd-accent/30" />
+                    <LucidePlus size={11} color="#3B82F6" />
+                    <View className="h-px flex-1 bg-ink-accent/30 dark:bg-inkd-accent/30" />
                 </View>
             ) : null}
         </View>
     );
 }
 
-function ToolButton({
+/** 编辑器底部工具坞：图/视频 chip（40pt 命中）+ 字数 + 主行动。屏层决定主行动内容。 */
+export function EditorToolbar({
+    editable,
+    busy,
+    charCount,
+    onPickImage,
+    onPickVideo,
+    primary,
+}: {
+    editable: boolean;
+    busy: boolean;
+    charCount: number;
+    onPickImage(): void;
+    onPickVideo(): void;
+    /** 右侧主行动（通常是「完成」收笔）。 */
+    primary: React.ReactNode;
+}) {
+    return (
+        <View className="border-t border-ink-rule bg-ink-base/95 px-4 pb-2 pt-2 dark:border-inkd-rule dark:bg-inkd-base/95">
+            <View className="flex-row items-center gap-2">
+                <ToolChip
+                    label="图片"
+                    disabled={busy || !editable}
+                    onPress={onPickImage}
+                    icon={<LucideImage size={16} strokeWidth={1.9} color="#5A626B" />}
+                />
+                <ToolChip
+                    label="视频"
+                    disabled={busy || !editable}
+                    onPress={onPickVideo}
+                    icon={<LucideVideo size={16} strokeWidth={1.9} color="#5A626B" />}
+                />
+                <Text
+                    className="ml-auto mr-1 text-[11px] text-ink-muted dark:text-inkd-muted"
+                    style={{ fontVariant: ['tabular-nums'] }}
+                >
+                    {charCount} 字
+                </Text>
+                {primary}
+            </View>
+        </View>
+    );
+}
+
+function ToolChip({
     label,
     icon,
     onPress,
@@ -137,16 +208,19 @@ function ToolButton({
     disabled?: boolean;
 }) {
     return (
-        <Pressable
-            onPress={disabled ? undefined : onPress}
-            className={`h-9 flex-row items-center gap-1.5 rounded-md border border-ink-border bg-ink-surface px-3 active:bg-ink-raised dark:border-inkd-border dark:bg-inkd-surface dark:active:bg-inkd-raised ${
-                disabled ? 'opacity-50' : ''
-            }`}
-            accessibilityRole="button"
-            accessibilityLabel={label}
-        >
-            {icon}
-            <Text className="text-[12px] text-ink-secondary dark:text-inkd-secondary">{label}</Text>
-        </Pressable>
+        <BouncyPressable onPress={disabled ? undefined : onPress} scaleTo={0.94}>
+            <View
+                className={`h-10 flex-row items-center gap-1.5 rounded-lg border border-ink-border bg-ink-surface px-3.5 active:bg-ink-raised dark:border-inkd-border dark:bg-inkd-surface dark:active:bg-inkd-raised ${
+                    disabled ? 'opacity-40' : ''
+                }`}
+                accessibilityRole="button"
+                accessibilityLabel={label}
+            >
+                {icon}
+                <Text className="text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                    {label}
+                </Text>
+            </View>
+        </BouncyPressable>
     );
 }
