@@ -190,22 +190,28 @@ export function EditorToolbar({
     /** 右侧主行动（通常是「完成」收笔）。 */
     primary: React.ReactNode;
 }) {
+    // 只读态不渲染工具 chips（禁用灰 chip = 看起来坏掉的按钮，不呈现）
+    const showTools = editable;
     return (
         <View className="border-t border-ink-rule bg-ink-base/95 px-4 pb-2 pt-2 dark:border-inkd-rule dark:bg-inkd-base/95">
             <View className="flex-row items-center gap-2">
-                <ToolChip
-                    label="图片"
-                    disabled={busy || !editable}
-                    onPress={onPickImage}
-                    icon={<LucideImage size={16} strokeWidth={1.9} color="#5A626B" />}
-                />
-                <ToolChip
-                    label="视频"
-                    disabled={busy || !editable}
-                    onPress={onPickVideo}
-                    icon={<LucideVideo size={16} strokeWidth={1.9} color="#5A626B" />}
-                />
-                <View className="mx-1 h-4 w-px bg-ink-border dark:bg-inkd-border" />
+                {showTools ? (
+                    <>
+                        <ToolChip
+                            label="图片"
+                            disabled={busy}
+                            onPress={onPickImage}
+                            icon={<LucideImage size={16} strokeWidth={1.9} color="#5A626B" />}
+                        />
+                        <ToolChip
+                            label="视频"
+                            disabled={busy}
+                            onPress={onPickVideo}
+                            icon={<LucideVideo size={16} strokeWidth={1.9} color="#5A626B" />}
+                        />
+                        <View className="mx-1 h-4 w-px bg-ink-border dark:bg-inkd-border" />
+                    </>
+                ) : null}
                 {/* 保存状态指示器（SaaS/Pajamas 规范：贴近内容、持续可见、不打断） */}
                 <Text
                     className={`text-[11px] ${

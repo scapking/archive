@@ -11,10 +11,11 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import { BouncyPressable, LucideBack } from '@/core/icons';
+import { BouncyPressable, LucideBack, LucideCheck } from '@/core/icons';
 import { imagePicker } from '@/core/image-picker';
 import { useArchiveRevision, useArchiveStore } from './store';
 import {
+    canReopen,
     isEditable,
     parseBlocks,
     todayEntryDate,
@@ -23,8 +24,8 @@ import {
     type JournalBlock,
 } from './journal-logic';
 import { formatDateParts, todayLocal } from './trip-logic';
-import { getJournal, mediaByJournalIds } from './db';
-import type { JournalMediaRow, JournalRow } from './db';
+import { getJournal, getTrip, mediaByJournalIds } from './db';
+import type { JournalMediaRow, JournalRow, TripRow } from './db';
 import { BlockEditor, EditorToolbar, PENDING_MEDIA_ID } from './ui/editor';
 import { useAccentGradient } from './ui/theme';
 
@@ -32,14 +33,14 @@ import { useAccentGradient } from './ui/theme';
 const MAX_MEDIA = 12;
 
 /**
- * 连续日记编辑器（行程/日常通用）——编辑层大厂规格：
+ * 连续日记编辑器（行程/日常通用）——三种入口：不传参 = 今天日常；
+ * tripId+date = 行程某天；journalId = 直达某篇。
  *
- * - 沉浸画布：无 header 盒子，报头式 masthead（大日期 + 星期 + 收笔态），
- *   返回键悬浮；正文 16px/28 直接落在页面上；
- * - 工具坞：键盘上方常驻（图片/视频/字数/完成），web 与 native 同构；
- * - 媒体流：选图即插 pending 占位，落盘回填真实块，失败静默移除占位并提示；
- * - 800ms 防抖自动落库；「完成」收笔后只读；跨日由 store 加载时自动收笔。
- * 三种入口：不传参 = 今天日常；tripId+date = 行程某天；journalId = 直达某篇。
+ * 交互承诺：
+ * - 当天收笔页可「重新打开」（历史页不可，24:00 承诺不破坏）；
+ * - 只读态不渲染禁用按钮（不呈现看起来坏掉的控件）；
+ * - 媒体插入 pending 占位，异常落 store.error 上浮（picker 失败可见）；
+ * - 800ms 防抖 + 失焦即存双通道。
  */
 export function JournalEditScreen({
     tripId,
@@ -60,13 +61,14 @@ export function JournalEditScreen({
     const [gradientFrom, gradientTo] = useAccentGradient();
 
     const [journal, setJournal] = useState<JournalRow | null>(null);
+    const [trip, setTrip] = useState<TripRow | null>(null);
     const [blocks, setBlocks] = useState<JournalBlock[]>([]);
     const [media, setMedia] = useState<JournalMediaRow[]>([]);
     const [busy, setBusy] = useState(false);
     const [savedAt, setSavedAt] = useState<number | null>(null);
     const [focusTextIndex, setFocusTextIndex] = useState<number | null>(null);
 
-    // 载入：journalId / tripId+date / 今天 三种入口
+    // 载入日记 + 行程上下文
     useEffect(() => {
         let active = true;
         void (async () => {
@@ -81,6 +83,7 @@ export function JournalEditScreen({
             if (!active) return;
             setJournal(row);
             setBlocks(row ? parseBlocks(row.blocks) : []);
+            if (row?.trip_id) setTrip(await getTrip(row.trip_id));
         })();
         return () => {
             active = false;
@@ -117,6 +120,7 @@ export function JournalEditScreen({
     }, [blocks, journal, store]);
 
     const editable = journal ? isEditable(journal.status) : false;
+    const reopenable = journal ? canReopen(journal) : false;
     const saving = store((s) => s.savingJournal);
     const mediaById = useMemo(() => new Map(media.map((row) => [row.id, row])), [media]);
     const chars = useMemo(() => wordCount(blocks), [blocks]);
@@ -125,13 +129,6 @@ export function JournalEditScreen({
     const savedLabel = savedAt
         ? `已保存 ${String(new Date(savedAt).getHours()).padStart(2, '0')}:${String(new Date(savedAt).getMinutes()).padStart(2, '0')}`
         : '自动保存开启';
-
-    /** 失焦即存（GitLab 规范：防抖 + blur 双通道），dirty 由 blocks 时间戳近似。 */
-    const saveNow = useRef<(() => void) | null>(null);
-    saveNow.current = () => {
-        if (!journal || !isEditable(journal.status)) return;
-        void store.getState().saveJournalBlocks(journal.id, blocks).then(() => setSavedAt(Date.now()));
-    };
 
     const pick = async (kind: 'image' | 'video') => {
         if (!journal || busy) return;
@@ -142,7 +139,10 @@ export function JournalEditScreen({
             const permission = await imagePicker.getMediaLibraryPermissionAsync();
             if (!permission.granted) {
                 const requested = await imagePicker.requestMediaLibraryPermissionAsync();
-                if (!requested.granted) return;
+                if (!requested.granted) {
+                    store.setState({ error: '没有相册权限，去系统设置里开一下。' });
+                    return;
+                }
             }
             const result = await imagePicker.launchImageLibraryAsync({
                 mediaTypes: [kind === 'video' ? 'videos' : 'images'],
@@ -174,6 +174,13 @@ export function JournalEditScreen({
                 setFocusTextIndex(withText.length - 1);
                 return withText;
             });
+        } catch (caught) {
+            // picker 失败（环境/权限/取消异常）必须可见，不能是"点了没反应"
+            store.setState({
+                error: `${kind === 'video' ? '视频' : '图片'}选取失败：${caught instanceof Error ? caught.message : String(caught)}`,
+            });
+            // 回滚 pending 占位
+            setBlocks((current) => current.filter((b) => !(b.t === 'media' && b.mediaId === PENDING_MEDIA_ID)));
         } finally {
             setBusy(false);
         }
@@ -184,6 +191,17 @@ export function JournalEditScreen({
         await store.getState().saveJournalBlocks(journal.id, blocks);
         await store.getState().completeJournal(journal.id);
         router.back();
+    };
+
+    const reopen = () => {
+        if (!journal) return;
+        void store
+            .getState()
+            .reopenJournal(journal.id)
+            .then(() => getJournal(journal.id))
+            .then((row) => {
+                if (row) setJournal(row);
+            });
     };
 
     if (!journal) {
@@ -210,28 +228,31 @@ export function JournalEditScreen({
                     </View>
                 </BouncyPressable>
 
-                {/* 报头 masthead：编辑式日期排版（frontend-design：type treatment 即设计） */}
+                {/* 报头 masthead + 行程上下文（在写谁的哪一天） */}
                 <View className="px-6 pb-4" style={{ paddingTop: insets.top + 44 }}>
                     <View className="flex-row items-baseline justify-between">
                         <Text className="text-[30px] font-semibold tracking-wide text-ink-text dark:text-inkd-text">
                             {monthDay}
                         </Text>
-                        <View className="flex-row items-center gap-2">
-                            <Text
-                                className={`text-[11px] font-medium ${
-                                    editable
-                                        ? 'text-ink-accent dark:text-inkd-accent'
-                                        : 'text-ink-muted dark:text-inkd-muted'
-                                }`}
-                            >
-                                {editable ? '进行中' : '已收笔'}
-                            </Text>
-                        </View>
+                        <Text
+                            className={`text-[11px] font-medium ${
+                                editable
+                                    ? 'text-ink-accent dark:text-inkd-accent'
+                                    : 'text-ink-muted dark:text-inkd-muted'
+                            }`}
+                        >
+                            {editable ? '进行中' : '已收笔'}
+                        </Text>
                     </View>
                     <Text className="mt-0.5 text-[13px] text-ink-secondary dark:text-inkd-secondary">
                         {weekday}
                         {isToday ? ' · 今天' : ''}
                     </Text>
+                    {trip ? (
+                        <Text className="mt-1 text-[12px] text-ink-muted dark:text-inkd-muted">
+                            {trip.icon ?? '🧭'} {trip.title}
+                        </Text>
+                    ) : null}
                 </View>
                 {error ? (
                     <Text className="px-6 pb-2 text-[12px] text-ink-negative dark:text-inkd-negative">
@@ -240,7 +261,7 @@ export function JournalEditScreen({
                 ) : null}
                 {!editable ? (
                     <Text className="px-6 pb-3 text-[12px] text-ink-muted dark:text-inkd-muted">
-                        本页已收笔（只读）。当天 24:00 自动收笔，或手动提前结束。
+                        本页已收笔（只读）。当天 24:00 自动收笔；历史页收笔后不可重开。
                     </Text>
                 ) : null}
 
@@ -260,7 +281,14 @@ export function JournalEditScreen({
                             focusTextIndex={focusTextIndex}
                             onChange={setBlocks}
                             onFocusText={(index) => setFocusTextIndex(null)}
-                            onBlurText={() => saveNow.current?.()}
+                            onBlurText={() => {
+                                if (journal && isEditable(journal.status)) {
+                                    void store
+                                        .getState()
+                                        .saveJournalBlocks(journal.id, blocks)
+                                        .then(() => setSavedAt(Date.now()));
+                                }
+                            }}
                             onPickImage={() => void pick('image')}
                             onPickVideo={() => void pick('video')}
                             busy={busy}
@@ -268,7 +296,7 @@ export function JournalEditScreen({
                     </View>
                 </ScrollView>
 
-                {/* 工具坞：键盘上方常驻 */}
+                {/* 工具坞：键盘上方常驻（只读态不含工具 chips） */}
                 <View style={{ paddingBottom: insets.bottom }}>
                     <EditorToolbar
                         editable={editable}
@@ -285,7 +313,7 @@ export function JournalEditScreen({
                                         start={{ x: 0, y: 0.5 }}
                                         end={{ x: 1, y: 0.5 }}
                                         colors={[gradientFrom, gradientTo]}
-                                        className="h-9 items-center justify-center rounded-lg px-5"
+                                        className="h-10 items-center justify-center rounded-lg px-5"
                                         accessibilityRole="button"
                                         accessibilityLabel="完成收笔"
                                     >
@@ -293,6 +321,17 @@ export function JournalEditScreen({
                                             完成
                                         </Text>
                                     </LinearGradient>
+                                </BouncyPressable>
+                            ) : reopenable ? (
+                                <BouncyPressable onPress={reopen} scaleTo={0.95}>
+                                    <View className="h-10 items-center justify-center rounded-lg border border-ink-accent bg-ink-accent-bg px-4 dark:border-inkd-accent dark:bg-inkd-accent-bg">
+                                        <View className="flex-row items-center gap-1">
+                                            <LucideCheck size={12} color="#3B82F6" />
+                                            <Text className="text-[13px] font-medium text-ink-accent dark:text-inkd-accent">
+                                                重新打开
+                                            </Text>
+                                        </View>
+                                    </View>
                                 </BouncyPressable>
                             ) : (
                                 <Pressable onPress={() => router.back()}>

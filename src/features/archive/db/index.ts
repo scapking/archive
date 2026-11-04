@@ -149,6 +149,15 @@ export async function completeJournal(id: string): Promise<void> {
     ]);
 }
 
+/** 重开收笔页（仅当天可重开，判定在 journal-logic.canReopen）。 */
+export async function reopenJournal(id: string): Promise<void> {
+    const db = await getDb();
+    await db.run("UPDATE journals SET status = 'open', completed_at = NULL, updated_at = ? WHERE id = ?", [
+        Date.now(),
+        id,
+    ]);
+}
+
 export async function getJournal(id: string): Promise<JournalRow | null> {
     const db = await getDb();
     return db.getFirst<JournalRow>('SELECT * FROM journals WHERE id = ? AND deleted_at IS NULL', [id]);

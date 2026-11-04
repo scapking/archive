@@ -41,6 +41,14 @@ export function isEditable(status: JournalStatus): boolean {
     return status === 'open';
 }
 
+/**
+ * 收笔页能否重开：仅当天的页可重开（Day One 同款语义）——
+ * 昨天及更早的页是历史，重开破坏「24:00 收笔」的产品承诺。
+ */
+export function canReopen(row: Pick<JournalRow, 'status' | 'local_date'>, today = todayLocal()): boolean {
+    return row.status === 'closed' && row.local_date >= today;
+}
+
 /** 在末尾追加媒体块（媒体先落库拿到 mediaId 再进块）。 */
 export function withMediaAppended(blocks: JournalBlock[], mediaId: string): JournalBlock[] {
     return [...blocks, { t: 'media' as const, mediaId }];

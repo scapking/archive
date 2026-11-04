@@ -65,6 +65,8 @@ interface ArchiveStore {
     /** 编辑器防抖保存入口（blocks 已在内存，这里只落库）。 */
     saveJournalBlocks(journalId: string, blocks: JournalBlock[]): Promise<void>;
     completeJournal(journalId: string): Promise<void>;
+    /** 重开当天的收笔页（仅当天；历史页不可重开）。 */
+    reopenJournal(journalId: string): Promise<void>;
     /** 编辑器插图/视频：落 file-storage + 建媒体行，返回 mediaId 供块引用。 */
     attachJournalMedia(journalId: string, kind: JournalMediaKind, uri: string, width: number | null, height: number | null): Promise<string | null>;
 }
@@ -243,6 +245,16 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         }
         set({ error: null, revision: get().revision + 1 });
         await get().loadAll();
+    },
+
+    async reopenJournal(journalId) {
+        try {
+            await db.reopenJournal(journalId);
+        } catch (error) {
+            set({ error: `重开失败：${toMessage(error)}` });
+            return;
+        }
+        set({ error: null, revision: get().revision + 1 });
     },
 
     async attachJournalMedia(journalId, kind, uri, width, height) {
