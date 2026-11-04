@@ -47,6 +47,8 @@ interface ArchiveStore {
     /** 最近一次数据操作失败的文案（界面在标题行下方展示；读操作失败可重试） */
     error: string | null;
     revision: number;
+    /** 日记防抖落库进行中（保存状态指示器用） */
+    savingJournal: boolean;
     trips: TripCard[];
     metrics: MeMetrics;
 
@@ -76,6 +78,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
     ready: false,
     error: null,
     revision: 0,
+    savingJournal: false,
     trips: [],
     metrics: { streak: 0, journalDays: 0, totalWords: 0, curve: [] },
 
@@ -221,13 +224,14 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
     },
 
     async saveJournalBlocks(journalId, blocks) {
+        set({ savingJournal: true });
         try {
             await db.updateJournalBlocks(journalId, serializeBlocks(blocks), wordCount(blocks));
         } catch (error) {
-            set({ error: `保存失败：${toMessage(error)}` });
+            set({ error: `保存失败：${toMessage(error)}`, savingJournal: false });
             return;
         }
-        set({ error: null, revision: get().revision + 1 });
+        set({ error: null, revision: get().revision + 1, savingJournal: false });
     },
 
     async completeJournal(journalId) {

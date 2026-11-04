@@ -90,18 +90,20 @@ export function ArchiveScreen() {
                     />
                 ) : (
                     <View className="px-5">
-                        <CardDeck
-                            a={{ id: 'journal', node: <JournalCard journal={todayJournal} label={journalLabel} /> }}
-                            b={{ id: 'trip', node: <TripCard trip={deckTrip} /> }}
-                            onPressCard={(id, isFront) => {
-                                if (!isFront) return;
-                                if (id === 'journal') router.push('/write');
-                                else if (deckTrip) router.push({ pathname: '/trip/[id]', params: { id: deckTrip.id } });
-                            }}
-                        />
-                        <View className="mt-3 flex-row items-center justify-center gap-1.5">
-                            <View className="h-1.5 w-1.5 rounded-full bg-ink-accent dark:bg-inkd-accent" />
-                            <View className="h-1.5 w-1.5 rounded-full bg-ink-faint dark:bg-inkd-faint" />
+                        <View className="mx-auto w-full max-w-[560px]">
+                            <CardDeck
+                                a={{ id: 'journal', node: <JournalCard journal={todayJournal} label={journalLabel} /> }}
+                                b={{ id: 'trip', node: <TripCard trip={deckTrip} /> }}
+                                onPressCard={(id, isFront) => {
+                                    if (!isFront) return;
+                                    if (id === 'journal') router.push('/write');
+                                    else if (deckTrip) router.push({ pathname: '/trip/[id]', params: { id: deckTrip.id } });
+                                }}
+                            />
+                            <View className="mt-3 flex-row items-center justify-center gap-1.5">
+                                <View className="h-1.5 w-1.5 rounded-full bg-ink-accent dark:bg-inkd-accent" />
+                                <View className="h-1.5 w-1.5 rounded-full bg-ink-faint dark:bg-inkd-faint" />
+                            </View>
                         </View>
                     </View>
                 )}

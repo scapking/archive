@@ -178,6 +178,9 @@ export function TripDetailScreen() {
                     contentContainerStyle={{
                         paddingHorizontal: 24,
                         paddingBottom: insets.bottom + 32,
+                        alignSelf: 'center',
+                        width: '100%',
+                        maxWidth: 668,
                     }}
                 />
             </View>

@@ -117,6 +117,7 @@ export function JournalEditScreen({
     }, [blocks, journal, store]);
 
     const editable = journal ? isEditable(journal.status) : false;
+    const saving = store((s) => s.savingJournal);
     const mediaById = useMemo(() => new Map(media.map((row) => [row.id, row])), [media]);
     const chars = useMemo(() => wordCount(blocks), [blocks]);
     const { monthDay, weekday } = formatDateParts(journal?.local_date ?? todayEntryDate());
@@ -124,6 +125,13 @@ export function JournalEditScreen({
     const savedLabel = savedAt
         ? `已保存 ${String(new Date(savedAt).getHours()).padStart(2, '0')}:${String(new Date(savedAt).getMinutes()).padStart(2, '0')}`
         : '自动保存开启';
+
+    /** 失焦即存（GitLab 规范：防抖 + blur 双通道），dirty 由 blocks 时间戳近似。 */
+    const saveNow = useRef<(() => void) | null>(null);
+    saveNow.current = () => {
+        if (!journal || !isEditable(journal.status)) return;
+        void store.getState().saveJournalBlocks(journal.id, blocks).then(() => setSavedAt(Date.now()));
+    };
 
     const pick = async (kind: 'image' | 'video') => {
         if (!journal || busy) return;
@@ -205,7 +213,7 @@ export function JournalEditScreen({
                 {/* 报头 masthead：编辑式日期排版（frontend-design：type treatment 即设计） */}
                 <View className="px-6 pb-4" style={{ paddingTop: insets.top + 44 }}>
                     <View className="flex-row items-baseline justify-between">
-                        <Text className="text-[26px] font-semibold tracking-wide text-ink-text dark:text-inkd-text">
+                        <Text className="text-[30px] font-semibold tracking-wide text-ink-text dark:text-inkd-text">
                             {monthDay}
                         </Text>
                         <View className="flex-row items-center gap-2">
@@ -222,7 +230,7 @@ export function JournalEditScreen({
                     </View>
                     <Text className="mt-0.5 text-[13px] text-ink-secondary dark:text-inkd-secondary">
                         {weekday}
-                        {isToday ? ' · 今天' : ''} · {savedLabel}
+                        {isToday ? ' · 今天' : ''}
                     </Text>
                 </View>
                 {error ? (
@@ -243,17 +251,21 @@ export function JournalEditScreen({
                     }}
                     keyboardShouldPersistTaps="handled"
                 >
-                    <BlockEditor
-                        blocks={blocks}
-                        mediaById={mediaById}
-                        editable={editable}
-                        focusTextIndex={focusTextIndex}
-                        onChange={setBlocks}
-                        onFocusText={(index) => setFocusTextIndex(null)}
-                        onPickImage={() => void pick('image')}
-                        onPickVideo={() => void pick('video')}
-                        busy={busy}
-                    />
+                    {/* 阅读列：桌面端行长 ≤80 字符（frontend-design 可读性口径） */}
+                    <View className="mx-auto w-full max-w-[620px]">
+                        <BlockEditor
+                            blocks={blocks}
+                            mediaById={mediaById}
+                            editable={editable}
+                            focusTextIndex={focusTextIndex}
+                            onChange={setBlocks}
+                            onFocusText={(index) => setFocusTextIndex(null)}
+                            onBlurText={() => saveNow.current?.()}
+                            onPickImage={() => void pick('image')}
+                            onPickVideo={() => void pick('video')}
+                            busy={busy}
+                        />
+                    </View>
                 </ScrollView>
 
                 {/* 工具坞：键盘上方常驻 */}
@@ -261,6 +273,8 @@ export function JournalEditScreen({
                     <EditorToolbar
                         editable={editable}
                         busy={busy}
+                        saving={saving}
+                        savedLabel={savedLabel}
                         charCount={chars}
                         onPickImage={() => void pick('image')}
                         onPickVideo={() => void pick('video')}

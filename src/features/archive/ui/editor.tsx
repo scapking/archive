@@ -8,15 +8,19 @@ import { MediaBlock } from './media-view';
  * 共享连续编辑器（行程日记 / 日常日记通用）——大厂编辑器规格：
  *
  * - 画布无盒子：正文直接落在页面底上（16px/28 行高，journaling 可读性口径），
- *   媒体块通栏圆角，插入缝有淡蓝插入线提示；
+ *   媒体块横向出血通栏（Day One 手感，破出阅读列边距）；
  * - 块模型自上而下：文本段（自动增高、可聚焦续写）与行内媒体（图/视频）混排，
  *   媒体插入即显示 pending 占位（上传中不阻塞继续写字）；
- * - 删除 afforded：媒体右上角小圆 chip（40pt 命中区），确认后移块不删文件；
+ * - 删除 afforded：媒体右上角小圆 chip（40pt 命中区），移块不删文件；
+ * - 失焦即存回调（GitLab 规范：防抖 + blur 双通道）；
  * - 纯受控组件：blocks/media 由屏持有，媒体选取由屏编排（store 落盘后回填）。
  */
 
 /** 插入中占位 id（屏层上传完成回填真实 mediaId）。 */
 export const PENDING_MEDIA_ID = '__pending__';
+
+/** 编辑器内容的横向出血量（与屏层阅读列 padding 对齐）。 */
+export const EDITOR_BLEED = 24;
 
 function TextBlockInput({
     value,
@@ -24,6 +28,7 @@ function TextBlockInput({
     autoFocus,
     onChange,
     onFocus,
+    onBlur,
     placeholder,
 }: {
     value: string;
@@ -31,6 +36,7 @@ function TextBlockInput({
     autoFocus?: boolean;
     onChange(text: string): void;
     onFocus?(): void;
+    onBlur?(): void;
     placeholder: string;
 }) {
     const [height, setHeight] = useState(72);
@@ -42,6 +48,7 @@ function TextBlockInput({
             autoFocus={autoFocus}
             onChangeText={onChange}
             onFocus={onFocus}
+            onBlur={onBlur}
             onContentSizeChange={(event) =>
                 setHeight(Math.max(72, event.nativeEvent.contentSize.height))
             }
@@ -73,6 +80,7 @@ export function BlockEditor({
     focusTextIndex,
     onChange,
     onFocusText,
+    onBlurText,
     onPickImage,
     onPickVideo,
     busy = false,
@@ -84,6 +92,8 @@ export function BlockEditor({
     focusTextIndex?: number | null;
     onChange(blocks: JournalBlock[]): void;
     onFocusText?(index: number): void;
+    /** 任一文本段失焦即存（配合防抖的双保险）。 */
+    onBlurText?(): void;
     onPickImage(): void;
     onPickVideo(): void;
     busy?: boolean;
@@ -115,6 +125,7 @@ export function BlockEditor({
                             autoFocus={focusTextIndex === index}
                             onChange={(text) => updateText(index, text)}
                             onFocus={() => onFocusText?.(index)}
+                            onBlur={() => onBlurText?.()}
                             placeholder={
                                 isLast && blocks.length === 1
                                     ? '想到什么写什么，图片和视频随时插进来。'
@@ -127,7 +138,12 @@ export function BlockEditor({
                 const media = mediaById.get(block.mediaId);
                 if (!media) return null;
                 return (
-                    <View key={`m-${block.mediaId}`} className="my-2">
+                    <View
+                        key={`m-${block.mediaId}`}
+                        className="my-3"
+                        // 媒体横向出血：破出阅读列边距（Day One 的通栏照片手感）
+                        style={{ marginLeft: -EDITOR_BLEED, marginRight: -EDITOR_BLEED }}
+                    >
                         <MediaBlock media={media} />
                         {editable ? (
                             <BouncyPressable onPress={() => removeMedia(index)} scaleTo={0.85}>
@@ -152,18 +168,23 @@ export function BlockEditor({
     );
 }
 
-/** 编辑器底部工具坞：图/视频 chip（40pt 命中）+ 字数 + 主行动。屏层决定主行动内容。 */
+/** 编辑器底部工具坞：图/视频 chip（40pt 命中）· 分隔点 · 字数 · 主行动。 */
 export function EditorToolbar({
     editable,
     busy,
+    saving,
     charCount,
+    savedLabel,
     onPickImage,
     onPickVideo,
     primary,
 }: {
     editable: boolean;
     busy: boolean;
+    /** 防抖落库进行中（指示器：保存中… / 已保存） */
+    saving?: boolean;
     charCount: number;
+    savedLabel: string;
     onPickImage(): void;
     onPickVideo(): void;
     /** 右侧主行动（通常是「完成」收笔）。 */
@@ -184,8 +205,20 @@ export function EditorToolbar({
                     onPress={onPickVideo}
                     icon={<LucideVideo size={16} strokeWidth={1.9} color="#5A626B" />}
                 />
+                <View className="mx-1 h-4 w-px bg-ink-border dark:bg-inkd-border" />
+                {/* 保存状态指示器（SaaS/Pajamas 规范：贴近内容、持续可见、不打断） */}
                 <Text
-                    className="ml-auto mr-1 text-[11px] text-ink-muted dark:text-inkd-muted"
+                    className={`text-[11px] ${
+                        saving
+                            ? 'text-ink-muted dark:text-inkd-muted'
+                            : 'text-ink-accent dark:text-inkd-accent'
+                    }`}
+                >
+                    {saving ? '保存中…' : savedLabel}
+                </Text>
+                <View className="flex-1" />
+                <Text
+                    className="mr-2 text-[11px] text-ink-muted dark:text-inkd-muted"
                     style={{ fontVariant: ['tabular-nums'] }}
                 >
                     {charCount} 字
