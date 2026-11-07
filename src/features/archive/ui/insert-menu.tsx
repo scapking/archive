@@ -17,8 +17,11 @@ import { usePalette } from './theme';
 
 /**
  * + 号插入选择器（罗盘）：条件渲染遮罩（禁 RN Modal——Fabric 触摸失效坑）。
- * 七行卡片（#8/#10 视觉对标大厂快捷面板）：录音 / 拍照 / 拍视频 / 相册图片 /
- * 相册视频 / 添加输入框 / 完成收笔，icon + 标题 + 副标双行。
+ * 七行卡片（#8/#10 视觉对标大厂快捷面板）：相册图片 / 相册视频 / 录音 /
+ * 拍照 / 拍视频 / 添加输入框 / 完成收笔，icon + 标题 + 副标双行。
+ * 行序（2026-11 调整）：相册两行（图库选取）前移到录音之前——插媒体里
+ * 「从图库选」是最高频路径，取材行（相册）前置、采集行（录音/拍摄）次之，
+ * 输入与收笔仍压轴；纯顺序调整，onAction 词表与行为不变。
  *
  * - 「添加输入框」（#11）：媒体行之后、完成收笔之前——输入是编辑器的一级
  *   动作（与插媒体同级），收笔是终态动作压轴；分发由屏层追加空文本段并聚焦。
@@ -76,8 +79,11 @@ export function InsertMenu({
         return () => sub.remove();
     }, [onClose, confirming]);
 
-    /** 行配置：web 能力边界内裁剪（录音 MediaRecorder 缺失 / 视频 recordAsync 无 web 实现）。 */
+    /** 行配置：web 能力边界内裁剪（录音 MediaRecorder 缺失 / 视频 recordAsync 无 web 实现）。
+     *  行序：相册取材两行 → 采集三行（录音/拍照/拍视频）→ 添加输入框 → 完成收笔。 */
     const rows: Array<{ action: InsertAction; icon: React.ReactNode; title: string; hint: string }> = [
+        { action: 'library-image', icon: <LucideImage size={20} strokeWidth={1.9} />, title: '相册图片', hint: '从图库选取' },
+        { action: 'library-video', icon: <ImagePlayIcon size={20} strokeWidth={1.9} />, title: '相册视频', hint: '从图库选取' },
         ...(isRecordingSupported()
             ? [{ action: 'record' as const, icon: <LucideMic size={20} strokeWidth={1.9} />, title: '录音', hint: '声纹即时记录' }]
             : []),
@@ -85,8 +91,6 @@ export function InsertMenu({
         ...(isVideoCaptureSupported()
             ? [{ action: 'video' as const, icon: <LucideVideo size={20} strokeWidth={1.9} />, title: '拍视频', hint: '时长不限' }]
             : []),
-        { action: 'library-image', icon: <LucideImage size={20} strokeWidth={1.9} />, title: '相册图片', hint: '从图库选取' },
-        { action: 'library-video', icon: <ImagePlayIcon size={20} strokeWidth={1.9} />, title: '相册视频', hint: '从图库选取' },
         // 「+」语言一致（添加语义同 FAB 罗盘本钮）；排在媒体行之后、完成收笔之前（#11）
         { action: 'append-text', icon: <LucidePlus size={20} strokeWidth={1.9} />, title: '添加输入框', hint: '末尾另起一段继续写' },
         { action: 'complete', icon: <LucideCheck size={20} strokeWidth={1.9} />, title: '完成收笔', hint: '收笔后不可再修改' },

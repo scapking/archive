@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+    AccessibilityInfo,
     ActivityIndicator,
     Animated,
     Easing,
@@ -53,30 +54,32 @@ import { PENDING_MEDIA_ID } from '../db';
  * - 块模型自上而下：文本段（自动增高、可聚焦续写）与行内媒体（图/视频/音频）混排，
  *   媒体插入即显示 pending 占位（上传中不阻塞继续写字）；
  * - 连续图片照片堆（渲染层合并，数据仍是独立块）：连续相邻的图片媒体块
- *   （中间无文本/视频/音频/pending 打断）≥2 张合并为「花瓣堆叠」照片堆
- *   （ImageDeckStack v6）——中卡 = 自然比例自适应图片（宽 = 列宽 66%，
- *   高按中卡图自然宽高比派生 + MEDIA_MAX_HEIGHT 封顶，超限 cover 裁切）；
- *   左右两张邻卡像花瓣一样与中卡同 frame、z 恒在中卡之下，tx = ∓半张
- *   卡宽：恰一半藏进中卡底下、一半露在中卡外侧（露出带 = 列宽 17%，列缘
- *   overflow-hidden 裁掉越出容器部分，画布无横向出血；cover 渲染真实
- *   相邻图内容），+ translateY 12 微降错位 + scale 0.97 + 轻降透明 0.9
- *   （无阴影设计下花瓣/中卡的分层全靠这三样）；3 张起左右都有，2 张时
- *   只有右侧（左花瓣空缺）；中卡横滑换位（PanResponder 方向锁：|dx|>10
+ *   （中间无文本/视频/音频/pending 打断）≥2 张合并为「相纸堆」照片堆
+ *   （ImageDeckStack v7，Apple Photos Stacks 式印刷相纸隐喻）——中卡 =
+ *   自然比例自适应图片（宽 = 列宽 66%，高按中卡图自然宽高比派生 +
+ *   MEDIA_MAX_HEIGHT 封顶，超限 cover 裁切，居中构图）；上一张/下一张以
+ *   「相纸」压在卡底：同 frame 微缩 0.96 + 下移 26 + ±3° 镜像倾斜 + 压暗
+ *   0.92，底缘露出倾斜楔形（楔形的斜边 + 圆角 + 真实邻图内容是「另一张
+ *   照片」的形状语法——轴向平行直条会被读作边框/chrome，v2/v3/v5 三版
+ *   可读性翻车的同源根因；2dp raised 垫边保证白底照片在浅色页上的楔缘
+ *   可辨，表面分层全靠 tone step，无阴影无渐变）；3 张起左右都有，2 张时
+ *   只有右侧（左相纸空缺）；中卡横滑换位（PanResponder 方向锁：|dx|>10
  *   且 |dx|>1.5|dy| 才认领——画布纵滚零仲裁；|dx|>60 提交真转场、否则
- *   spring 回弹；左滑 = 下一张 / 右滑 = 上一张，循环），点花瓣 = 切换
- *   到该张（露出区点按体，命中区以中卡 frame 为界、零重叠零 hitSlop），
- *   点中卡 → 全屏预览，长按中卡 → 该图操作卡（既有 onBlockAction 链）；
- *   拖拽过方向锁后 responder 仲裁自然取消点按（拖拽期间不误开全屏）。
- *   换位 = 花瓣真转场（中卡沿换位方向滑出列缘 + 降透明 timing 220ms，
- *   dir 侧花瓣自位形 spring 滑入中位 ~230ms——花瓣恒在中卡之下，随出卡
- *   让位逐步「揭开」，240ms 统一收口 + 索引轮转三槽内容重指派；滑动与
- *   点花瓣两条提交链路共用同一条编排，转场期间 advancing 闩吞并发手势；
- *   transform/opacity，native driver；详见 ImageDeckStack 注）。分组纯派生
- *   （buildRenderUnits），组内增删/移动自动重算，剩 1 张自动解散回独立
- *   自适应渲染（零改动）；pending 占位不进堆叠；性能口径 = 任意 N 最多
- *   挂载 3 个图片实例（左/中/右三槽，N=2 时左槽不渲染恒 2 个；转场不增
- *   实例——花瓣复用本槽渲染位，内容零切换），其余留在 blocks 数据里，
- *   换位只是索引轮转（数量无上限）；
+ *   spring 回弹；左滑 = 下一张 / 右滑 = 上一张，循环），点底缘楔形带
+ *   左/右半 = 上一张/下一张（N=2 单区全带宽 = 下一张），点中卡 → 全屏
+ *   预览，长按中卡 → 该图操作卡（既有 onBlockAction 链）；拖拽过方向锁
+ *   后 responder 仲裁自然取消点按（拖拽期间不误开全屏）。换位 = 相纸真
+ *   转场（中卡沿换位方向滑出列缘 + 降透明 timing 220ms ease-out quint，
+ *   dir 侧相纸自位形 spring 归中 ~310ms 无过冲——相纸恒在中卡之下，随
+ *   出卡让位逐步「揭开」，330ms 统一收口 + 索引轮转三槽内容重指派；滑动
+ *   与点楔形两条提交链路共用同一条编排，转场期间 advancing 闩吞并发手势；
+ *   系统「减弱动态」开启时退化为 160ms 透明度交叉；transform/opacity，
+ *   native driver；详见 ImageDeckStack 注）。分组纯派生（buildRenderUnits），
+ *   组内增删/移动自动重算，剩 1 张自动解散回独立自适应渲染（零改动）；
+ *   pending 占位不进堆叠；性能口径 = 任意 N 最多挂载 3 个图片实例
+ *   （左/中/右三槽，N=2 时左槽不渲染恒 2 个；转场不增实例——相纸复用本
+ *   槽渲染位，内容零切换），其余留在 blocks 数据里，换位只是索引轮转
+ *   （数量无上限）；
  * - 块稳定 id（JournalBlock.id）：React key = id，重排/删除不闪烁；文本块移动
  *   不换实例，焦点与光标位置天然保持；
  * - 块操作（#1/#9 沉浸化）：角落 chip 与聚焦操作条**全部移除**——
@@ -448,30 +451,36 @@ function buildRenderUnits(
 const DeckAnimatedSlot = Animated.createAnimatedComponent(View);
 
 /* ------------------------------------------------------------------ */
-/* 照片堆（花瓣堆叠）中卡档位、花瓣位形与转场常量（一处收口）            */
+/* 照片堆（相纸堆 v7）中卡档位、后卡位形与转场常量（一处收口）           */
 /* ------------------------------------------------------------------ */
 
 /**
  * 中卡宽档位（列宽比例，62-70% 档取 66% 中值）：中卡 = 自然比例自适应图
- * （高按中卡图自然宽高比派生、MEDIA_MAX_HEIGHT 封顶），两侧各留
- * (列宽 − 中卡宽) / 2 = 17% 列宽的花瓣露出带——足够辨认花瓣图主体，
- * 中卡又不失主体体量。中卡高与换张尺寸跳变的取舍见 ImageDeckStack 注
- * （v6 以自然比例取代 v5 固定 16:10：单卡观感与单张路径一致优先）。
+ * （高按中卡图自然宽高比派生、MEDIA_MAX_HEIGHT 封顶），居中构图（用户
+ * 认可保留项）；两侧留白由相纸堆的留白节奏承担（见 ImageDeckStack 注）。
  */
 const DECK_FRONT_WIDTH_RATIO = 0.66;
 
-/** 花瓣位形（微降错位）：tx = ∓半张卡宽（花瓣槽与中卡同 frame，偏移后
- *  恰一半藏进中卡底下、一半露在外侧，几何自洽见 ImageDeckStack 注）+
- *  translateY +12（12-16 档取下限，下移错位露出底缘落差）+ scale 0.97
- *  （微收，深度线索）+ 轻降透明 0.9（层级压暗）——无阴影设计下花瓣/
- *  中卡的分层全靠这三样，滑入中位时 spring 回 1/0/1；花瓣渲染区越出
- *  容器缘的部分由容器 overflow-hidden 裁切（画布无横向出血）。 */
-const DECK_PETAL_SCALE = 0.97;
-const DECK_PETAL_DROP = 12;
-const DECK_PETAL_OPACITY = 0.9;
-/** 计数行高（dp）：「current+1/N」锚定在卡区下缘的独立行（12px 字配
- *  16dp 行，2dp 网格）；堆容器高 = 中卡高 + 花瓣下移带(12) + 计数行(16)。 */
-const DECK_COUNTER_LINE = 16;
+/** 后卡（相纸）位形：同 frame 微缩 0.96（深度线索）+ 下移 26（底缘露出
+ *  带）+ ±3° 镜像倾斜（左 −3° / 右 +3° 扇形；倾斜斜边 + 圆角 + 真实邻图
+ *  内容 = 「另一张照片」的形状语法——v2 侧缘直条 / v3 底缘直条 / v5 窄边
+ *  三版可读性翻车同源：轴向平行直条在视觉语法里读作边框/chrome，不读作
+ *  另一张照片）+ 压暗 0.92（motion.md 戒律 dims no lower than 40%：压而
+ *  不没）。无阴影设计下后卡与中卡的分层 = 缩放 + 遮挡 + 垫边 tone，归中
+ *  时 spring 回 1/0°/1/1。 */
+const DECK_BACK_SCALE = 0.96;
+const DECK_BACK_DROP = 26;
+const DECK_BACK_ROTATE_DEG = 3;
+const DECK_BACK_OPACITY = 0.92;
+/** 相纸垫边（dp）：后卡图内收 2dp 露 raised 垫底——白底照片的楔缘在浅色
+ *  页上也有 tone 可依（taste-skill app-screens：表面靠 tone step 分层，
+ *  不靠线不靠阴影；#13 无描边口径的延伸——垫边是填充 tone 不是 border）。
+ *  外层 rounded-card overflow-hidden 裁切，内图零圆角（不新增半径档位）。 */
+const DECK_MAT = 2;
+/** 计数行（12px 字配 18dp 行，2dp 网格）与楔形带的呼吸缝：计数行锚定在
+ *  楔形带之下（几何核算见 ImageDeckStack 注），不与相纸楔形重叠。 */
+const DECK_COUNTER_LINE = 18;
+const DECK_COUNTER_GAP = 2;
 /** 横滑方向锁（onMoveShouldSetPanResponder）：|dx| 超过 10 且
  *  |dx| > 1.5|dy| 才认领手势——横向意图判定，画布纵向滚动零仲裁。 */
 const SWIPE_LOCK_DX = 10;
@@ -483,21 +492,27 @@ const DECK_SPRING_FRICTION = 8;
 /** 中卡拖拽远离中位的降透明下限（插值端点）：拖出 = 即将离场的手势暗示；
  *  越过列宽的区段（出卡滑出阶段）由同一插值续降到 0（见 frontStyle 注）。 */
 const DECK_DRAG_MIN_OPACITY = 0.72;
-/** 出卡滑出时长（ms，timing ease-out）：沿拖拽方向滑到列宽 + 越缘余量，
- *  overflow-hidden 裁切 + 降透明，220ms 收住不拖沓。 */
+/** 出卡滑出时长（ms）与曲线：沿拖拽方向滑到列宽 + 越缘余量，
+ *  overflow-hidden 裁切 + 降透明；曲线取 motion.md 研究里出场最频的
+ *  ease-out quint（.22,1,.36,1），出场快于入场（约 70% 口径），220ms
+ *  收住不拖沓。 */
 const SWIPE_EXIT_MS = 220;
-/** 转场统一收口 deadline（ms）：出卡 220ms timing 与入卡 spring（~230ms
- *  到位）都完成后 snap 复位 + 提交索引轮转；总时长 ≤350ms 预算内。 */
-const ADVANCE_TOTAL_MS = 240;
+const DECK_EXIT_EASING = Easing.bezier(0.22, 1, 0.36, 1);
 /** 出卡滑出的越缘余量（dp）：滑到列宽 + 余量保证整卡完全离开
  *  overflow-hidden 容器，收口帧复位换内容不可见。 */
 const DECK_EXIT_MARGIN = 40;
-/** 花瓣滑入中位 spring：deck.tsx 的 friction 8/tension 40 对跨侧位行程要
- *  ~460ms 才到位（超 350ms 预算）——提张力到 150（ζ≈0.61，保留轻过冲的
- *  「落定」手感），~230ms 到位、240ms 收口（v6 行程 = 半张卡宽，比 v5 侧位
- *  行程更短，到位更早、deadline 仍从容）。 */
-const DECK_RISE_TENSION = 150;
-const DECK_RISE_FRICTION = 15;
+/** 相纸归中 spring：friction 25 / tension 165 → ζ = 25/(2·√165) ≈ 0.97，
+ *  ~310ms 无过冲收敛——「放平在堆上」的落定手感由近临界阻尼承担
+ *  （motion.md：界面元素禁过冲；animate-expo：默认 settle 不带回弹）。 */
+const DECK_ENTER_FRICTION = 25;
+const DECK_ENTER_TENSION = 165;
+/** 转场统一收口 deadline（ms）：出卡 220ms timing 与归中 spring（~310ms
+ *  到位）都完成后 snap 复位 + 提交索引轮转；总时长 ≤350ms 预算内。 */
+const ADVANCE_TOTAL_MS = 330;
+/** 减弱动态转场（motion.md rule 14「弱化态 = 少而柔，保留解释状态变化的
+ *  opacity 通道」）：无位移无旋转，中卡 160ms 淡化收口（AccessibilityInfo
+ *  reduceMotion 驱动，见 ImageDeckStack 注动画口径段）。 */
+const DECK_REDUCED_FADE_MS = 160;
 
 /**
  * 堆叠中卡（当前图）：几何由 ImageDeckStack 数值化后传入显式宽高（自然
@@ -573,17 +588,20 @@ function DeckFrontCard({
 }
 
 /**
- * 花瓣卡体（左右邻卡卡体）：与中卡同尺寸的整卡渲染（同 frame + cover 裁切，
- * 露出的是真实相邻图内容、不是窄边条占位），位形（tx 半卡偏移/微收/下移/
- * 降透明）由宿主层的 AnimatedSlot 恒挂通道施加——静止时约一半藏在中卡
- * 底下（z 恒在中卡之下）、露出带越出容器缘被 overflow-hidden 裁切形成
- * 「部分可见」（容器内可见宽 = 列宽 17%）；转场时它即滑入卡卡体（tx ∓
- * 半卡宽 → 0 的 spring 由宿主 AnimatedSlot 驱动，随中卡滑出让位逐步揭开）。
- * 零交互纯视觉，无按压体：点按命中由宿主的露出区点按体承担（视觉面与
- * 命中面分离——双按压体叠命中区只会互相抢，且命中面要覆盖露出带而非
- * 整卡 frame）；图片未就绪时保持 raised 占位底（露出带放不下失败文案）。
+ * 相纸卡体（底缘后卡）：与中卡同尺寸的整卡渲染（同 frame + cover 裁切，
+ * 楔形露出的是真实相邻图内容、不是窄边条占位），位形（下移/倾斜/微缩/
+ * 压暗）由宿主层的 AnimatedSlot 恒挂通道施加——静止时底缘楔形露在中卡
+ * 之下（z 恒在中卡之下）；转场时它即归中卡体（位形 spring 归零由宿主
+ * AnimatedSlot 驱动，随中卡滑出让位逐步揭开）。
+ * 2dp raised 垫边（DECK_MAT）= 相纸的「纸缘」tone step：白底照片的楔缘
+ * 在浅色页上也可辨（taste-skill：表面分层靠 tone step 不靠线；#13 无描边
+ * 口径的延伸——垫边是容器底色透出，不是 border 线）；外层 rounded-card
+ * overflow-hidden 裁切，内图零圆角（不新增半径档位）。
+ * 零交互纯视觉，无按压体：点按命中由宿主的底缘楔形带点按体承担（视觉面
+ * 与命中面分离——双按压体叠命中区只会互相抢）；图片未就绪时保持 raised
+ * 占位底（楔形带放不下失败文案，加载态即垫边色）。
  */
-function DeckEdgeCard({
+function DeckBackCard({
     media,
     width,
     height,
@@ -596,107 +614,116 @@ function DeckEdgeCard({
     return (
         <View
             className="overflow-hidden rounded-card bg-ink-raised dark:bg-inkd-raised"
-            style={{ width, height }}
+            style={{ width, height, padding: DECK_MAT }}
         >
             {status === 'ready' && uri ? (
-                <Image source={{ uri }} style={{ width, height }} resizeMode="cover" />
+                <Image
+                    source={{ uri }}
+                    style={{ width: width - DECK_MAT * 2, height: height - DECK_MAT * 2 }}
+                    resizeMode="cover"
+                />
             ) : null}
         </View>
     );
 }
 
 /**
- * 连续图片照片堆（v6 花瓣堆叠：自然比例中卡 + 左右花瓣半嵌 + 换位真转场）。
+ * 连续图片照片堆（v7 相纸堆：居中自然比例中卡 + 底缘倾斜相纸 + 归中真转场）。
+ * 设计语言由 design skill 结论主导（候选方向与条款依据见本组设计决策书）：
+ * **Apple Photos Stacks 式「印刷相纸」隐喻**——堆叠的可读性来自形状语法
+ * （倾斜楔形 + 圆角 + 邻图内容），不来自露边宽度（v2 44dp 侧缘直条 /
+ * v3 底缘直条 / v5 16:10 窄边三版翻车同源：轴向平行直条读作 chrome，
+ * 不读作另一张照片）。
  *
  * 几何（组容器 relative overflow-hidden，宽 = 列宽 onLayout 量取，高 =
- * 中卡高 + DECK_PETAL_DROP(12) + DECK_COUNTER_LINE(16)；overflow-hidden 是
- * 横滑与花瓣「部分可见」的实现基础——花瓣越出容器缘的部分与滑出的出卡
- * 都被列缘裁切，不出血到画布留白）：
+ * 中卡高 + 相纸楔形带 + 计数行；overflow-hidden 是横滑与楔形「部分可见」
+ * 的实现基础——楔形越出容器缘的部分与滑出的出卡都被列缘裁切，不出血到
+ * 画布留白）：
  *   中卡：宽 C = 列宽 × 66%（62-70% 档中值，居中 frame left = 列宽×17%），
  *       高 = min(C ÷ 自然比例, MEDIA_MAX_HEIGHT)——自然比例 = 中卡图落库
  *       宽高比（缺元数据回退 4:3，与 MediaImage 同源取 FALLBACK_IMAGE_
  *       RATIO；显式数值宽高 + cover 裁切，组高与点按体 frame 都依赖数值
- *       高）。v6 以自然比例取代 v5 固定 16:10：中卡观感与单张路径一致
- *       优先；代价 = 换张（索引轮转）时组高随新中卡比例变化，转场收口帧
+ *       高）。代价 = 换张（索引轮转）时组高随新中卡比例变化，转场收口帧
  *       单次 reflow（transform/opacity 白名单内无高度动画通道，接受此
  *       跳变，见换位状态机注）；
- *   三槽同 frame：中卡槽 / 左花瓣槽 / 右花瓣槽共用同一 frame（统一槽 +
- *       transform 位形，deck 铁律「静态几何全在普通 wrapper」）——花瓣
- *       tx = ∓C/2（DECK_PETAL_* 位形）：scale 0.97 围绕布局中心微收
- *       0.015C（translate 是纯平移、不缩放位移量，矩阵序见 leftSlotStyle
- *       注），花瓣渲染缘恰越过中卡缘半张卡宽——一半藏进中卡底下、一半
- *       露在中卡外侧（几何自洽：petalShift = C/2，露出带 = 列宽×17%，
- *       越出容器的越缘半段由列缘裁掉）；
- *   花瓣位形：tx ∓C/2 + ty 12 + scale 0.97 + opacity 0.9（微降错位 +
- *       微收 + 层级压暗，无阴影设计下的三层深度线索）；N=2 时左槽不渲染
- *       （只有右侧花瓣，左侧空）；
- *   计数行：卡区下缘（横向锚定中卡两缘、右对齐），top = 中卡高 + 12
- *       （花瓣下移带之下，与花瓣渲染底不重叠）。
+ *   后卡（相纸）：与中卡同 frame，位形 = 微缩 0.96 + 下移 26 + 左 −3°/
+ *       右 +3° 镜像倾斜（transform 数组序 [ty, rot, scale] = 缩放、旋转
+ *       围绕布局中心，translate 纯平移——下移量不随旋转偏斜）；左右镜像
+ *       成扇，底缘露出倾斜楔形，最低点越过中卡底缘的量按几何精确解：
+ *         wedgeDepth = DROP − H·(0.5 − s/2·cosθ) + (W·s/2)·sinθ
+ *       （典型画幅 ≈ 24~32dp，随画幅派生）；N=2 时左槽不渲染（只有右侧
+ *       相纸，左侧空——单楔形 + 单点按区，退化优雅）；
+ *   垫边：后卡图内收 2dp 露 raised（相纸「纸缘」tone，白图浅页可辨）；
+ *   计数行：楔形带之下（top = 中卡高 + max(wedgeDepth, 24) + 2——下限
+ *       兜极窄列，楔形带 + 计数行合计 ≥44 触达口径），横向锚定中卡两缘、
+ *       右对齐，与楔形渲染零重叠。
  *
- * 层级 zIndex（全静态常量，一律不进动画值）：花瓣槽 2 < 中卡槽 3 < 露出
- * 区点按体 4。v6 花瓣与中卡静止时同 frame 重叠，v5 的「转场滑入槽提层
- * 4」在此几何下会穿帮（提层瞬间藏在底下的半张花瓣突然浮上中卡）——故
- * 花瓣恒在中卡之下（z 不翻转），转场「揭开」语义由中卡滑出让位承担；
- * 点按体 zIndex 4：命中测试先于满宽手势面——露出带触点直达点按体（点按
- * 体为透明纯命中面，不遮花瓣视觉），横滑 move 后 PanResponder 再仲裁
- * 夺取（点按/滑动手顺与 v4/v5 同源）；计数行 frame 在点按体与卡槽之外，
- * 不参与 z 仲裁。
+ * 层级 zIndex（全静态常量，一律不进动画值）：后卡槽 2 < 中卡槽 3 < 底缘
+ * 点按体 4。后卡恒在中卡之下（z 不翻转），转场「揭开」语义由中卡滑出
+ * 让位承担（静止重叠几何下提层会穿帮，v6 同源结论）；底缘点按体与中卡
+ * frame 纵向零重叠（top = 中卡高，楔形带 + 计数行整条带），命中测试天然
+ * 直达，无需 z 仲裁兜底。
  *
  * 交互链路（既有口径）：点中卡 → requestViewer 全屏（键盘先收）；长按/
  * 桌面双击中卡 → onBlockAction 操作卡（useBlockActionGestures 单点收口）；
- * 点左/右花瓣露出区 → 上一张/下一张（命中区以中卡 frame 为界零重叠、
- * 零 hitSlop）；中卡横滑 = PanResponder 方向锁（|dx|>10 且 |dx|>1.5|dy|
- * 才认领，画布纵滚零仲裁）+ 提交阈值（|dx|>60）——手势面 = 满宽卡区
- * （自中卡与两侧露出带起手都可横滑）。转场期间 advancing 闩吞并发手势
- * （方向锁不认领、点按体无效、中卡交互闸关闭；长按链路提交的是操作卡
- * 不动堆，无转场面）。
+ * 点底缘楔形带 → 左半 = 上一张 / 右半 = 下一张（N=2 单区全带宽 = 下一张，
+ * 循环；命中区 = 带几何 ≥44dp、零 hitSlop、与中卡 frame 零重叠）；中卡
+ * 横滑 = PanResponder 方向锁（|dx|>10 且 |dx|>1.5|dy| 才认领，画布纵滚
+ * 零仲裁）+ 提交阈值（|dx|>60）——手势面 = 满宽卡区（自中卡起手横滑）。
+ * 转场期间 advancing 闩吞并发手势（方向锁不认领、点按体无效、中卡交互
+ * 闸关闭；长按链路提交的是操作卡不动堆，无转场面）。
  *
- * 换位状态机 v6（滑/点两条提交链路收口到同一条编排）：
+ * 换位状态机 v7（滑/点两条提交链路收口到同一条编排）：
  * - 统一编排 beginAdvance(dir)：中卡（出卡层，内容不换）沿换位方向
- *   frontX timing 220ms 滑出列缘（透明度走 xFade 的 |x|>列宽区段 0.72→0，
- *   与拖拽下限同一条插值）+ dir 侧花瓣四值 spring 滑入中位（tx ∓C/2 → 0、
- *   ty 12 → 0、scale 0.97 → 1、opacity 0.9 → 1；花瓣在中卡之下，随出卡
- *   让位逐步揭开）；240ms deadline 统一收口（finishAdvance：全值 snap
- *   复位 + advancing 闩释放 + 索引轮转，同批 React 提交零闪帧——花瓣
- *   终态与轮转后中卡静止帧像素恒等）；
+ *   frontX timing 220ms（ease-out quint）滑出列缘（透明度走 xFade 的
+ *   |x|>列宽区段 0.72→0，与拖拽下限同一条插值）+ dir 侧相纸四值 spring
+ *   归中（ty 26→0、±3°→0°、scale 0.96→1、opacity 0.92→1，~310ms 无过冲
+ *   收敛——「放平在堆上」的落定）；相纸恒在中卡之下，随出卡让位逐步
+ *   揭开；330ms deadline 统一收口（finishAdvance：全值 snap 复位 +
+ *   advancing 闩释放 + 索引轮转，同批 React 提交零闪帧——归中相纸终态
+ *   与轮转后中卡静止帧像素恒等）；
  * - 滑动提交：方向锁认领后 Animated.event 跟手写 frontX（仅中卡跟手——
- *   花瓣是「堆叠在场」的静态语义，转场才入场，拖拽视差属锦上添花不做，
+ *   相纸是「堆叠在场」的静态语义，转场才入场，拖拽视差属锦上添花不做，
  *   保住「动画图零重建 + 手势窗口最小 native 扰动」口径），松手 |dx|>60 →
  *   commitSwipe = beginAdvance(dir)（出卡 timing 从当前拖拽位移续走）；
- * - 点花瓣提交：beginAdvance(±1)——出卡 timing 从 0 起走，同一编排。
- *   v5 点侧卡不动中卡、靠滑入槽提层盖住旧中卡；v6 花瓣静止时半张藏在中
- *   卡下，不滑出中卡则「揭开」无从发生（提层又会穿帮）——故点花瓣同样
- *   走出卡滑出，滑/点观感一致（转场决策，已在上文 z 段说明取舍）；
+ * - 点楔形带提交：beginAdvance(±1)——出卡 timing 从 0 起走，同一编排，
+ *   滑/点观感一致；
  * - 回弹：|dx|≤60 或手势被系统夺走（terminate）→ 仅 frontX spring 归 0
  *   （friction 8），索引不动、闩不介入（回弹中途可被下一轮拖拽接管）；
  * - 收口内容重指派（收口帧一次发生，全部「像素恒等接管」或「原生缓存
- *   秒回」）：中卡 ← 旧 dir 侧邻卡（滑入花瓣终态渲染像素恒等接管）；另
- *   一侧花瓣 ← 旧中卡（刚在出卡层渲染过，原生 Image 缓存秒回）；滑入
- *   花瓣 snap 回位形并 ← 新 dir 侧邻卡（N=3 时 = 刚离场的另一侧花瓣，
- *   秒回；N≥4 未渲染过，至多一帧 raised 占位——仅 17% 列宽压暗露出带）；
+ *   秒回」）：中卡 ← 旧 dir 侧邻卡（归中相纸终态渲染像素恒等接管）；另
+ *   一侧相纸 ← 旧中卡（刚在出卡层渲染过，原生 Image 缓存秒回）；归中
+ *   相纸 snap 回位形并 ← 新 dir 侧邻卡（N=3 时 = 刚离场的另一侧相纸，
+ *   秒回；N≥4 未渲染过，至多一帧 raised 占位——仅楔形带压暗露出区）；
  *   同帧中卡比例换挡 → 组高/三槽尺寸按新中卡图自然比例重派生（单次
  *   reflow，自然比例口径的固有代价）；
- * - N=2 退化：左花瓣空缺（左槽/左点按体不渲染，prev 与 next 同图），
- *   dir=−1（上一张）无左花瓣可滑入 → 与 dir=+1 同编排（中卡沿换位方向
- *   滑出 + 右花瓣滑入中位），出卡方向仍沿换位方向，视觉语义一致。
+ * - N=2 退化：左相纸空缺（左槽/左点按体不渲染，prev 与 next 同图），
+ *   dir=−1（上一张）无左相纸可归中 → 与 dir=+1 同编排（中卡沿换位方向
+ *   滑出 + 右相纸归中），出卡方向仍沿换位方向，视觉语义一致。
  *
- * 动画口径：RN Animated native driver，style 只 transform/opacity；拖拽
+ * 动画口径：RN Animated native driver，style 只 transform/opacity；旋转
+ * 通道经 interpolate 出 'deg' 字符串（native 驱动旋转的文档口径）；拖拽
  * 跟手 = Animated.event([null, {dx}])（JS responder 事件映射，useNative
  * Driver: false 是 PanResponder 场景唯一合法值，native driver 由挂载方
- * 承担）；左右两槽各挂一组恒定入卡通道（静止值 = 花瓣位形基准，不按
+ * 承担）；左右两槽各挂一组恒定归中通道（静止值 = 相纸位形基准，不按
  * advance 条件切换样式挂载），插值节点 useMemo 固定——任意重渲不重建
  * native 动画图（deck.tsx #9 教训），仅列宽变化（旋转/分栏）时锚定基准
- * 重设。
+ * 重设；frontStyle 透明度 = frontFade × xFade 插值（Animated.multiply，
+ * 乘法节点随列宽变化同批重建）——frontFade 常态恒 1，仅供系统「减弱
+ * 动态」转场使用：AccessibilityInfo reduceMotion 开启时转场退化为 160ms
+ * 中卡淡化收口（无位移无旋转，motion.md rule 14「弱化态 = 少而柔，保留
+ * 解释状态变化的 opacity 通道」；animate-expo：reduced motion 与动画
+ * 同时交付，不是后续补丁）。
  *
  * 性能口径：任意 N 最多挂载 3 个图片实例（左/中/右三槽，N=2 恒 2 个），
- * 转场不增实例（无第四渲染位——滑入花瓣复用本槽渲染位，内容零切换），
+ * 转场不增实例（无第四渲染位——归中相纸复用本槽渲染位，内容零切换），
  * 其余留在 blocks 数据里，换位只是索引轮转（数量无上限）；组内单删/移动
  * → buildRenderUnits 重派生（clamp/解散免费获得），deck 实例按组首块 id
  * 做 key，组首块被删即重挂回第 1 张。与画布纵滚正交：方向锁保证横向意图
  * 才认领手势，纵滚零仲裁。
  */
 
-/** 转场描述：dir = 换位方向（+1 下一张 / −1 上一张）。滑入花瓣内容 =
+/** 转场描述：dir = 换位方向（+1 下一张 / −1 上一张）。归中相纸内容 =
  *  渲染派生值（dir 侧邻卡，本就在渲染中，零切换）；收口帧索引轮转后三槽
  *  内容随派生同帧重指派，无需携带 media。 */
 interface DeckAdvance {
@@ -728,25 +755,46 @@ function ImageDeckStack({
     const advancingRef = useRef(false);
     const advanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+    // 系统减弱动态（挂载时读一次 + 订阅变化；promise/事件在个别宿主缺失
+    // 时静默回退 false——能力探测防御，弱化态判定错 only 影响转场编排档位）
+    const reduceMotionRef = useRef(false);
+    useEffect(() => {
+        let cancelled = false;
+        AccessibilityInfo.isReduceMotionEnabled?.()
+            .then((enabled) => {
+                if (!cancelled) reduceMotionRef.current = !!enabled;
+            })
+            .catch(() => undefined);
+        const subscription = AccessibilityInfo.addEventListener?.('reduceMotionChanged', (enabled) => {
+            reduceMotionRef.current = !!enabled;
+        });
+        return () => {
+            cancelled = true;
+            subscription?.remove();
+        };
+    }, []);
+
     // 中卡索引（clamp 后派生，组收缩不越界）
     const safeIndex = Math.min(Math.max(frontIndex, 0), itemCount - 1);
 
-    // 中卡条目（clamp 后取数；中卡/花瓣几何都由它的自然比例派生）
+    // 中卡条目（clamp 后取数；中卡/后卡几何都由它的自然比例派生）
     const frontItem = items[safeIndex];
 
-    // 动画值：frontX = 中卡横滑（拖拽跟手 + 出卡滑出 + 回弹收口）；左右各
-    // 一组入卡通道（tx/scale/ty/opacity）恒挂两侧花瓣槽——静止值 = 花瓣
-    // 位形基准，转场时对应组 spring 到中位（不按 advance 条件切换样式挂载，
-    // 任意重渲不重建 native 动画图，deck.tsx #9 教训）
+    // 动画值：frontX = 中卡横滑（拖拽跟手 + 出卡滑出 + 回弹收口）；frontFade
+    // = 减弱动态专用的交叉淡化通道（常态恒 1，乘进中卡透明度，见 frontStyle
+    // 注）；左右各一组相纸归中通道（ty/rot/scale/opacity）恒挂两侧后卡槽
+    // ——静止值 = 相纸位形基准，转场时对应组 spring 归中（不按 advance 条件
+    // 切换样式挂载，任意重渲不重建 native 动画图，deck.tsx #9 教训）
     const frontX = useRef(new Animated.Value(0)).current;
-    const leftTx = useRef(new Animated.Value(0)).current;
-    const leftScale = useRef(new Animated.Value(DECK_PETAL_SCALE)).current;
-    const leftTy = useRef(new Animated.Value(DECK_PETAL_DROP)).current;
-    const leftOpacity = useRef(new Animated.Value(DECK_PETAL_OPACITY)).current;
-    const rightTx = useRef(new Animated.Value(0)).current;
-    const rightScale = useRef(new Animated.Value(DECK_PETAL_SCALE)).current;
-    const rightTy = useRef(new Animated.Value(DECK_PETAL_DROP)).current;
-    const rightOpacity = useRef(new Animated.Value(DECK_PETAL_OPACITY)).current;
+    const frontFade = useRef(new Animated.Value(1)).current;
+    const leftTy = useRef(new Animated.Value(DECK_BACK_DROP)).current;
+    const leftRot = useRef(new Animated.Value(-DECK_BACK_ROTATE_DEG)).current;
+    const leftScale = useRef(new Animated.Value(DECK_BACK_SCALE)).current;
+    const leftOpacity = useRef(new Animated.Value(DECK_BACK_OPACITY)).current;
+    const rightTy = useRef(new Animated.Value(DECK_BACK_DROP)).current;
+    const rightRot = useRef(new Animated.Value(DECK_BACK_ROTATE_DEG)).current;
+    const rightScale = useRef(new Animated.Value(DECK_BACK_SCALE)).current;
+    const rightOpacity = useRef(new Animated.Value(DECK_BACK_OPACITY)).current;
 
     // 几何派生（全部由列宽 + 中卡图自然比例单点导出；量取前 cardWidth 为
     // 0 → 槽不渲染）：
@@ -754,15 +802,15 @@ function ImageDeckStack({
     //   frontRatio = 中卡图自然宽高比（落库宽高优先，缺元数据回退 4:3，与
     //       MediaImage 同源取 FALLBACK_IMAGE_RATIO）；
     //   deckHeight = 中卡高 = min(中卡宽 ÷ 自然比例, MEDIA_MAX_HEIGHT)——
-    //       自然比例自适应（v6 口径；显式数值宽高 + cover 裁切，组高与点按
-    //       体 frame 都依赖数值高）；
-    //   petalShift = 花瓣横向偏移 = 半张中卡宽：花瓣槽与中卡同 frame，tx
-    //       ∓petalShift 后花瓣渲染缘恰越过中卡缘半张卡宽——一半藏进中卡
-    //       底下、一半露在中卡外侧（scale 0.97 围绕布局中心微收 0.015C，
-    //       translate 是纯平移、不缩放位移量，矩阵序见 leftSlotStyle 注）；
-    //   stripWidth = 花瓣露出带宽 = (列宽 − 中卡宽) / 2 = 容器内花瓣可见宽
-    //       （越出容器的越缘半段被列缘裁掉，画布无横向出血），亦是侧点按
-    //       体宽度（命中区以中卡 frame 为界）。
+    //       自然比例自适应（显式数值宽高 + cover 裁切，组高与点按体 frame
+    //       都依赖数值高）；
+    //   stripWidth = 中卡居中留白 = (列宽 − 中卡宽) / 2（中卡 frame 锚定）；
+    //   wedgeDepth = 相纸楔形带深 = 倾斜后卡最低点越过中卡底缘的量（几何
+    //       精确解：后卡绕中心转 θ 后底缘最低点半高 = s/2·(H·cosθ + W·sinθ)，
+    //       加下移 DROP，减中卡半高 H/2）——计数行锚定用它，不写 magic
+    //       number（画幅/列宽变化自适应）；
+    //   pileBand = 楔形带 + 呼吸缝（wedgeDepth 下限 24 兜极窄列：带 +
+    //       计数行合计 ≥44 触达口径）。
     const cardWidth = containerWidth * DECK_FRONT_WIDTH_RATIO;
     const frontRatio =
         frontItem && frontItem.media.width && frontItem.media.height
@@ -770,33 +818,39 @@ function ImageDeckStack({
             : FALLBACK_IMAGE_RATIO;
     const deckHeight =
         cardWidth > 0 ? Math.min(cardWidth / frontRatio, MEDIA_MAX_HEIGHT) : 0;
-    const petalShift = cardWidth / 2;
     const stripWidth = (containerWidth - cardWidth) / 2;
+    const backTiltRad = (DECK_BACK_ROTATE_DEG * Math.PI) / 180;
+    const wedgeDepth =
+        DECK_BACK_DROP -
+        deckHeight * (0.5 - (DECK_BACK_SCALE / 2) * Math.cos(backTiltRad)) +
+        ((cardWidth * DECK_BACK_SCALE) / 2) * Math.sin(backTiltRad);
+    const pileBand = Math.max(wedgeDepth, 24) + DECK_COUNTER_GAP;
 
     useEffect(() => {
         // 挂载/列宽变化即锚定基准位（deck.tsx 同款防御：实例复用/Strict 下
-        // 不残留旧值）；转场中不重设（收口 snap 按最新 petalShift 兜底）
+        // 不残留旧值）；转场中不重设（收口 snap 按最新位形兜底）
         frontX.setValue(0);
+        frontFade.setValue(1);
         if (advancingRef.current) return;
-        leftTx.setValue(-petalShift);
-        leftScale.setValue(DECK_PETAL_SCALE);
-        leftTy.setValue(DECK_PETAL_DROP);
-        leftOpacity.setValue(DECK_PETAL_OPACITY);
-        rightTx.setValue(petalShift);
-        rightScale.setValue(DECK_PETAL_SCALE);
-        rightTy.setValue(DECK_PETAL_DROP);
-        rightOpacity.setValue(DECK_PETAL_OPACITY);
+        leftTy.setValue(DECK_BACK_DROP);
+        leftRot.setValue(-DECK_BACK_ROTATE_DEG);
+        leftScale.setValue(DECK_BACK_SCALE);
+        leftOpacity.setValue(DECK_BACK_OPACITY);
+        rightTy.setValue(DECK_BACK_DROP);
+        rightRot.setValue(DECK_BACK_ROTATE_DEG);
+        rightScale.setValue(DECK_BACK_SCALE);
+        rightOpacity.setValue(DECK_BACK_OPACITY);
     }, [
         frontX,
-        leftTx,
-        leftScale,
+        frontFade,
         leftTy,
+        leftRot,
+        leftScale,
         leftOpacity,
-        rightTx,
-        rightScale,
         rightTy,
+        rightRot,
+        rightScale,
         rightOpacity,
-        petalShift,
     ]);
     // 转场 deadline 定时器随卸载清理（组解散/重挂不留悬挂收口）
     useEffect(
@@ -817,61 +871,65 @@ function ImageDeckStack({
     }, []);
 
     // 转场收口（ADVANCE_TOTAL_MS deadline 触发）：全值 snap 复位 + 清闩 +
-    // 索引轮转，同一事件帧内全部落地（滑入花瓣终态与轮转后中卡静止帧像素
+    // 索引轮转，同一事件帧内全部落地（归中相纸终态与轮转后中卡静止帧像素
     // 恒等，复位换内容不可见——出卡此时已完全滑出 overflow-hidden 容器；
     // 三槽内容随轮转同帧重指派，同帧组高按新中卡自然比例重派生（单次
-    // reflow），可能的一帧边条占位口径见组件注「收口内容重指派」）
+    // reflow），可能的一帧垫边占位口径见组件注「收口内容重指派」）
     const finishAdvance = useCallback(
         (dir: 1 | -1) => {
             advanceTimerRef.current = null;
             // snap 前先停在飞动画，防其覆写复位值（出卡 timing 220ms 已结束）
             frontX.stopAnimation();
             frontX.setValue(0);
-            // 左右两组通道全部 snap 回花瓣位形基准（无论哪组在飞——复位幂等）
-            leftTx.stopAnimation();
-            leftTx.setValue(-petalShift);
-            leftScale.stopAnimation();
-            leftScale.setValue(DECK_PETAL_SCALE);
+            frontFade.stopAnimation();
+            frontFade.setValue(1);
+            // 左右两组通道全部 snap 回相纸位形基准（无论哪组在飞——复位幂等）
             leftTy.stopAnimation();
-            leftTy.setValue(DECK_PETAL_DROP);
+            leftTy.setValue(DECK_BACK_DROP);
+            leftRot.stopAnimation();
+            leftRot.setValue(-DECK_BACK_ROTATE_DEG);
+            leftScale.stopAnimation();
+            leftScale.setValue(DECK_BACK_SCALE);
             leftOpacity.stopAnimation();
-            leftOpacity.setValue(DECK_PETAL_OPACITY);
-            rightTx.stopAnimation();
-            rightTx.setValue(petalShift);
-            rightScale.stopAnimation();
-            rightScale.setValue(DECK_PETAL_SCALE);
+            leftOpacity.setValue(DECK_BACK_OPACITY);
             rightTy.stopAnimation();
-            rightTy.setValue(DECK_PETAL_DROP);
+            rightTy.setValue(DECK_BACK_DROP);
+            rightRot.stopAnimation();
+            rightRot.setValue(DECK_BACK_ROTATE_DEG);
+            rightScale.stopAnimation();
+            rightScale.setValue(DECK_BACK_SCALE);
             rightOpacity.stopAnimation();
-            rightOpacity.setValue(DECK_PETAL_OPACITY);
+            rightOpacity.setValue(DECK_BACK_OPACITY);
             advancingRef.current = false;
             setAdvance(null);
             rotateIndex(dir);
         },
         [
             frontX,
-            leftTx,
-            leftScale,
+            frontFade,
             leftTy,
+            leftRot,
+            leftScale,
             leftOpacity,
-            rightTx,
-            rightScale,
             rightTy,
+            rightRot,
+            rightScale,
             rightOpacity,
-            petalShift,
             rotateIndex,
         ],
     );
 
-    // 转场起手（滑动/点花瓣提交共用同一条编排，见组件注「换位状态机 v6」）：
-    // dir 侧花瓣四值 spring 滑到中位（花瓣 z 恒在中卡之下，不提层——v6 几何
-    // 静止重叠下提层会穿帮，「揭开」由出卡滑出让位承担）+ 中卡沿换位方向
+    // 转场起手（滑动/点楔形带提交共用同一条编排，见组件注「换位状态机 v7」）：
+    // dir 侧相纸四值 spring 归中（相纸 z 恒在中卡之下，不提层——静止重叠
+    // 几何下提层会穿帮，「揭开」由出卡滑出让位承担）+ 中卡沿换位方向
     // timing 滑出列缘 + advancing 闩 + deadline 收口。
-    // 滑入花瓣槽选择：N≥3 按方向取 dir 侧邻卡所在槽（内容 = 渲染派生值，本就
-    // 在渲染中，零切换零闪）；N=2 恒右槽（左侧空无从滑入，右卡内容即上一
-    // 张——退化编排见组件注）。出卡 timing 起点即 frontX 当前值：滑动提交
-    // 从拖拽位移续走、点花瓣提交从 0 起走——总观感 = 旧卡沿换位方向滑走、
-    // 新花瓣自底下滑入中位补位
+    // 归中相纸槽选择：N≥3 按方向取 dir 侧邻卡所在槽（内容 = 渲染派生值，
+    // 本就在渲染中，零切换零闪）；N=2 恒右槽（左侧空无从归中，右卡内容即
+    // 上一张——退化编排见组件注）。出卡 timing 起点即 frontX 当前值：滑动
+    // 提交从拖拽位移续走、点楔形提交从 0 起走——总观感 = 旧卡沿换位方向
+    // 滑走、底缘相纸「放平」归中补位。
+    // 减弱动态（reduceMotionRef）：跳过位移/旋转编排，中卡 160ms 淡化收口
+    // ——motion.md rule 14「弱化态 = 少而柔」，保留解释换张的 opacity 通道。
     const beginAdvance = useCallback(
         (dir: 1 | -1) => {
             const list = itemsRef.current;
@@ -886,28 +944,41 @@ function ImageDeckStack({
             }
             advancingRef.current = true;
             setAdvance({ dir });
-            // 四值同参数 spring 收口中位（tx/ty 归零、scale/opacity 归 1）
+            if (reduceMotionRef.current) {
+                // 原位淡化（不重置 frontX——滑动提交时中卡停在拖拽位移处淡出，
+                // 收口帧随内容交换 snap 归位，弱化态下零位移动画）
+                frontFade.stopAnimation();
+                Animated.timing(frontFade, {
+                    toValue: 0,
+                    duration: DECK_REDUCED_FADE_MS,
+                    easing: Easing.out(Easing.cubic),
+                    useNativeDriver: true,
+                }).start();
+                advanceTimerRef.current = setTimeout(() => finishAdvance(dir), DECK_REDUCED_FADE_MS + 10);
+                return;
+            }
+            // 四值同参数 spring 归中（ty/rot 归零、scale/opacity 归 1）
             const springToCenter = (value: Animated.Value, toValue: number) =>
                 Animated.spring(value, {
                     toValue,
-                    friction: DECK_RISE_FRICTION,
-                    tension: DECK_RISE_TENSION,
+                    friction: DECK_ENTER_FRICTION,
+                    tension: DECK_ENTER_TENSION,
                     useNativeDriver: true,
                 });
             if (dir === 1 || list.length < 3) {
-                // 右花瓣滑入（下一张；N=2 的双向退化编排）
+                // 右相纸归中（下一张；N=2 的双向退化编排）
                 Animated.parallel([
-                    springToCenter(rightTx, 0),
-                    springToCenter(rightScale, 1),
                     springToCenter(rightTy, 0),
+                    springToCenter(rightRot, 0),
+                    springToCenter(rightScale, 1),
                     springToCenter(rightOpacity, 1),
                 ]).start();
             } else {
-                // 左花瓣滑入（上一张）
+                // 左相纸归中（上一张）
                 Animated.parallel([
-                    springToCenter(leftTx, 0),
-                    springToCenter(leftScale, 1),
                     springToCenter(leftTy, 0),
+                    springToCenter(leftRot, 0),
+                    springToCenter(leftScale, 1),
                     springToCenter(leftOpacity, 1),
                 ]).start();
             }
@@ -919,21 +990,22 @@ function ImageDeckStack({
                 toValue:
                     (dir === 1 ? -1 : 1) * (containerWidth + DECK_EXIT_MARGIN),
                 duration: SWIPE_EXIT_MS,
-                easing: Easing.out(Easing.cubic),
+                easing: DECK_EXIT_EASING,
                 useNativeDriver: true,
             }).start();
             advanceTimerRef.current = setTimeout(() => finishAdvance(dir), ADVANCE_TOTAL_MS);
         },
         [
             frontX,
+            frontFade,
             containerWidth,
-            leftTx,
-            leftScale,
             leftTy,
+            leftRot,
+            leftScale,
             leftOpacity,
-            rightTx,
-            rightScale,
             rightTy,
+            rightRot,
+            rightScale,
             rightOpacity,
             rotateIndex,
             finishAdvance,
@@ -959,8 +1031,8 @@ function ImageDeckStack({
         [beginAdvance],
     );
 
-    // 点花瓣 = 切换到该张（左 = 上一张、右 = 下一张，循环）：同一编排
-    // （中卡滑出让位 + 花瓣自底下滑入，见 beginAdvance 注）；转场期间闩吞
+    // 点楔形带 = 切换到该侧（左半 = 上一张、右半 = 下一张，循环）：同一编排
+    // （中卡滑出让位 + 相纸自底缘归中，见 beginAdvance 注）；转场期间闩吞
     // 并发点按（beginAdvance 内部检查）；useCallback 固定引用，Pressable
     // 不因重渲重配置 Pressability（#3 吞首点防御口径）
     const tapPrev = useCallback(() => beginAdvance(-1), [beginAdvance]);
@@ -1000,56 +1072,79 @@ function ImageDeckStack({
         [frontX, commitSwipe, springBack],
     );
 
-    // 中卡动效样式（deck.tsx useSlotStyle 同款插值口径）：translateX + xFade
-    // 五点插值——中位 1 → 列缘 DECK_DRAG_MIN_OPACITY（拖拽下限）→ 越缘区段
-    // 续降到 0（出卡滑出与降透明共用同一条插值，不另立 fade 节点）；插值
-    // 节点 useMemo 固定，仅列宽变化重建，任意重渲不重建 native 动画图
+    // 中卡动效样式（deck.tsx useSlotStyle 同款插值口径）：translateX + 透明
+    // 度 = frontFade × xFade 五点插值（Animated.multiply）——xFade 中位 1 →
+    // 列缘 DECK_DRAG_MIN_OPACITY（拖拽下限）→ 越缘区段续降到 0（出卡滑出
+    // 与降透明共用同一条插值，不另立 fade 节点）；frontFade 常态恒 1、乘法
+    // 恒等，仅供减弱动态转场的 160ms 淡化使用（见组件注动画口径段）；插值
+    // /乘法节点 useMemo 固定，仅列宽变化重建，任意重渲不重建 native 动画图
     //（deck.tsx #9 教训）
     const frontStyle = useMemo(
         () => ({
             transform: [{ translateX: frontX }],
             opacity:
                 containerWidth > 0
-                    ? frontX.interpolate({
-                          inputRange: [
-                              -(containerWidth + DECK_EXIT_MARGIN),
-                              -containerWidth,
-                              0,
-                              containerWidth,
-                              containerWidth + DECK_EXIT_MARGIN,
-                          ],
-                          outputRange: [0, DECK_DRAG_MIN_OPACITY, 1, DECK_DRAG_MIN_OPACITY, 0],
-                          extrapolate: 'clamp',
-                      })
+                    ? Animated.multiply(
+                          frontFade,
+                          frontX.interpolate({
+                              inputRange: [
+                                  -(containerWidth + DECK_EXIT_MARGIN),
+                                  -containerWidth,
+                                  0,
+                                  containerWidth,
+                                  containerWidth + DECK_EXIT_MARGIN,
+                              ],
+                              outputRange: [0, DECK_DRAG_MIN_OPACITY, 1, DECK_DRAG_MIN_OPACITY, 0],
+                              extrapolate: 'clamp',
+                          }),
+                      )
                     : 1,
         }),
-        [frontX, containerWidth],
+        [frontX, frontFade, containerWidth],
     );
 
-    // 花瓣槽动效样式（恒挂左右两组入卡通道；静止 = 花瓣位形基准 tx ∓
-    // petalShift / scale 0.97 / ty 12 / opacity 0.9，转场 = 对应组 spring
-    // 到中位；transform/opacity 白名单键，deck 铁律）。transform 数组序
-    // [tx, ty, scale] 语义 = RN 矩阵按序右乘（最后项先作用）：scale 围绕
-    // 布局中心微收、translate 是纯平移不缩放位移量——花瓣渲染缘越过中卡
-    // 缘恰半张卡宽、露出带 = stripWidth 的几何自洽依赖此序（petalShift
-    // 推导见几何派生注）
+    // 相纸槽动效样式（恒挂左右两组归中通道；静止 = 相纸位形基准 ty 26 /
+    // ±3° / scale 0.96 / opacity 0.92，转场 = 对应组 spring 归中；transform/
+    // opacity 白名单键，deck 铁律）。transform 数组序 [ty, rot, scale] 语义
+    // = RN 矩阵按序右乘（最后项先作用）：scale、rotate 围绕布局中心，translate
+    // 是纯平移——下移量不随旋转偏斜（楔形几何推导依赖此序，见几何派生注）。
+    // 旋转通道经 interpolate 出 'deg' 字符串（native 驱动旋转的文档口径），
+    // 插值节点随样式 useMemo 固定
     const leftSlotStyle = useMemo(
         () => ({
-            transform: [{ translateX: leftTx }, { translateY: leftTy }, { scale: leftScale }],
+            transform: [
+                { translateY: leftTy },
+                {
+                    rotate: leftRot.interpolate({
+                        inputRange: [-360, 360],
+                        outputRange: ['-360deg', '360deg'],
+                    }),
+                },
+                { scale: leftScale },
+            ],
             opacity: leftOpacity,
         }),
-        [leftTx, leftTy, leftScale, leftOpacity],
+        [leftTy, leftRot, leftScale, leftOpacity],
     );
     const rightSlotStyle = useMemo(
         () => ({
-            transform: [{ translateX: rightTx }, { translateY: rightTy }, { scale: rightScale }],
+            transform: [
+                { translateY: rightTy },
+                {
+                    rotate: rightRot.interpolate({
+                        inputRange: [-360, 360],
+                        outputRange: ['-360deg', '360deg'],
+                    }),
+                },
+                { scale: rightScale },
+            ],
             opacity: rightOpacity,
         }),
-        [rightTx, rightTy, rightScale, rightOpacity],
+        [rightTy, rightRot, rightScale, rightOpacity],
     );
 
     // 卡槽 frame（deck.tsx 同款「静态几何全在普通 wrapper」铁律）：三槽同
-    // frame（中卡/左右花瓣同宽同高，left 锚定中位居中），花瓣位全由
+    // frame（中卡/左右相纸同宽同高，left 锚定中位居中），相纸位全由
     // transform 表达
     const cardSlot = useMemo(
         () => ({
@@ -1061,8 +1156,8 @@ function ImageDeckStack({
         }),
         [stripWidth, cardWidth, deckHeight],
     );
-    // 手势面 frame：满宽卡区（横滑起手覆盖中卡与两侧露出带；花瓣露出区
-    // 点按体 zIndex 4 先于本面命中，见组件注层级段）
+    // 手势面 frame：满宽卡区（横滑起手覆盖中卡；底缘楔形带点按体 zIndex 4
+    // 与本面纵向零重叠，见组件注层级段）
     const gestureSlot = useMemo(
         () => ({
             position: 'absolute' as const,
@@ -1073,30 +1168,32 @@ function ImageDeckStack({
         }),
         [deckHeight],
     );
-    // 花瓣露出区点按体 frame：中卡 frame 以外的露出带（命中区以中卡 frame
-    // 为界零重叠，几何即命中零 hitSlop）——左 [0, stripWidth] / 右
-    // [W−stripWidth, W]，纵向覆盖整卡区（含花瓣下移露出的 12dp 底带，点按
-    // 语义连续无死区）；左右共用同一尺寸，锚定边在 JSX 处给
-    const sidePressSlot = useMemo(
+    // 底缘楔形带点按体 frame：中卡 frame 以下的整条带（相纸楔形露出区 +
+    // 计数行；命中区 = 带几何 ≥44dp 零 hitSlop，与中卡 frame 纵向零重叠）。
+    // 左右对半分治（左 = 上一张 / 右 = 下一张）；N=2 时右区独占全带宽
+    // （左侧无相纸），锚定边在 JSX 处给
+    const bandPressSlot = useMemo(
         () => ({
             position: 'absolute' as const,
-            top: 0,
-            width: stripWidth,
-            height: deckHeight + DECK_PETAL_DROP,
+            top: deckHeight,
+            bottom: 0,
         }),
-        [stripWidth, deckHeight],
+        [deckHeight],
     );
-    // 计数行 frame：卡区下缘——top = 中卡高 + 花瓣下移带（与花瓣渲染底
-    // 不重叠），横向锚定中卡两缘、内容右对齐（行落在中卡 frame 之内）
+    // 计数行 frame：楔形带之下——top = 中卡高 + 楔形带 + 呼吸缝（与相纸
+    // 楔形渲染底不重叠），横向锚定中卡两缘、内容右对齐（行落在中卡 frame
+    // 之内；alignItems 落实右对齐——页码语义锚在「下一张」侧，与右相纸
+    // 楔形深端同侧收边，左侧楔形薄片不与计数行争读）
     const counterSlot = useMemo(
         () => ({
             position: 'absolute' as const,
-            top: deckHeight + DECK_PETAL_DROP,
+            top: deckHeight + pileBand,
             left: stripWidth,
             right: stripWidth,
             height: DECK_COUNTER_LINE,
+            alignItems: 'flex-end' as const,
         }),
-        [deckHeight, stripWidth],
+        [deckHeight, pileBand, stripWidth],
     );
 
     // 防御性回退（置于全部 hook 之后：条件 return 不得跨越 hook 调用；
@@ -1108,7 +1205,7 @@ function ImageDeckStack({
     }
 
     // 三槽取数（循环遍历）：左 = 上一张（N≥3 才有——2 张时 prev 与 next 同
-    // 图，用户口径左侧空、只有右侧花瓣）、中 = 当前、右 = 下一张
+    // 图，左侧空、只有右侧相纸）、中 = 当前、右 = 下一张
     const leftItem = itemCount >= 3 ? items[(safeIndex - 1 + itemCount) % itemCount] : null;
     const rightItem = items[(safeIndex + 1) % itemCount];
 
@@ -1117,7 +1214,7 @@ function ImageDeckStack({
             className="relative overflow-hidden"
             style={
                 deckHeight > 0
-                    ? { height: deckHeight + DECK_PETAL_DROP + DECK_COUNTER_LINE }
+                    ? { height: deckHeight + pileBand + DECK_COUNTER_LINE }
                     : undefined
             }
             onLayout={(event) => {
@@ -1128,16 +1225,16 @@ function ImageDeckStack({
                 );
             }}
         >
-            {/* 左花瓣槽 = 上一张（zIndex 2 恒定，花瓣恒在中卡之下——v6 静止
+            {/* 左相纸槽 = 上一张（zIndex 2 恒定，相纸恒在中卡之下——静止
                 重叠几何下转场提层会穿帮，见组件注层级段）：普通 wrapper
-                （静态几何 + pointerEvents none）→ AnimatedSlot（tx/ty/scale/
-                opacity 恒挂 left 通道，静止 = 花瓣位形基准 tx −C/2，一半藏
-                进中卡底下、越出容器左缘部分被裁形成部分可见）→ 花瓣卡体；
-                N=2 不渲染（左花瓣空缺，只有右侧） */}
+                （静态几何 + pointerEvents none）→ AnimatedSlot（ty/rot/
+                scale/opacity 恒挂 left 通道，静止 = 相纸位形基准 ty 26 +
+                −3°，底缘楔形露在中卡之下、越出容器左缘部分被裁）→ 相纸
+                卡体（2dp raised 垫边）；N=2 不渲染（左相纸空缺，只有右侧） */}
             {deckHeight > 0 && leftItem ? (
                 <View style={[cardSlot, { zIndex: 2 }]} pointerEvents="none">
                     <DeckAnimatedSlot style={[{ flex: 1 }, leftSlotStyle]}>
-                        <DeckEdgeCard
+                        <DeckBackCard
                             media={leftItem.media}
                             width={cardWidth}
                             height={deckHeight}
@@ -1145,12 +1242,12 @@ function ImageDeckStack({
                     </DeckAnimatedSlot>
                 </View>
             ) : null}
-            {/* 右花瓣槽 = 下一张（zIndex 2 恒定，left 槽位形镜像）：right 通道
-                恒挂，转场时即滑入卡卡体（内容零切换，本就渲染目标图） */}
+            {/* 右相纸槽 = 下一张（zIndex 2 恒定，left 槽位形镜像 +3°）：right
+                通道恒挂，转场时即归中卡卡体（内容零切换，本就渲染目标图） */}
             {deckHeight > 0 && rightItem ? (
                 <View style={[cardSlot, { zIndex: 2 }]} pointerEvents="none">
                     <DeckAnimatedSlot style={[{ flex: 1 }, rightSlotStyle]}>
-                        <DeckEdgeCard
+                        <DeckBackCard
                             media={rightItem.media}
                             width={cardWidth}
                             height={deckHeight}
@@ -1158,12 +1255,12 @@ function ImageDeckStack({
                     </DeckAnimatedSlot>
                 </View>
             ) : null}
-            {/* 中卡层（zIndex 3，恒在花瓣之上）：满宽普通 wrapper（PanResponder
+            {/* 中卡层（zIndex 3，恒在相纸之上）：满宽普通 wrapper（PanResponder
                 方向锁挂此，手势面 = 满宽卡区；静态布局 key 收口在内层中卡
                 frame wrapper，deck 铁律）→ 中卡 frame wrapper → AnimatedSlot
-                （flex:1 + translateX/xFade，出卡滑出复用此层）→ 中卡卡体
-                （点全屏 + 长按操作卡，既有链；转场期间 interactive 闸关闭；
-                触摸面零 className 收口在 DeckFrontCard） */}
+                （flex:1 + translateX/frontFade×xFade，出卡滑出复用此层）→
+                中卡卡体（点全屏 + 长按操作卡，既有链；转场期间 interactive
+                闸关闭；触摸面零 className 收口在 DeckFrontCard） */}
             <View style={[gestureSlot, { zIndex: 3 }]} {...panResponder.panHandlers}>
                 <View style={cardSlot}>
                     <DeckAnimatedSlot style={[{ flex: 1 }, frontStyle]}>
@@ -1181,15 +1278,15 @@ function ImageDeckStack({
                     </DeckAnimatedSlot>
                 </View>
             </View>
-            {/* 花瓣露出区点按体（zIndex 4，命中测试先于满宽手势面；透明纯
-                命中面不遮花瓣视觉）：中卡 frame 以外的露出带（命中区以中卡
-                frame 为界零重叠，几何即命中零 hitSlop）——点左 = 上一张、
-                点右 = 下一张（循环，转场期间闩吞并发）；N=2 无左点按体
-                （左花瓣空缺） */}
+            {/* 底缘楔形带点按体（zIndex 4；透明纯命中面不遮相纸视觉）：中卡
+                frame 以下的整条带（楔形露出区 + 计数行，带高 ≥44dp 零
+                hitSlop，与中卡 frame 纵向零重叠）——点左半 = 上一张、点右半
+                = 下一张（循环，转场期间闩吞并发）；N=2 单区全带宽 = 下一张
+                （左相纸空缺） */}
             {deckHeight > 0 && leftItem ? (
                 <Pressable
                     onPress={tapPrev}
-                    style={[sidePressSlot, { zIndex: 4, left: 0 }]}
+                    style={[bandPressSlot, { zIndex: 4, left: 0, width: '50%' }]}
                     accessibilityRole="button"
                     accessibilityLabel="查看上一张"
                 />
@@ -1197,19 +1294,23 @@ function ImageDeckStack({
             {deckHeight > 0 && rightItem ? (
                 <Pressable
                     onPress={tapNext}
-                    style={[sidePressSlot, { zIndex: 4, right: 0 }]}
+                    style={
+                        leftItem
+                            ? [bandPressSlot, { zIndex: 4, right: 0, width: '50%' }]
+                            : [bandPressSlot, { zIndex: 4, left: 0, right: 0 }]
+                    }
                     accessibilityRole="button"
                     accessibilityLabel="查看下一张"
                 />
             ) : null}
-            {/* 计数（current+1/N）：容器下缘（卡区之下）——top = 中卡高 +
-                花瓣下移带（独立于卡区的行，与花瓣渲染底不重叠），横向锚定
-                中卡两缘、右对齐；堆后视觉净空 = 组 margin + 栈 gap 与堆前
-                对称（节奏表 16dp），行高把三端文字行高差（±2px）吃进行内，
-                不污染块间净空。muted 12px tabular-nums、无 pill chrome
-                （克制口径）；pointerEvents none 不参与命中；无障碍语义 =
-                读屏直读计数（点按体拆为上一张/下一张两个，不再有单一
-                「下一张」label 可并入） */}
+            {/* 计数（current+1/N）：楔形带之下——top = 中卡高 + 楔形带 +
+                呼吸缝（与相纸楔形渲染底不重叠），横向锚定中卡两缘、右对齐；
+                堆后视觉净空 = 组 margin + 栈 gap 与堆前对称（节奏表 16dp），
+                行高把三端文字行高差（±2px）吃进行内，不污染块间净空。
+                muted 12px tabular-nums、无 pill chrome（克制口径）；
+                pointerEvents none 不参与命中；无障碍语义 = 读屏直读计数
+                （点按体拆为上一张/下一张两个，不再有单一「下一张」label 可
+                并入） */}
             {deckHeight > 0 ? (
                 <View pointerEvents="none" style={counterSlot}>
                     <Text

@@ -40,14 +40,29 @@ const migrationRegistry = new Map<string, Map<number, string[]>>();
 // 缓存连接上补跑迁移的串行链：并发 openDatabase 的补跑按注册顺序逐个执行，
 // 且每次执行前重读 user_version（前一个补跑可能已完成同样的迁移），避免重复执行
 const migrationCatchUpChains = new Map<string, Promise<void>>();
+// 冷连接全局串行链（web 端正确性保障，不只性能）：expo-sqlite web 的
+// AccessHandlePoolVFS 在共享 worker 里按 worker 级单例惰性初始化（maybeInitAsync
+// 的 _vfs 判空与赋值之间横跨 await，无锁）——同帧并发 openDatabase（不同库名，
+// 如首屏 archive.db 与根布局 almightydb.db 的启动查询同 commit 触发）会让 worker
+// 为同一 OPFS 目录建出第二个 VFS 实例，对首批 pool 块文件二次
+// createSyncAccessHandle，被浏览器以「another open Access Handle」拒绝：
+// VFS 初始化半途而废 + 失败连接被缓存，全 document 的 DB 层自此污染（
+// 表现为 createSyncAccessHandle 冲突 / SQLITE_CANTOPEN(14) / 迁移半套 no such
+// table，随交错时序漂移）。主线程把 connect 排队即从源头消灭并发 open——
+// native 端无此 VFS，串行化只是让首个连接的建连时序可预期，零副作用。
+let connectChain: Promise<unknown> = Promise.resolve();
 
 export function openDatabase(name: string, options: DatabaseOpenOptions = {}): Promise<Database> {
     registerMigrations(name, options.migrations ?? []);
     let connection = connections.get(name);
     if (!connection) {
-        connection = connect(name);
-        connections.set(name, connection);
-        return connection;
+        // 冷连接入全局链：前一个 connect（含 worker 内 VFS 初始化 + 首次迁移）
+        // 完成后才开始下一个；失败不从链上传播（后续连接照常尝试）。
+        // 错误包装由 connect 内部负责（toDatabaseError 前缀 open database(...)）。
+        const chained = connectChain.then(() => connect(name));
+        connectChain = chained.then(() => undefined, () => undefined);
+        connections.set(name, chained);
+        return chained;
     }
     // 缓存命中：连接建立后可能又有更高版本的迁移被注册（其他模块懒加载 openDatabase），
     // connect 时的一次性 applyMigrations 看不到它们——必须对该连接补跑 pending 迁移，
