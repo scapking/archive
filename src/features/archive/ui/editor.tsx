@@ -14,7 +14,8 @@ import {
     View,
     type ScrollViewInstance,
 } from 'react-native';
-import { BouncyPressable, LucideImage, LucidePlus } from '@/core/icons';
+import { VideoView, useVideoPlayer } from 'expo-video';
+import { BouncyPressable, LucideImage, LucidePlay, LucidePlus, LucideVideo } from '@/core/icons';
 import { MoreIcon } from './editor-icons';
 import {
     FIELD_TONE_TEXT,
@@ -24,10 +25,8 @@ import {
     readContentHeight,
 } from './field-input';
 import {
-    FALLBACK_IMAGE_RATIO,
     MEDIA_MAX_HEIGHT,
     MediaBlock,
-    MediaImage,
     useBlockActionGestures,
 } from './media-view';
 import { usePalette } from './theme';
@@ -53,10 +52,11 @@ import { PENDING_MEDIA_ID } from '../db';
  *   视觉空隙（节奏调优修复面，几何核算见 DECK_COUNTER_LINE 注）；
  * - 块模型自上而下：文本段（自动增高、可聚焦续写）与行内媒体（图/视频/音频）混排，
  *   媒体插入即显示 pending 占位（上传中不阻塞继续写字）；
- * - 连续图片照片堆（渲染层合并，数据仍是独立块）：连续相邻的图片媒体块
- *   （中间无文本/视频/音频/pending 打断）≥2 张合并为「相纸堆」照片堆
- *   （ImageDeckStack v7，Apple Photos Stacks 式印刷相纸隐喻）——中卡 =
- *   统一画幅 4:3 横版标准档（宽 = 列宽 66%，高按统一画幅派生 +
+ * - 连续同 kind 媒体堆叠（渲染层合并，数据仍是独立块）：连续相邻的**同 kind**
+ *   就绪媒体块 ≥2 合并为媒体堆（MediaDeckStack v8，Apple Photos Stacks 式印刷
+ *   相纸隐喻）——连续图片 ≥2 = 图片堆，连续视频 ≥2 = 视频堆（新增）；图片视频
+ *   混排按 kind 分段（视频打断图片串、图片打断视频串，各自成段成组）；音频不进
+ *   堆叠。中卡 = 统一画幅 1:1 方形标准档（宽 = 列宽 66%，高按统一画幅派生 +
  *   MEDIA_MAX_HEIGHT 封顶，cover 裁切，居中构图；混分辨率组换张零形变，
  *   单张不成组仍走自然比例自适应）；上一张/下一张以
  *   「相纸」压在卡底：同 frame 微缩 0.96 + 下移 26 + ±4° 镜像倾斜 + 压暗
@@ -64,24 +64,31 @@ import { PENDING_MEDIA_ID } from '../db';
  *   照片」的形状语法——轴向平行直条会被读作边框/chrome，v2/v3/v5 三版
  *   可读性翻车的同源根因；4dp raised 垫边 + 前卡 1px hairline 相框描边
  *   （照片 mat 装裱惯例）保证白底/同色照片在浅色页上的楔缘可辨，表面
- *   分层全靠 tone step，无阴影无渐变）；3 张起左右都有，2 张时
- *   只有右侧（左相纸空缺）；中卡横滑换位（PanResponder 方向锁：|dx|>10
+ *   分层全靠 tone step，无阴影无渐变；露边层圆角挂卡体本体 rounded-card16，
+ *   随缩放/位移/倾斜保持，不被容器裁成直角——见 DeckBackCard 注）；
+ *   3 张起左右都有，2 张时只有右侧（左相纸空缺）；视频堆卡体差异（堆叠
+ *   机制与图片堆完全同一套，见 MediaDeckStack 注）：前卡 = 封面态（paused
+ *   首帧 + 中央播放钮，点前卡 = 全屏播放、长按 = 操作卡），**性能红线：
+ *   底层露边层绝不挂载视频播放器**——露边层 = raised 底 + 中央播放 icon
+ *   占位卡（schema 无缩略图列，不背逐卡首帧提取开销），只有前卡挂 player；
+ *   中卡横滑换位（PanResponder 方向锁：|dx|>10
  *   且 |dx|>1.5|dy| 才认领——画布纵滚零仲裁；|dx|>60 提交真转场、否则
  *   spring 回弹；左滑 = 下一张 / 右滑 = 上一张，循环），点底缘楔形带
  *   左/右半 = 上一张/下一张（N=2 单区全带宽 = 下一张），点中卡 → 全屏
- *   预览，长按中卡 → 该图操作卡（既有 onBlockAction 链）；拖拽过方向锁
+ *   预览，长按中卡 → 该块操作卡（既有 onBlockAction 链）；拖拽过方向锁
  *   后 responder 仲裁自然取消点按（拖拽期间不误开全屏）。换位 = 相纸真
  *   转场（中卡沿换位方向滑出列缘 + 降透明 timing 220ms ease-out quint，
  *   dir 侧相纸自位形 spring 归中 ~310ms 无过冲——相纸恒在中卡之下，随
  *   出卡让位逐步「揭开」，330ms 统一收口 + 索引轮转三槽内容重指派；滑动
  *   与点楔形两条提交链路共用同一条编排，转场期间 advancing 闩吞并发手势；
  *   系统「减弱动态」开启时退化为 160ms 透明度交叉；transform/opacity，
- *   native driver；详见 ImageDeckStack 注）。分组纯派生（buildRenderUnits），
- *   组内增删/移动自动重算，剩 1 张自动解散回独立自适应渲染（零改动）；
- *   pending 占位不进堆叠；性能口径 = 任意 N 最多挂载 3 个图片实例
- *   （左/中/右三槽，N=2 时左槽不渲染恒 2 个；转场不增实例——相纸复用本
- *   槽渲染位，内容零切换），其余留在 blocks 数据里，换位只是索引轮转
- *   （数量无上限）；
+ *   native driver；详见 MediaDeckStack 注）。分组纯派生（buildRenderUnits），
+ *   组内增删/移动自动重算，剩 1 块自动解散回独立渲染（零改动）；
+ *   pending 占位（图/视频）不进堆叠；性能口径 = 图片堆任意 N 最多挂载
+ *   3 个图片实例（左/中/右三槽，N=2 时左槽不渲染恒 2 个；转场不增实例
+ *   ——相纸复用本槽渲染位，内容零切换）；视频堆每堆仅前卡挂 1 个 player
+ *   实例（露边层零 player、收口换内容按 media.id 重挂），其余留在 blocks
+ *   数据里，换位只是索引轮转（数量无上限）；
  * - 块稳定 id（JournalBlock.id）：React key = id，重排/删除不闪烁；文本块移动
  *   不换实例，焦点与光标位置天然保持；
  * - 块操作（#1/#9 沉浸化）：角落 chip 与聚焦操作条**全部移除**——
@@ -373,70 +380,89 @@ function PendingMediaBlock({ style }: { style?: object }) {
 const isMediaLike = (block: JournalBlock | undefined): boolean => block?.t === 'media';
 
 /* ------------------------------------------------------------------ */
-/* 连续图片堆叠（deck 式：渲染层合并，数据仍是独立块，分组是纯派生）      */
+/* 连续同 kind 媒体堆叠（deck 式：渲染层合并，数据仍是独立块，分组是纯派生） */
 /* ------------------------------------------------------------------ */
 
 /** 媒体块变体（分组条目类型）。 */
 type JournalMediaBlock = Extract<JournalBlock, { t: 'media' }>;
 
+/** 可堆叠媒体种类：图片堆 / 视频堆（音频不进堆叠——音频卡是常驻操作面，
+ *  无「换张」语义，堆叠只会破坏播放连续性）。 */
+type DeckMediaKind = 'image' | 'video';
+
+/** deck 组条目（块 + 媒体行 + 全局 index）。 */
+type DeckItem = { block: JournalMediaBlock; media: JournalMediaRow; index: number };
+
 /**
- * 堆叠成员资格：已就绪的图片媒体块 → 返回媒体行（供层渲染直接复用，
- * 免二次查表）；其余（文本/pending 占位/视频/音频/媒体行缺失）返回 null。
+ * 堆叠成员资格：已就绪的图片/视频媒体块 → 返回媒体行与种类（供层渲染直接
+ * 复用，免二次查表）；其余（文本/pending 占位/音频/媒体行缺失）返回 null。
  * pending 占位**不进堆叠也不被堆叠跨越**（占位是插入中瞬态，保持现有
  * 独立占位渲染；上传回填后自然并入/成组）。
  */
-const asDeckImage = (
+const asDeckMedia = (
     block: JournalBlock,
     mediaById: Map<string, JournalMediaRow>,
-): JournalMediaRow | null => {
+): { media: JournalMediaRow; kind: DeckMediaKind } | null => {
     if (block.t !== 'media' || block.mediaId === PENDING_MEDIA_ID) return null;
     const media = mediaById.get(block.mediaId);
-    return media != null && media.kind === 'image' ? media : null;
+    if (media == null) return null;
+    return media.kind === 'image' || media.kind === 'video'
+        ? { media, kind: media.kind }
+        : null;
 };
 
 /**
- * 渲染单元：单块（现有独立渲染路径）或连续图片堆叠组（≥2 张才成组）。
- * 分组规则：**连续相邻**的图片媒体块（index 相邻、中间无文本/视频/音频/
- * pending 打断）合并；单张图片维持独立渲染（单元回退为 single）。
+ * 渲染单元：单块（现有独立渲染路径）或连续同 kind 媒体堆叠组（≥2 才成组）。
+ * 分组规则：**连续相邻且同 kind** 的就绪媒体块（index 相邻、中间无文本/
+ * 异 kind 媒体/音频/pending 打断）合并——连续图片 ≥2 = 图片堆，连续视频
+ * ≥2 = 视频堆；图片视频混排按 kind 分段（视频打断图片串、图片打断视频串，
+ * 各自成段）；单张（同段只 1 块）维持独立渲染（单元回退为 single）。
  */
 type RenderUnit =
     | { kind: 'single'; block: JournalBlock; index: number }
-    | { kind: 'deck'; items: Array<{ block: JournalMediaBlock; media: JournalMediaRow; index: number }> };
+    | { kind: 'deck'; mediaKind: DeckMediaKind; items: DeckItem[] };
 
 /**
  * 块列表 → 渲染单元（纯函数，每次渲染重算——组随块增删/移动自动重算/解散，
- * 「组内单删后剩 1 张回独立渲染」由此免费获得，零额外状态）。
+ * 「组内单删后剩 1 块回独立渲染」由此免费获得，零额外状态）。
  */
 function buildRenderUnits(
     blocks: JournalBlock[],
     mediaById: Map<string, JournalMediaRow>,
 ): RenderUnit[] {
     const units: RenderUnit[] = [];
-    let group: Array<{ block: JournalMediaBlock; media: JournalMediaRow; index: number }> | null =
-        null;
+    let group: DeckItem[] | null = null;
+    // 当前组的 kind（组内同 kind 铁律；异 kind 媒体/非成员块到达即 flush 换段）
+    let groupKind: DeckMediaKind | null = null;
     const flushGroup = () => {
-        if (!group) return;
+        if (!group || groupKind == null) return;
         if (group.length >= 2) {
-            units.push({ kind: 'deck', items: group });
+            units.push({ kind: 'deck', mediaKind: groupKind, items: group });
         } else {
-            // 成组未满 2 张：回退现有独立渲染路径（单张 = 单元）
+            // 成组未满 2 块：回退现有独立渲染路径（单张 = 单元）
             for (const item of group) {
                 units.push({ kind: 'single', block: item.block, index: item.index });
             }
         }
         group = null;
+        groupKind = null;
     };
     blocks.forEach((block, index) => {
-        const media = asDeckImage(block, mediaById);
-        // block.t 判定收窄块类型（asDeckImage 内部同口径，此处显式写出
-        // 供 TS 收窄进组条目）；行缺失/视频/音频/pending 落 single 路径
-        if (block.t === 'media' && media != null) {
-            if (group) {
-                // 不变量：group 非空 ⟹ 上一块同为就绪图片块（非成员块在上一轮
-                // 已 flush），「相邻 index」天然成立，无需再查邻居
-                group.push({ block, media, index });
+        const member = asDeckMedia(block, mediaById);
+        // block.t 判定收窄块类型（asDeckMedia 内部同口径，此处显式写出
+        // 供 TS 收窄进组条目）；行缺失/音频/pending 落 single 路径
+        if (block.t === 'media' && member != null) {
+            if (group && groupKind === member.kind) {
+                // 不变量：group 非空 ⟹ 上一块同为就绪同 kind 媒体块（非成员
+                // 块与异 kind 块在上一轮已 flush），「相邻 index」天然成立，
+                // 无需再查邻居
+                group.push({ block, media: member.media, index });
             } else {
-                group = [{ block, media, index }];
+                // 首块入组 / kind 切换（视频打断图片串、图片打断视频串）：
+                // 旧段收口，新段起组
+                flushGroup();
+                group = [{ block, media: member.media, index }];
+                groupKind = member.kind;
             }
             return;
         }
@@ -453,26 +479,29 @@ function buildRenderUnits(
 const DeckAnimatedSlot = Animated.createAnimatedComponent(View);
 
 /* ------------------------------------------------------------------ */
-/* 照片堆（相纸堆 v7）中卡档位、后卡位形与转场常量（一处收口）           */
+/* 媒体堆（相纸堆 v8）中卡档位、后卡位形与转场常量（一处收口）           */
 /* ------------------------------------------------------------------ */
 
 /**
- * 中卡宽档位（列宽比例，62-70% 档取 66% 中值）：中卡 = 统一画幅 4:3 横版
+ * 中卡宽档位（列宽比例，62-70% 档取 66% 中值）：中卡 = 统一画幅 1:1 方形
  * 标准档（高 = 宽 ÷ DECK_UNIFORM_RATIO、MEDIA_MAX_HEIGHT 封顶），居中构图
- * （用户认可保留项）；两侧留白由相纸堆的留白节奏承担（见 ImageDeckStack 注）。
+ * （用户认可保留项）；两侧留白由相纸堆的留白节奏承担（见 MediaDeckStack 注）。
  */
 const DECK_FRONT_WIDTH_RATIO = 0.66;
 
 /**
- * 堆叠组统一画幅（4:3 横版标准档）：组内三槽（中卡/左右相纸）共用同一
- * 宽高比 + cover 裁切，混合分辨率（正方形 + 长方形等）换张零 reflow 零
+ * 堆叠组统一画幅（1:1 方形标准档）：组内三槽（中卡/左右相纸）共用同一
+ * 宽高比 + cover 裁切，混合分辨率（横版 + 竖版等）换张零 reflow 零
  * 形变——v7 按中卡图自然比例派生组高，换张（索引轮转）时组高随新图比例
- * 跳变，混分辨率组的「翻页」全程在变形。取值与 media-view 的缺元数据回退
- * FALLBACK_IMAGE_RATIO 同值同源（4:3 = 卡片相机常用画幅，照片主旋律横
- * 构图的少裁切档）；**单张不成组保持自然比例自适应不变**（MediaImage 路
- * 径零改动），统一画幅只约束堆叠组。
+ * 跳变，混分辨率组的「翻页」全程在变形。取值 = 1（用户反馈 4:3 横版
+ * 偏矮「堆叠容器长一些」，改取方形档：同宽下组高 +33%，横竖媒体在方形
+ * frame 里 cover 裁切量也最均衡）；桌面列呈现核对：画布列 max-w 620dp
+ * → 中卡 409.2dp < MEDIA_MAX_HEIGHT 420，**封顶不触发**（封顶只在列宽
+ * > 636.4dp 的假想列才生效，届时 420×420 楔形 31.2dp 仍在区间）；**单张
+ * 不成组保持自然比例自适应不变**（MediaImage/MediaBlock 路径零改动），
+ * 统一画幅只约束堆叠组。
  */
-const DECK_UNIFORM_RATIO = FALLBACK_IMAGE_RATIO;
+const DECK_UNIFORM_RATIO = 1;
 
 /** 后卡（相纸）位形：同 frame 微缩 0.96（深度线索）+ 下移 26（底缘露出
  *  带）+ ±4° 镜像倾斜（左 −4° / 右 +4° 扇形；倾斜斜边 + 圆角 + 真实邻图
@@ -495,7 +524,7 @@ const DECK_BACK_OPACITY = 0.85;
  *  overflow-hidden 裁切，内图零圆角（不新增半径档位）。 */
 const DECK_MAT = 4;
 /** 计数行（12px 字配 18dp 行，2dp 网格）与楔形带的呼吸缝：计数行锚定在
- *  楔形带之下（几何核算见 ImageDeckStack 注），不与相纸楔形重叠。 */
+ *  楔形带之下（几何核算见 MediaDeckStack 注），不与相纸楔形重叠。 */
 const DECK_COUNTER_LINE = 18;
 const DECK_COUNTER_GAP = 2;
 /** 横滑方向锁（onMoveShouldSetPanResponder）：|dx| 超过 10 且
@@ -528,19 +557,20 @@ const DECK_ENTER_TENSION = 165;
 const ADVANCE_TOTAL_MS = 330;
 /** 减弱动态转场（motion.md rule 14「弱化态 = 少而柔，保留解释状态变化的
  *  opacity 通道」）：无位移无旋转，中卡 160ms 淡化收口（AccessibilityInfo
- *  reduceMotion 驱动，见 ImageDeckStack 注动画口径段）。 */
+ *  reduceMotion 驱动，见 MediaDeckStack 注动画口径段）。 */
 const DECK_REDUCED_FADE_MS = 160;
 
 /**
- * 堆叠中卡（当前图）：几何由 ImageDeckStack 数值化后传入显式宽高（自然
- * 比例 + MEDIA_MAX_HEIGHT 封顶——组高与点按体 frame 都依赖数值高，不借助
- * yoga 的 aspectRatio 收敛，cover 裁切结果与 yoga 口径恒等）。交互链 =
- * 既有口径：点按 → requestViewer 全屏（键盘先收）、长按/桌面双击 →
+ * 堆叠中卡（图片堆变体）：几何由 MediaDeckStack 数值化后传入显式宽高
+ * （统一画幅 + MEDIA_MAX_HEIGHT 封顶——组高与点按体 frame 都依赖数值高，
+ * 不借助 yoga 的 aspectRatio 收敛，cover 裁切结果与 yoga 口径恒等）。交互
+ * 链 = 既有口径：点按 → requestViewer 全屏（键盘先收）、长按/桌面双击 →
  * onBlockAction 操作卡（useBlockActionGestures 单点收口）。横滑拖拽不在
- * 此层——PanResponder 挂在宿主手势面 wrapper（见 ImageDeckStack 注：父级
+ * 此层——PanResponder 挂在宿主手势面 wrapper（见 MediaDeckStack 注：父级
  * 方向锁认领后 responder 仲裁自然终止点按）。触摸面零 className（deck
  * 触摸面纯净铁律：按压体不落 className，防 css-interop 按压 observable
- * 注入手势窗口）。
+ * 注入手势窗口）。视频堆前卡 = DeckVideoFrontCard（同 frame/同描边/同
+ * 手势链的封面态变体，见其注）。
  */
 function DeckFrontCard({
     media,
@@ -612,11 +642,18 @@ function DeckFrontCard({
 }
 
 /**
- * 相纸卡体（底缘后卡）：与中卡同尺寸的整卡渲染（同 frame + cover 裁切，
- * 楔形露出的是真实相邻图内容、不是窄边条占位），位形（下移/倾斜/微缩/
- * 压暗）由宿主层的 AnimatedSlot 恒挂通道施加——静止时底缘楔形露在中卡
- * 之下（z 恒在中卡之下）；转场时它即归中卡体（位形 spring 归零由宿主
- * AnimatedSlot 驱动，随中卡滑出让位逐步揭开）。
+ * 相纸卡体（底缘后卡，图片堆露边层）：与中卡同尺寸的整卡渲染（同 frame +
+ * cover 裁切，楔形露出的是真实相邻图内容、不是窄边条占位），位形（下移/
+ * 倾斜/微缩/压暗）由宿主层的 AnimatedSlot 恒挂通道施加——静止时底缘楔形
+ * 露在中卡之下（z 恒在中卡之下）；转场时它即归中卡体（位形 spring 归零
+ * 由宿主 AnimatedSlot 驱动，随中卡滑出让位逐步揭开）。
+ * **露边层圆角不变量（卡体本体挂 rounded-card16）**：圆角挂在后卡自身的
+ * View 上，transform（微缩/下移/倾斜）作用于已带圆角的层——圆角随缩放/
+ * 位移/倾斜保持（RN 的 borderRadius 属层自身绘制，先圆角后变换），不被
+ * 任何容器 overflow-hidden 裁成直角缘；容器 overflow-hidden 只承担列缘
+ * 出血裁切（横滑出卡/楔形越缘），几何上露出区距容器底缘 ≥ 缝 + 计数行
+ * ≈ 20dp（见 MediaDeckStack 几何注），底缘圆角完整呈现，与中卡圆角
+ * 同档（rounded-card 16）。
  * 4dp raised 垫边（DECK_MAT）= 相纸的「纸缘」tone step：白底照片的楔缘
  * 在浅色页上也可辨（taste-skill：表面分层靠 tone step 不靠线；#13 无描边
  * 口径的延伸——垫边是容器底色透出，不是 border 线）；外层 rounded-card
@@ -652,40 +689,207 @@ function DeckBackCard({
 }
 
 /**
- * 连续图片照片堆（v7 相纸堆：居中统一画幅中卡 + 底缘倾斜相纸 + 归中真转场）。
- * 设计语言由 design skill 结论主导（候选方向与条款依据见本组设计决策书）：
- * **Apple Photos Stacks 式「印刷相纸」隐喻**——堆叠的可读性来自形状语法
- * （倾斜楔形 + 圆角 + 邻图内容），不来自露边宽度（v2 44dp 侧缘直条 /
- * v3 底缘直条 / v5 16:10 窄边三版翻车同源：轴向平行直条读作 chrome，
+ * 堆叠中卡（视频堆前卡，MediaVideo 封面态的 deck frame 变体）：paused 首帧
+ * + 中央播放钮（黑透圆底白三角，与 MediaVideo 同口径），点前卡 → 全屏播放
+ * （requestViewer kind video，全屏内 native controls）、长按/桌面双击 →
+ * 操作卡——手势链/交互闸/hairline 描边与 DeckFrontCard 完全同构（useBlock
+ * ActionGestures 单点收口 + interactive 转场闸 + mat 描边）。
+ *
+ * 为何不复用 MediaVideo 导出：其布局契约是 w-full + aspectRatio/maxHeight
+ * （自然比例自适应），而 deck 前卡需要宿主数值化的统一画幅显式 frame；且
+ * MediaVideo 无 interactive 闸（转场期间点按出卡层会误开全屏）与 mat 描边
+ * 档——deck 内按封面态同款实现（VideoView + 中央播放钮 + 同一 Pressability
+ * 链），file/url 状态与全屏口径复用同一批收口件（useFileUrlState /
+ * requestViewer / useBlockActionGestures）。
+ *
+ * **性能红线（视频堆）**：整堆只有本卡挂 player（useVideoPlayer，paused 封
+ * 面态不自动播放）；底层露边层绝不挂载视频播放器（见 DeckVideoBackCard）。
+ * 宿主以 key={media.id} 挂载本卡：收口换张 = 卸载旧 player + 挂载新 player
+ * （useVideoPlayer 卸载即释放，任意时刻每堆 ≤1 个 player 实例）——不用
+ * replaceAsync 复用实例的原因：源替换异步完成，换张瞬间 VideoView 会残留
+ * 上一张视频的首帧（刚滑出的那张）造成错内容闪帧，重挂的空 player 以
+ * raised 底过渡（与加载态同语言）直到新首帧就绪，内容永远正确。
+ * contentFit 恒 cover：统一画幅显式 frame + cover 裁切（与图片前卡同构，
+ * 横竖视频零信箱条）；不做自然尺寸探测（deck frame 不依赖媒体比例，
+ * useVideoNaturalSize 无必要）。
+ * 触摸面纪律与 DeckFrontCard 相同：VideoView 包 core View pointerEvents=
+ * "none"（expo-video 原生层吞触摸，#2b 同口径），按压统一走外层
+ * BouncyPressable；触摸面零 className。
+ */
+function DeckVideoFrontCard({
+    media,
+    width,
+    height,
+    interactive = true,
+    onBlockAction,
+}: {
+    media: JournalMediaRow;
+    width: number;
+    height: number;
+    /** 交互闸：转场期间中卡是「出卡层」，点按/长按一律吞掉（与 DeckFrontCard
+     *  同口径——disabled 传导触摸穿透到 wrapper，方向锁不认领 = 纯死区）。 */
+    interactive?: boolean;
+    /** 长按/桌面双击 → 块操作卡（编辑态传入；只读态不传 → 无长按层）。 */
+    onBlockAction?: () => void;
+}) {
+    const { status, uri } = useFileUrlState(media.file_key);
+    const palette = usePalette();
+    const ready = status === 'ready' && uri != null;
+    const usable = ready && interactive;
+    // player（本堆唯一实例，见组件注性能红线）：uri 可能为 null（文件未解析/
+    // 缺失），是合法 VideoSource（空 player），同 MediaVideo 口径
+    const player = useVideoPlayer(uri, (p) => {
+        p.loop = false;
+        p.muted = false;
+    });
+    const openViewer = () => {
+        // 键盘态开全屏先收键盘（DeckFrontCard/MediaVideo 同口径：#17/#18）
+        Keyboard.dismiss();
+        requestViewer({
+            kind: 'video',
+            fileKey: media.file_key,
+            width: media.width,
+            height: media.height,
+        });
+    };
+    const gestures = useBlockActionGestures({
+        enabled: ready,
+        onBlockAction,
+        onSinglePress: openViewer,
+    });
+    return (
+        <BouncyPressable
+            onPress={usable ? gestures.onPress : undefined}
+            onLongPress={usable ? gestures.onLongPress : undefined}
+            disabled={!usable}
+            scaleTo={0.985}
+        >
+            {/* frame/描边与 DeckFrontCard 完全同档：rounded-card16 + 1px hairline
+                mat 描边 + raised 占位底（见 DeckFrontCard 注描边语义段） */}
+            <View
+                className="overflow-hidden rounded-card border border-ink-border bg-ink-raised dark:border-inkd-border dark:bg-inkd-raised"
+                style={{ width, height }}
+            >
+                {ready ? (
+                    <>
+                        {/* 封面帧：paused 首帧，nativeControls=false；触摸层 =
+                            core RN View 包装（pointerEvents="none"，#2b 见组件注） */}
+                        <View className="flex-1" pointerEvents="none">
+                            <VideoView
+                                player={player}
+                                nativeControls={false}
+                                contentFit="cover"
+                                style={{ flex: 1, backgroundColor: palette.raised }}
+                                allowsPictureInPicture={false}
+                            />
+                        </View>
+                        {/* 中央播放钮：与 MediaVideo 同口径（黑透圆底 + 白播放三角，
+                            不参与命中，整块按压统一进全屏） */}
+                        <View className="pointer-events-none absolute inset-0 items-center justify-center">
+                            <View className="h-12 w-12 items-center justify-center rounded-full bg-black/40">
+                                <LucidePlay size={20} color="#FFFFFF" strokeWidth={2.2} />
+                            </View>
+                        </View>
+                    </>
+                ) : status === 'missing' ? (
+                    <View className="flex-1 items-center justify-center gap-1.5">
+                        <LucideVideo size={20} strokeWidth={1.9} color={palette.muted} />
+                        <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">
+                            视频无法播放
+                        </Text>
+                    </View>
+                ) : (
+                    // 解析中：raised 底 + spinner，非裸黑块（MediaVideo 同口径）
+                    <View className="flex-1 items-center justify-center">
+                        <ActivityIndicator color={palette.spinner} />
+                    </View>
+                )}
+            </View>
+        </BouncyPressable>
+    );
+}
+
+/**
+ * 相纸卡体（视频堆露边层）：**无 player 的轻量占位卡**——性能红线的落地面。
+ * 取舍（媒体域约束下三选一）：media-view 不新增「无 player 封面变体」导出
+ * （本组只允许改 editor.tsx，media-view.tsx 不可动）；schema 无缩略图列，
+ * 逐卡生成首帧图要背异步 IO + 缓存生命周期（#2b 注否决过的方案不回潮）——
+ * 故自绘占位：raised 底 + 居中播放钮占位（黑透圆底白三角，尺寸/位置与
+ * DeckVideoFrontCard 的中央播放钮同规格）。
+ * 对位细节：占位钮与前卡真实封面态的钮**同位同尺寸**——收口换张时占位卡
+ * 归中 → 前卡重挂（新 player 首帧就绪前同为 raised 底），钮像素恒位，
+ * 「揭开 → 实体化」读感连续，无钮位跳变。
+ * 圆角不变量与 DeckBackCard 同款（露边层铁律）：rounded-card16 挂卡体本体，
+ * transform 后依然保持，不被容器裁成直角；mat 垫边同 DECK_MAT（视频占位
+ * 面与垫边同 tone——垫边承担「纸缘」语义于图堆，视频堆楔形以形状语法
+ * （倾斜 + 圆角）分层，tone 差由 raised vs 页底承担）。
+ * 零交互、零媒体状态订阅（不挂 useFileUrlState——露边层连 url 状态都不背，
+ * 楔形带放不下失败文案，媒体缺失态由前卡在归中后呈现）。
+ */
+function DeckVideoBackCard({ width, height }: { width: number; height: number }) {
+    return (
+        <View
+            className="overflow-hidden rounded-card bg-ink-raised dark:bg-inkd-raised"
+            style={{ width, height, padding: DECK_MAT }}
+        >
+            <View className="flex-1 items-center justify-center">
+                <View className="h-12 w-12 items-center justify-center rounded-full bg-black/40">
+                    <LucidePlay size={20} color="#FFFFFF" strokeWidth={2.2} />
+                </View>
+            </View>
+        </View>
+    );
+}
+
+/**
+ * 连续同 kind 媒体堆（v8 相纸堆：居中统一画幅中卡 + 底缘倾斜相纸 + 归中真
+ * 转场）。设计语言由 design skill 结论主导（候选方向与条款依据见本组设计
+ * 决策书）：**Apple Photos Stacks 式「印刷相纸」隐喻**——堆叠的可读性来自
+ * 形状语法（倾斜楔形 + 圆角 + 邻卡内容），不来自露边宽度（v2 44dp 侧缘直条
+ * / v3 底缘直条 / v5 16:10 窄边三版翻车同源：轴向平行直条读作 chrome，
  * 不读作另一张照片）。
+ *
+ * **图片堆 / 视频堆同一套机制（单组件参数化，零复制）**：几何/位形/转场/
+ * 手势/计数对两种 kind 完全同构，差异只在三槽的卡体渲染——
+ *   图片堆：前卡 DeckFrontCard（Image 封面）+ 露边层 DeckBackCard（真实
+ *     邻图内容，楔形有内容线索）；
+ *   视频堆：前卡 DeckVideoFrontCard（封面态，仅此卡挂 player，点前卡 =
+ *     全屏播放）+ 露边层 DeckVideoBackCard（raised 底 + 中央播放 icon
+ *     占位卡，**绝不挂载视频播放器**——性能红线，见其注；schema 无缩略
+ *     图列，楔形露 tone 不露内容，形状语法承担可读性）；收口换张前卡按
+ *     media.id 重挂（player 随内容轮转重建，避免 replaceAsync 异步窗口的
+ *     错内容闪帧，见 DeckVideoFrontCard 注）。
  *
  * 几何（组容器 relative overflow-hidden，宽 = 列宽 onLayout 量取，高 =
  * 中卡高 + 相纸楔形带 + 计数行；overflow-hidden 是横滑与楔形「部分可见」
  * 的实现基础——楔形越出容器缘的部分与滑出的出卡都被列缘裁切，不出血到
- * 画布留白）：
+ * 画布留白；露边层圆角不靠容器：rounded-card16 挂卡体本体、随 transform
+ * 保持，露出区距容器底缘 ≥ 缝 + 计数行 ≈ 20dp 不会被裁成直角）：
  *   中卡：宽 C = 列宽 × 66%（62-70% 档中值，居中 frame left = 列宽×17%），
  *       高 = min(C ÷ DECK_UNIFORM_RATIO, MEDIA_MAX_HEIGHT)——**堆叠组统一
- *       画幅 4:3 横版标准档**（与 media-view 缺元数据回退 FALLBACK_IMAGE_
- *       RATIO 同值同源；显式数值宽高 + cover 裁切，组高与点按体 frame 都
- *       依赖数值高）。统一画幅是混分辨率修复面：v7 按中卡图自然比例派生
- *       组高，正方形 + 长方形混合组换张（索引轮转）时组高随新图比例跳变、
- *       全程变形；组内三槽共用同一画幅后换张零 reflow 零形变（相纸/中卡
- *       同 frame 的前提也由此恒成立）。**单张不成组保持自然比例自适应**
- *       （MediaImage 路径零改动），统一画幅只约束堆叠组；
+ *       画幅 1:1 方形标准档**（显式数值宽高 + cover 裁切，组高与点按体
+ *       frame 都依赖数值高；桌面列核对：列 max-w 620dp → 中卡 409.2dp <
+ *       420 封顶不触发）。统一画幅是混分辨率修复面：v7 按中卡自然比例
+ *       派生组高，混合组换张（索引轮转）时组高随新卡比例跳变、全程变形；
+ *       组内三槽共用同一画幅后换张零 reflow 零形变（相纸/中卡同 frame 的
+ *       前提也由此恒成立）。**单张不成组保持自然比例自适应**（MediaImage /
+ *       MediaBlock 路径零改动），统一画幅只约束堆叠组；
  *   后卡（相纸）：与中卡同 frame，位形 = 微缩 0.96 + 下移 26 + 左 −4°/
  *       右 +4° 镜像倾斜（transform 数组序 [ty, rot, scale] = 缩放、旋转
  *       围绕布局中心，translate 纯平移——下移量不随旋转偏斜）；左右镜像
  *       成扇，底缘露出倾斜楔形，最低点越过中卡底缘的量按几何精确解：
  *         wedgeDepth = DROP − H·(0.5 − s/2·cosθ) + (W·s/2)·sinθ
- *       （统一画幅下随列宽单调派生：312dp 列 ≈ 29.6、342dp 列 ≈ 30.0、
- *       430dp 列 ≈ 31.0，均在 25~33dp 区间；桌面 620dp 全宽列 ≈ 33.2，
- *       4:3 比原自然比例长图更高、W·sinθ 项随之增大——pileBand 按派生值
- *       收口无重叠无裁切，容忍 +0.2）；N=2 时左槽不渲染（只有右侧相纸，
+ *       （1:1 方形画幅下随列宽单调派生：312dp 列 ≈ 28.5、342dp 列 ≈ 28.8、
+ *       430dp 列 ≈ 29.5、桌面 620dp 全宽列 ≈ 31.0，全部落在 25~33dp 目标
+ *       区间——4:3 旧档桌面 33.2 的 +0.2 容差项随方形画幅消除；H = W 使
+ *       H·(0.5 − s/2·cosθ) 项增大、W·sinθ 项同步增长，净深略降——pileBand
+ *       按派生值收口无重叠无裁切）；N=2 时左槽不渲染（只有右侧相纸，
  *       左侧空——单楔形 + 单点按区，退化优雅）；
  *   垫边：后卡图内收 4dp 露 raised（相纸「纸缘」tone，白图浅页可辨）；
  *   前卡描边：1px hairline（ink-border/inkd-border）——照片「卡纸装裱」
  *       （mat）语义，照片本体惯例非卡片级 chrome（#13 口径不变），相近
- *       色调前后卡叠放时的恒定轮廓线（详见 DeckFrontCard 注）；
+ *       色调前后卡叠放时的恒定轮廓线（详见 DeckFrontCard/DeckVideoFrontCard
+ *       注）；
  *   计数行：楔形带之下（top = 中卡高 + max(wedgeDepth, 24) + 2——下限
  *       兜极窄列，楔形带 + 计数行合计 ≥44 触达口径），横向锚定中卡两缘、
  *       右对齐，与楔形渲染零重叠。
@@ -696,24 +900,26 @@ function DeckBackCard({
  * frame 纵向零重叠（top = 中卡高，楔形带 + 计数行整条带），命中测试天然
  * 直达，无需 z 仲裁兜底。
  *
- * 交互链路（既有口径）：点中卡 → requestViewer 全屏（键盘先收）；长按/
- * 桌面双击中卡 → onBlockAction 操作卡（useBlockActionGestures 单点收口）；
- * 点底缘楔形带 → 左半 = 上一张 / 右半 = 下一张（N=2 单区全带宽 = 下一张，
- * 循环；命中区 = 带几何 ≥44dp、零 hitSlop、与中卡 frame 零重叠）；中卡
- * 横滑 = PanResponder 方向锁（|dx|>10 且 |dx|>1.5|dy| 才认领，画布纵滚
- * 零仲裁）+ 提交阈值（|dx|>60）——手势面 = 满宽卡区（自中卡起手横滑）。
- * 转场期间 advancing 闩吞并发手势（方向锁不认领、点按体无效、中卡交互
- * 闸关闭；长按链路提交的是操作卡不动堆，无转场面）。
+ * 交互链路（图/视频堆同链，既有口径）：点中卡 → requestViewer 全屏
+ * （键盘先收；视频堆进全屏播放）；长按/桌面双击中卡 → onBlockAction 操作
+ * 卡（useBlockActionGestures 单点收口）；点底缘楔形带 → 左半 = 上一张 /
+ * 右半 = 下一张（N=2 单区全带宽 = 下一张，循环；命中区 = 带几何 ≥44dp、
+ * 零 hitSlop、与中卡 frame 零重叠）；中卡横滑 = PanResponder 方向锁
+ * （|dx|>10 且 |dx|>1.5|dy| 才认领，画布纵滚零仲裁）+ 提交阈值（|dx|>60）
+ * ——手势面 = 满宽卡区（自中卡起手横滑）。转场期间 advancing 闩吞并发
+ * 手势（方向锁不认领、点按体无效、中卡交互闸关闭；长按链路提交的是操作
+ * 卡不动堆，无转场面）。
  *
- * 换位状态机 v7（滑/点两条提交链路收口到同一条编排）：
+ * 换位状态机（滑/点两条提交链路收口到同一条编排）：
  * - 统一编排 beginAdvance(dir)：中卡（出卡层，内容不换）沿换位方向
  *   frontX timing 220ms（ease-out quint）滑出列缘（透明度走 xFade 的
  *   |x|>列宽区段 0.72→0，与拖拽下限同一条插值）+ dir 侧相纸四值 spring
  *   归中（ty 26→0、±4°→0°、scale 0.96→1、opacity 0.85→1，~310ms 无过冲
  *   收敛——「放平在堆上」的落定）；相纸恒在中卡之下，随出卡让位逐步
  *   揭开；330ms deadline 统一收口（finishAdvance：全值 snap 复位 +
- *   advancing 闩释放 + 索引轮转，同批 React 提交零闪帧——归中相纸终态
- *   与轮转后中卡静止帧像素恒等）；
+ *   advancing 闩释放 + 索引轮转，同批 React 提交零闪帧——图片堆归中相纸
+ *   终态与轮转后中卡静止帧像素恒等；视频堆归中面 = 占位卡，重挂后 raised
+ *   底 + 播放钮与前卡加载态同语言，内容正确性优先于像素恒等）；
  * - 滑动提交：方向锁认领后 Animated.event 跟手写 frontX（仅中卡跟手——
  *   相纸是「堆叠在场」的静态语义，转场才入场，拖拽视差属锦上添花不做，
  *   保住「动画图零重建 + 手势窗口最小 native 扰动」口径），松手 |dx|>60 →
@@ -722,14 +928,15 @@ function DeckBackCard({
  *   滑/点观感一致；
  * - 回弹：|dx|≤60 或手势被系统夺走（terminate）→ 仅 frontX spring 归 0
  *   （friction 8），索引不动、闩不介入（回弹中途可被下一轮拖拽接管）；
- * - 收口内容重指派（收口帧一次发生，全部「像素恒等接管」或「原生缓存
- *   秒回」）：中卡 ← 旧 dir 侧邻卡（归中相纸终态渲染像素恒等接管）；另
- *   一侧相纸 ← 旧中卡（刚在出卡层渲染过，原生 Image 缓存秒回）；归中
- *   相纸 snap 回位形并 ← 新 dir 侧邻卡（N=3 时 = 刚离场的另一侧相纸，
- *   秒回；N≥4 未渲染过，至多一帧 raised 占位——仅楔形带压暗露出区）；
- *   统一画幅下三槽 frame 与组高恒定，收口帧零 reflow（v7 按中卡图自然
- *   比例派生组高时的单次 reflow 已随统一画幅消除）；
- * - N=2 退化：左相纸空缺（左槽/左点按体不渲染，prev 与 next 同图），
+ * - 收口内容重指派（收口帧一次发生）：图片堆全部「像素恒等接管」或
+ *   「原生缓存秒回」——中卡 ← 旧 dir 侧邻卡（归中相纸终态渲染像素恒等
+ *   接管）；另一侧相纸 ← 旧中卡（刚在出卡层渲染过，原生 Image 缓存秒
+ *   回）；归中相纸 snap 回位形并 ← 新 dir 侧邻卡（N=3 时 = 刚离场的另
+ *   一侧相纸，秒回；N≥4 未渲染过，至多一帧 raised 占位——仅楔形带压暗
+ *   露出区）；视频堆前卡 ← media.id 重挂（新 player，见 DeckVideoFrontCard
+ *   注）、露边层内容零切换（占位卡无媒体状态）；统一画幅下三槽 frame 与
+ *   组高恒定，收口帧零 reflow；
+ * - N=2 退化：左相纸空缺（左槽/左点按体不渲染，prev 与 next 同卡），
  *   dir=−1（上一张）无左相纸可归中 → 与 dir=+1 同编排（中卡沿换位方向
  *   滑出 + 右相纸归中），出卡方向仍沿换位方向，视觉语义一致。
  *
@@ -747,27 +954,34 @@ function DeckBackCard({
  * 解释状态变化的 opacity 通道」；animate-expo：reduced motion 与动画
  * 同时交付，不是后续补丁）。
  *
- * 性能口径：任意 N 最多挂载 3 个图片实例（左/中/右三槽，N=2 恒 2 个），
- * 转场不增实例（无第四渲染位——归中相纸复用本槽渲染位，内容零切换），
- * 其余留在 blocks 数据里，换位只是索引轮转（数量无上限）；组内单删/移动
- * → buildRenderUnits 重派生（clamp/解散免费获得），deck 实例按组首块 id
- * 做 key，组首块被删即重挂回第 1 张。与画布纵滚正交：方向锁保证横向意图
- * 才认领手势，纵滚零仲裁。
+ * 性能口径：图片堆任意 N 最多挂载 3 个图片实例（左/中/右三槽，N=2 恒
+ * 2 个），转场不增实例（无第四渲染位——归中相纸复用本槽渲染位，内容零
+ * 切换）；视频堆每堆仅前卡挂 1 个 player 实例、露边层零 player（raised +
+ * 播放 icon 占位卡，连媒体状态订阅都不挂），收口换张 = 旧 player 卸载
+ * 释放 + 新 player 挂载（同批 React 提交），任意时刻每堆 ≤1；两种堆
+ * 其余成员都留在 blocks 数据里，换位只是索引轮转（数量无上限）；组内
+ * 单删/移动 → buildRenderUnits 重派生（clamp/解散免费获得），deck 实例
+ * 按组首块 id 做 key，组首块被删即重挂回第 1 块。与画布纵滚正交：方向锁
+ * 保证横向意图才认领手势，纵滚零仲裁。
  */
 
 /** 转场描述：dir = 换位方向（+1 下一张 / −1 上一张）。归中相纸内容 =
- *  渲染派生值（dir 侧邻卡，本就在渲染中，零切换）；收口帧索引轮转后三槽
+ *  渲染派生值（dir 侧邻卡槽本就渲染，零切换）；收口帧索引轮转后三槽
  *  内容随派生同帧重指派，无需携带 media。 */
 interface DeckAdvance {
     dir: 1 | -1;
 }
 
-function ImageDeckStack({
+function MediaDeckStack({
     items,
+    mediaKind,
     editable,
     onBlockAction,
 }: {
-    items: Array<{ block: JournalMediaBlock; media: JournalMediaRow; index: number }>;
+    items: DeckItem[];
+    /** 堆种类（buildRenderUnits 按 kind 分段保证组内同 kind；图/视频只
+     *  差异化三槽卡体，堆叠机制同一套——见组件注）。 */
+    mediaKind: DeckMediaKind;
     editable: boolean;
     /** 请求弹出当前中卡的块操作卡（屏层渲染，作用于该块）。 */
     onBlockAction(blockId: string): void;
@@ -833,16 +1047,18 @@ function ImageDeckStack({
     // 0 → 槽不渲染）：
     //   cardWidth = 中卡宽 = 列宽 × 66%（62-70% 档中值，居中）；
     //   deckHeight = 中卡高 = min(中卡宽 ÷ DECK_UNIFORM_RATIO, MEDIA_MAX_HEIGHT)
-    //       ——统一画幅 4:3（显式数值宽高 + cover 裁切，组高与点按体 frame
-    //       都依赖数值高）。不随中卡图自然比例变化 → 换张（索引轮转）组高
-    //       恒定，混合分辨率组的转场全程零 reflow 零形变（v7 按自然比例派
-    //       生，换张单次 reflow 是混分辨率组的变形根因）；
+    //       ——统一画幅 1:1 方形（显式数值宽高 + cover 裁切，组高与点按体
+    //       frame 都依赖数值高）。不随中卡媒体自然比例变化 → 换张（索引轮
+    //       转）组高恒定，混合分辨率组的转场全程零 reflow 零形变（v7 按自
+    //       然比例派生，换张单次 reflow 是混分辨率组的变形根因）；桌面列
+    //       max-w 620dp → 409.2dp < 420，MEDIA_MAX_HEIGHT 封顶不触发；
     //   stripWidth = 中卡居中留白 = (列宽 − 中卡宽) / 2（中卡 frame 锚定）；
     //   wedgeDepth = 相纸楔形带深 = 倾斜后卡最低点越过中卡底缘的量（几何
     //       精确解：后卡绕中心转 θ 后底缘最低点半高 = s/2·(H·cosθ + W·sinθ)，
     //       加下移 DROP，减中卡半高 H/2）——计数行锚定用它，不写 magic
-    //       number（画幅/列宽变化自适应）；统一画幅下楔形深度随列宽单调、
-    //       手机画幅区间 29~31dp（几何核对见组件注）；
+    //       number（画幅/列宽变化自适应）；1:1 画幅下楔形深度随列宽单调、
+    //       手机画幅区间 28.5~29.5dp、桌面 620dp 列 31.0dp（几何核对表见
+    //       组件注，全区间 25~33dp 达标）；
     //   pileBand = 楔形带 + 呼吸缝（wedgeDepth 下限 24 兜极窄列：带 +
     //       计数行合计 ≥44 触达口径）。
     const cardWidth = containerWidth * DECK_FRONT_WIDTH_RATIO;
@@ -949,7 +1165,7 @@ function ImageDeckStack({
         ],
     );
 
-    // 转场起手（滑动/点楔形带提交共用同一条编排，见组件注「换位状态机 v7」）：
+    // 转场起手（滑动/点楔形带提交共用同一条编排，见组件注「换位状态机」）：
     // dir 侧相纸四值 spring 归中（相纸 z 恒在中卡之下，不提层——静止重叠
     // 几何下提层会穿帮，「揭开」由出卡滑出让位承担）+ 中卡沿换位方向
     // timing 滑出列缘 + advancing 闩 + deadline 收口。
@@ -1227,15 +1443,17 @@ function ImageDeckStack({
     );
 
     // 防御性回退（置于全部 hook 之后：条件 return 不得跨越 hook 调用；
-    // buildRenderUnits 保证 deck 单元 ≥2 张，实际不可达，仅兜底防击穿）
+    // buildRenderUnits 保证 deck 单元 ≥2 块且同 kind，实际不可达，仅兜底
+    // 防击穿）
     if (itemCount === 0) return null;
     if (itemCount === 1) {
-        // 成组条件被并发变更击穿时按单张独立渲染（与 single 路径同款自适应）
-        return <MediaImage media={items[0].media} />;
+        // 成组条件被并发变更击穿时按单块独立渲染（MediaBlock = 单媒体路径
+        // 单点收口：图片自然比例 / 视频元数据比例 / 音频卡）
+        return <MediaBlock media={items[0].media} durationMs={items[0].block.durationMs} />;
     }
 
     // 三槽取数（循环遍历）：左 = 上一张（N≥3 才有——2 张时 prev 与 next 同
-    // 图，左侧空、只有右侧相纸）、中 = 当前、右 = 下一张
+    // 卡，左侧空、只有右侧相纸）、中 = 当前、右 = 下一张
     const leftItem = itemCount >= 3 ? items[(safeIndex - 1 + itemCount) % itemCount] : null;
     const rightItem = items[(safeIndex + 1) % itemCount];
 
@@ -1260,28 +1478,39 @@ function ImageDeckStack({
                 （静态几何 + pointerEvents none）→ AnimatedSlot（ty/rot/
                 scale/opacity 恒挂 left 通道，静止 = 相纸位形基准 ty 26 +
                 −4°，底缘楔形露在中卡之下、越出容器左缘部分被裁）→ 相纸
-                卡体（4dp raised 垫边）；N=2 不渲染（左相纸空缺，只有右侧） */}
+                卡体（图堆 = 真实邻图 DeckBackCard / 视频堆 = 无 player
+                占位 DeckVideoBackCard，性能红线：露边层零 player）；
+                N=2 不渲染（左相纸空缺，只有右侧） */}
             {deckHeight > 0 && leftItem ? (
                 <View style={[cardSlot, { zIndex: 2 }]} pointerEvents="none">
                     <DeckAnimatedSlot style={[{ flex: 1 }, leftSlotStyle]}>
-                        <DeckBackCard
-                            media={leftItem.media}
-                            width={cardWidth}
-                            height={deckHeight}
-                        />
+                        {mediaKind === 'video' ? (
+                            <DeckVideoBackCard width={cardWidth} height={deckHeight} />
+                        ) : (
+                            <DeckBackCard
+                                media={leftItem.media}
+                                width={cardWidth}
+                                height={deckHeight}
+                            />
+                        )}
                     </DeckAnimatedSlot>
                 </View>
             ) : null}
             {/* 右相纸槽 = 下一张（zIndex 2 恒定，left 槽位形镜像 +4°）：right
-                通道恒挂，转场时即归中卡卡体（内容零切换，本就渲染目标图） */}
+                通道恒挂，转场时即归中卡卡体（图堆内容零切换本就渲染目标图；
+                视频堆归中面 = 占位卡，前卡实体化在收口帧重挂完成） */}
             {deckHeight > 0 && rightItem ? (
                 <View style={[cardSlot, { zIndex: 2 }]} pointerEvents="none">
                     <DeckAnimatedSlot style={[{ flex: 1 }, rightSlotStyle]}>
-                        <DeckBackCard
-                            media={rightItem.media}
-                            width={cardWidth}
-                            height={deckHeight}
-                        />
+                        {mediaKind === 'video' ? (
+                            <DeckVideoBackCard width={cardWidth} height={deckHeight} />
+                        ) : (
+                            <DeckBackCard
+                                media={rightItem.media}
+                                width={cardWidth}
+                                height={deckHeight}
+                            />
+                        )}
                     </DeckAnimatedSlot>
                 </View>
             ) : null}
@@ -1289,21 +1518,42 @@ function ImageDeckStack({
                 方向锁挂此，手势面 = 满宽卡区；静态布局 key 收口在内层中卡
                 frame wrapper，deck 铁律）→ 中卡 frame wrapper → AnimatedSlot
                 （flex:1 + translateX/frontFade×xFade，出卡滑出复用此层）→
-                中卡卡体（点全屏 + 长按操作卡，既有链；转场期间 interactive
-                闸关闭；触摸面零 className 收口在 DeckFrontCard） */}
+                中卡卡体（图堆 DeckFrontCard / 视频堆 DeckVideoFrontCard
+                封面态；点全屏 + 长按操作卡，既有链；转场期间 interactive
+                闸关闭；触摸面零 className 收口在两卡体内）。视频前卡
+                key = media.id：收口换张即重挂（旧 player 卸载释放 + 新
+                player 挂载，防 replaceAsync 异步窗口的错内容闪帧，性能
+                红线口径 = 每堆任意时刻 ≤1 player，见 DeckVideoFrontCard 注） */}
             <View style={[gestureSlot, { zIndex: 3 }]} {...panResponder.panHandlers}>
                 <View style={cardSlot}>
                     <DeckAnimatedSlot style={[{ flex: 1 }, frontStyle]}>
                         {frontItem && deckHeight > 0 ? (
-                            <DeckFrontCard
-                                media={frontItem.media}
-                                width={cardWidth}
-                                height={deckHeight}
-                                interactive={advance == null}
-                                onBlockAction={
-                                    editable ? () => onBlockAction(frontItem.block.id) : undefined
-                                }
-                            />
+                            mediaKind === 'video' ? (
+                                <DeckVideoFrontCard
+                                    key={frontItem.media.id}
+                                    media={frontItem.media}
+                                    width={cardWidth}
+                                    height={deckHeight}
+                                    interactive={advance == null}
+                                    onBlockAction={
+                                        editable
+                                            ? () => onBlockAction(frontItem.block.id)
+                                            : undefined
+                                    }
+                                />
+                            ) : (
+                                <DeckFrontCard
+                                    media={frontItem.media}
+                                    width={cardWidth}
+                                    height={deckHeight}
+                                    interactive={advance == null}
+                                    onBlockAction={
+                                        editable
+                                            ? () => onBlockAction(frontItem.block.id)
+                                            : undefined
+                                    }
+                                />
+                            )
                         ) : null}
                     </DeckAnimatedSlot>
                 </View>
@@ -1480,7 +1730,8 @@ export function BlockEditor({
         onRequestActionBlock?.(blockId);
     };
 
-    // 渲染单元（纯派生，见 buildRenderUnits）：连续图片合并堆叠，其余原样
+    // 渲染单元（纯派生，见 buildRenderUnits）：连续同 kind 媒体合并堆叠
+    // （图片堆 / 视频堆，混排按 kind 分段），其余原样
     const units = buildRenderUnits(blocks, mediaById);
     /** 媒体块 margin 按邻居分档（节奏表派生值）：邻媒体 6dp / 邻文本 12dp。 */
     const mediaMargin = (neighbor: JournalBlock | undefined): number =>
@@ -1496,7 +1747,7 @@ export function BlockEditor({
                     // 组边界 margin 按组外邻居分档（与单媒体块同口径）；组内
                     // 层叠一体（deck 式无页间隙），节奏由组级 margin 承担。
                     // key = 组首块 id（稳定）：组内增删只 clamp/轮转不重挂全组；
-                    // 组首块被删 → key 更替 → 重挂回第 1 张（明确语义）
+                    // 组首块被删 → key 更替 → 重挂回第 1 块（明确语义）
                     const groupMargin = {
                         marginTop: mediaMargin(blocks[firstIndex - 1]),
                         marginBottom: mediaMargin(blocks[lastIndex + 1]),
@@ -1504,8 +1755,9 @@ export function BlockEditor({
                     return (
                         <BlockReveal key={unit.items[0].block.id} index={firstIndex}>
                             <View style={groupMargin}>
-                                <ImageDeckStack
+                                <MediaDeckStack
                                     items={unit.items}
+                                    mediaKind={unit.mediaKind}
                                     editable={editable}
                                     onBlockAction={openActionBlock}
                                 />
