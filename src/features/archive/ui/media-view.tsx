@@ -16,13 +16,18 @@ import type { JournalMediaRow } from '../db';
  * - 圆角走半径体系：媒体卡片 rounded-card（16）、缩略图 rounded-thumb（8）；
  * - 无描边（#13 收敛）：白底照片自带边界 + raised 占位底 tone 分层，不靠线框；
  * - 占位底一律 bg-ink-raised：加载中不是裸黑块/裸白块，深浅两主题都成立；
- * - 图片自然比例（picker 落库宽高）+ 高度封顶；视频比例随元数据自适应
- *   （#7：横版 16:9 与卡同比零信箱条；竖版高度封顶 + cover 裁切，与图片同
- *   口径），缺元数据（录像入库不落宽高）先按 16:9 + contain 渲染防跳变，
- *   native 上由 use-video-natural-size 探测 player 轨道尺寸，探测到即切
- *   实际比例 + cover（竖版视频封面容器不再左右信箱空白；web 探测不可行，
- *   维持 16:9 + contain 回退）；
- * - 宽度恒为所在列宽（w-full）：媒体与正文左右边缘对齐，不做横向出血。
+ * - 媒体自适应画幅（v10 终版口径，卡即图）：容器比例恒等于媒体自然比例
+ *   （picker 落库宽高），**宽度 = min(列宽, MEDIA_MAX_HEIGHT × 比例)、高 =
+ *   宽 ÷ 比例**（width ≤ cap×r ⟹ height ≤ cap 恒成立，纯 yoga 式约束无
+ *   JS 量测）——横版满列宽；竖版高触上限后宽度收窄并水平居中（alignSelf
+ *   center），完整显示零裁切零留边；缺元数据回退 4:3（FALLBACK_IMAGE_RATIO，
+ *   手机列下即满列宽，桌面宽列同样受上限公式约束）。渲染仍用 cover：同比例
+ *   盒内 cover = 精确满铺的等价实现（亚像素舍入差下 contain 会露 ≤1px 垫边、
+ *   cover 只裁 ≤1px）。视频比例随元数据自适应（#7），缺元数据（录像入库不落
+ *   宽高）先按 16:9 + contain 渲染防跳变，native 上由 use-video-natural-size
+ *   探测轨道尺寸，探测到即切实际比例（web 探测不可行，维持 16:9 + contain
+ *   回退）；外部传 height 的封面场景（TripCoverVideo）保持固定高 + cover 原
+ *   行为；缩略图（MediaThumb）独立定尺寸——两者均不进自适应模型；
  *
  * 全屏查看：图片/视频块与缩略图点击 → requestViewer()（viewer-request 中立层，
  * 请求 + 导航 /viewer 一步收口）→ root Stack 的 transparentModal 路由屏渲染
@@ -40,13 +45,15 @@ import type { JournalMediaRow } from '../db';
  * 不传则行为与旧版一致（点击即全屏，无长按层），缩略图/封面零改动。
  */
 
-/** 媒体高度上限（dp）：图片与竖版视频共用——按列宽铺满后高度封顶，超出部分
-    cover 裁切（媒体卡不无限占屏，编辑画布节奏与图片块一致）。导出供编辑器
-    deck 式图片堆叠的组高推导复用（与 MediaImage 高度公式同源，单点事实源）。 */
+/** 媒体高度上限（dp）：**单张媒体**（图/视频）自适应画幅的高度封顶——
+    竖版高触上限后宽度收窄居中、完整显示不裁切（公式见文件头 v10 口径）。
+    堆叠组的卡高上限独立（editor.tsx DECK_MAX_HEIGHT = 460）：堆叠卡宽 =
+    列宽 66%（单张 = 满列宽），同上限下竖版堆卡偏矮，按「堆叠容器不够长」
+    反馈单独放宽、语义分轨互不牵连。 */
 export const MEDIA_MAX_HEIGHT = 420;
 
-/** 媒体行缺宽高元数据时的图片兜底比例（4:3，卡片相机常用画幅）。导出同上
-    （deck 组高推导与 MediaImage 同源取用）。 */
+/** 媒体行缺宽高元数据时的图片兜底比例（4:3，卡片相机常用画幅）。editor 的
+    deck 组高推导与 MediaImage 同源取用（导入消费）。 */
 export const FALLBACK_IMAGE_RATIO = 4 / 3;
 
 /** 视频块缺宽高元数据时的兜底比例（16:9，手机横录常用画幅）；有元数据走
@@ -145,8 +152,17 @@ export function MediaImage({
 }) {
     const { status, uri } = useFileUrlState(media.file_key);
     const palette = usePalette();
-    // 自然比例：picker 落库的宽高优先，缺元数据回退 4:3；aspectRatio + maxHeight
-    // 由 yoga 收敛：列宽固定，比例算出的高度超上限时压回上限并 cover 裁切
+    // 自然比例：picker 落库的宽高优先，缺元数据回退 4:3（v10 自适应画幅）。
+    // 约束模型 = maxWidth(420×r) + maxHeight(420) 双上限 + aspectRatio：
+    // 竖版 height = 列宽/r 超 420 时，width 被 maxWidth = 420×r 压窄、height
+    // 同时被 maxHeight 钳在 420——终盒比例恒等于 r（yoga 实测源码口径：
+    // aspectRatio 先由定宽派生高，constrainMaxSizeForMode 再对宽/高**独立**
+    // 钳 max，两分支组合的终盒 ratio 数学上恒 = r；web CSS aspect-ratio 以
+    // 钳定后的 used width 派生高，同结果）。「maxHeight 钳高但定宽不回缩」
+    // 的旧 cover 裁切问题就此消除（旧式 aspectRatio + maxHeight 组合在竖版
+    // 上产生 390×420 裁切盒）。
+    // alignSelf center：收窄后水平居中；横版 maxWidth ≥ 420×1.33 = 560 >
+    // 手机列宽，恒满列宽不受影响。
     const ratio =
         media.width && media.height ? media.width / media.height : FALLBACK_IMAGE_RATIO;
     const ready = status === 'ready' && uri != null;
@@ -173,7 +189,12 @@ export function MediaImage({
         >
             <View
                 className="w-full overflow-hidden rounded-card bg-ink-raised dark:bg-inkd-raised"
-                style={{ aspectRatio: ratio, maxHeight: MEDIA_MAX_HEIGHT }}
+                style={{
+                    aspectRatio: ratio,
+                    maxWidth: MEDIA_MAX_HEIGHT * ratio,
+                    maxHeight: MEDIA_MAX_HEIGHT,
+                    alignSelf: 'center',
+                }}
             >
                 {status === 'ready' && uri ? (
                     <Image source={{ uri }} className="h-full w-full" resizeMode="cover" />
@@ -224,14 +245,15 @@ export function MediaVideo({
         p.loop = false;
         p.muted = false;
     });
-    // 卡片比例随媒体元数据自适应（#7）：横版视频与卡同比 → 零信箱条；竖版在
-    // MEDIA_MAX_HEIGHT 封顶后 cover 裁切（与图片块「超限裁切」同口径，中央
-    // 构图主体不丢）。缺元数据（录像入库不落宽高、行程封面占位行）两段式：
-    // 探测期间维持 16:9 + contain 现比例渲染（防跳变）；native 上探测到
-    // player 轨道尺寸（use-video-natural-size，纯 JS player 不渲染画面）后
-    // 切实际比例 + cover——竖版视频封面容器随画幅收窄，不再左右信箱空白；
+    // 卡片比例随媒体元数据自适应（#7，v10 与 MediaImage 同一自适应画幅）：
+    // maxWidth 先钳宽 + aspectRatio 派生高（公式见 MediaImage 注）——横版满
+    // 列宽零信箱条；竖版高触 420 上限后宽度收窄居中，cover 在同比例盒内 =
+    // 精确满铺不裁切（中央构图完整呈现）。缺元数据（录像入库不落宽高、行程
+    // 封面占位行）两段式：探测期间维持 16:9 + contain 现比例渲染（防跳变）；
+    // native 上探测到 player 轨道尺寸（use-video-natural-size，纯 JS player
+    // 不渲染画面）后切实际比例——竖版视频容器随画幅收窄，不再左右信箱空白；
     // web 无轨道数据（探测 hook 内部禁用）恒走 16:9 + contain 回退。
-    // 封面等外部传 height 的场景：固定高度 + cover（原行为，不探测）。
+    // 封面等外部传 height 的场景：固定高度 + cover（原行为，不进自适应模型）。
     const mediaWidth = media.width;
     const mediaHeight = media.height;
     const hasDimensions =
@@ -277,7 +299,15 @@ export function MediaVideo({
                 style={
                     fixedHeight
                         ? { height }
-                        : { aspectRatio: ratio, maxHeight: MEDIA_MAX_HEIGHT }
+                        : {
+                              // v10 自适应画幅（与 MediaImage 同式，见其注）：
+                              // maxWidth/maxHeight 双上限 + aspectRatio，竖版
+                              // 收窄居中、终盒比例恒等于媒体比例
+                              aspectRatio: ratio,
+                              maxWidth: MEDIA_MAX_HEIGHT * ratio,
+                              maxHeight: MEDIA_MAX_HEIGHT,
+                              alignSelf: 'center',
+                          }
                 }
             >
                 {status === 'ready' && uri ? (
