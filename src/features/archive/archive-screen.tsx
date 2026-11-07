@@ -15,9 +15,7 @@ import { getJournalByDate, listTripMediaByTrip } from './db';
 import {
     formatDateGroupLabel,
     isEditable,
-    mediaCount,
     parseBlocks,
-    previewText,
 } from './journal-logic';
 import { formatTripSpan, pickDeckTrip, todayLocal } from './trip-logic';
 // useDeckSlotFront 走 ui 域内直连（域内直连模块与 ./db、./trip-logic 同纪律；
@@ -39,14 +37,17 @@ import {
     useJournalMedia,
     usePalette,
 } from './ui';
-import type { JournalRow } from './db';
+import type { JournalBlock, JournalRow } from './db';
 
 /**
  * Archive 首页：行程与当前日记两张卡，重叠、左右若隐若现（deck 几何/交互归
  * ui/deck.tsx，本屏只组装卡片内容）。
  *
  * 卡片结构（DEV.md #3 垂直大重构）：**图上文下**——封面媒体区（行程首图/
- * 日记首图，全出血贴卡顶）在上，文字区（标题/区间/状态/摘要）在下。理由：
+ * 日记首图，全出血贴卡顶）在上，文字区四层节奏在下（eyebrow 行[日期/区间，
+ * 11 muted tabular] / 标题[15 semibold] / 摘要 prose[引导行 15 text 1 行 +
+ * 正文 13 muted 预算行数，媒体以轻量标记并入底 meta 行，不内联打断节奏] /
+ * 底 meta + CTA）。理由：
  * 1. taste-skill 法则「一张主导图胜过六张小图」：封面占卡高约半，识别度最高；
  * 2. 露条识别度：后卡露出的 76px 竖条里，图片切片比文字切片更具可辨识度，
  *    「点露条换位」的核心交互因此更可发现；
@@ -76,9 +77,15 @@ import type { JournalRow } from './db';
 const COVER_RATIO = 16 / 10;
 const COVER_MAX_HEIGHT = 220;
 
-/** 摘要行高（与 leading-6 / leading-5 成对）：行数预算按整行取整，宁少勿截半行。 */
-const JOURNAL_SUMMARY_LINE_HEIGHT = 24;
+/** 摘要正文行高（与 leading-5 成对）：行数预算按整行取整，宁少勿截半行。
+    日记卡引导行（15px 1 行）是独立固定槽位，不参与行数预算。 */
+const JOURNAL_SUMMARY_LINE_HEIGHT = 20;
 const TRIP_SUMMARY_LINE_HEIGHT = 20;
+
+/** 日记正文（第二级）拼接上限：13px 双行在卡内约 40–80 字，140 覆盖全部
+    可视需要并留余量，超出截断（numberOfLines 原生截断兜底，双省略号仅在
+    恰好压线的极端宽度出现）。 */
+const SUMMARY_BODY_MAX = 140;
 
 export function ArchiveScreen() {
     const router = useRouter();
@@ -547,7 +554,7 @@ function JournalCard({
     // 的软删语义（journal-logic.removeBlock），journal_media 行会保留——封面若
     // 直接按媒体行取，已删除的图/视频仍会霸占首页卡片。封面数据源必须与正文
     // 同源（blocks），媒体行只做 fileKey/尺寸的解析表；行内孤儿（块已删）一律
-    // 不参与封面候选。角标 mediaCount 与摘要 previewText 本就按 blocks 计，同口径。
+    // 不参与封面候选。摘要与 meta 媒体标记同样直接按 blocks 计（同口径）。
     const liveMediaIds = useMemo(
         () => new Set((blocks ?? []).filter((block) => block.t === 'media').map((block) => block.mediaId)),
         [blocks],
@@ -560,10 +567,48 @@ function JournalCard({
             null,
         [mediaRows, liveMediaIds],
     );
-    const summary = useMemo(
-        () => (blocks ? previewText(blocks) || '还没写字，插入一张图也算。' : ''),
-        [blocks],
-    );
+    // 摘要两级重排（排版节奏优化，不改 journal-logic 取数口径）：previewText
+    // 把媒体以「[媒体]」占位内联进文字流（正是"文字媒体交混看着怪"的根源），
+    // 这里直接用屏侧已解析的 blocks 重排——首段 = 引导行（15px text 色 1 行，
+    // 日记的"开篇句"声部），其余段落 = 正文（muted 13px 预算行数）；媒体块
+    // 不再进文字流，改为底 meta 行「图 N · 视频 N · 音频 N」轻量标记。
+    const summaryParts = useMemo(() => {
+        const parts = (blocks ?? [])
+            .filter((block): block is Extract<JournalBlock, { t: 'p' }> => block.t === 'p' && block.text.trim() !== '')
+            .map((block) => block.text.trim());
+        const bodyJoined = parts.slice(1).join(' ');
+        return {
+            lead: parts[0] ?? '',
+            body:
+                bodyJoined.length > SUMMARY_BODY_MAX
+                    ? `${bodyJoined.slice(0, SUMMARY_BODY_MAX)}…`
+                    : bodyJoined,
+        };
+    }, [blocks]);
+    // 媒体计数按 kind 分列（meta 行标记用）：kind 在媒体行上（块只带 mediaId），
+    // 与封面同口径 join blocks ↔ mediaRows；上传占位块（PENDING_MEDIA_ID）无行
+    // 不计，落库后随 revision 重渲补上
+    const mediaTally = useMemo(() => {
+        const tally = { image: 0, video: 0, audio: 0 };
+        const rowKind = new Map(mediaRows.map((row) => [row.id, row.kind]));
+        for (const block of blocks ?? []) {
+            if (block.t !== 'media') continue;
+            const kind = rowKind.get(block.mediaId);
+            if (kind === 'image') tally.image += 1;
+            else if (kind === 'video') tally.video += 1;
+            else if (kind === 'audio') tally.audio += 1;
+        }
+        return tally;
+    }, [blocks, mediaRows]);
+    // meta 行媒体标记：「图 2 · 视频 1 · 」前缀（无媒体为空串，不引入悬空分隔点）
+    const mediaMeta = [
+        mediaTally.image > 0 ? `图 ${mediaTally.image}` : null,
+        mediaTally.video > 0 ? `视频 ${mediaTally.video}` : null,
+        mediaTally.audio > 0 ? `音频 ${mediaTally.audio}` : null,
+    ]
+        .filter((part): part is string => part != null)
+        .join(' · ');
+    const mediaMetaPrefix = mediaMeta ? `${mediaMeta} · ` : '';
     const { maxLines, onLayout } = useSummaryLineBudget(JOURNAL_SUMMARY_LINE_HEIGHT);
     const canRename = isFront && journal != null && isEditable(journal.status);
     // 与媒体块同一套手势解析：长按（native/web 触屏）/双击（web 桌面）→ 重命名，
@@ -643,8 +688,14 @@ function JournalCard({
                 accessibilityRole="button"
                 accessibilityLabel={canRename ? '打开笔记，长按重命名' : '打开笔记'}
             >
+                {/* 日期行 = eyebrow 档：11px muted tabular（原 15px semibold 与
+                    标题同行同权、无节奏，降档后卡内声部收敛到标题/引导行）；
+                    relative（今天/昨天）accent 同行右随 */}
                 <View className="flex-row items-center justify-between">
-                    <Text className="text-[15px] font-semibold text-ink-text dark:text-inkd-text">
+                    <Text
+                        className="text-[11px] text-ink-muted dark:text-inkd-muted"
+                        style={{ fontVariant: ['tabular-nums'] }}
+                    >
                         {label.monthDay} {label.weekday}
                         {label.relative ? (
                             <Text className="ml-2 text-[11px] font-medium text-ink-accent dark:text-inkd-accent">
@@ -664,27 +715,40 @@ function JournalCard({
                 {journal.title ? (
                     <Text
                         numberOfLines={1}
-                        className="pt-0.5 text-[15px] font-semibold text-ink-text dark:text-inkd-text"
+                        className="mt-1 text-[15px] font-semibold text-ink-text dark:text-inkd-text"
                     >
                         {journal.title}
                     </Text>
                 ) : null}
-                {/* 摘要区：flex-1 实测高度 → 行数 clamp（宁少勿截半行），overflow-hidden 兜底 */}
-                <View className="min-h-0 flex-1 overflow-hidden" onLayout={onLayout}>
-                    <SummaryText
-                        maxLines={maxLines}
-                        lineClass="text-[14px] leading-6"
-                        textClass="text-ink-secondary dark:text-inkd-secondary"
-                    >
-                        {summary}
-                    </SummaryText>
+                {/* 引导行（节奏主层）：正文首段 15px text 色 1 行——无题日记的
+                    主声部、有题日记的开篇句；空内容日记渲染 muted 提示语（占位
+                    语义，不冒充内容声部）。媒体不在此层（原 [媒体] 内联占位
+                    打断节奏，已并入底 meta 行） */}
+                <Text
+                    numberOfLines={1}
+                    className={`mt-2.5 text-[15px] leading-6 ${summaryParts.lead ? 'text-ink-text dark:text-inkd-text' : 'text-ink-muted dark:text-inkd-muted'}`}
+                >
+                    {summaryParts.lead || '还没写字，插入一张图也算。'}
+                </Text>
+                {/* 正文（后续段落）：muted 13px 两级中的第二级，flex-1 实测高度 →
+                    行数 clamp（宁少勿截半行），overflow-hidden 兜底 */}
+                <View className="mt-1 min-h-0 flex-1 overflow-hidden" onLayout={onLayout}>
+                    {summaryParts.body ? (
+                        <SummaryText
+                            maxLines={maxLines}
+                            lineClass="text-[13px] leading-5"
+                            textClass="text-ink-muted dark:text-inkd-muted"
+                        >
+                            {summaryParts.body}
+                        </SummaryText>
+                    ) : null}
                 </View>
                 <View className="flex-row items-center justify-between pt-3">
                     <Text
                         className="text-[11px] text-ink-muted dark:text-inkd-muted"
                         style={{ fontVariant: ['tabular-nums'] }}
                     >
-                        {mediaCount(blocks) > 0 ? `${mediaCount(blocks)} 个媒体 · ` : ''}
+                        {mediaMetaPrefix}
                         {journal.word_count} 字
                     </Text>
                     <View className="flex-row items-center">
@@ -699,7 +763,8 @@ function JournalCard({
     );
 }
 
-/** 行程卡：封面（首图/首视频/徽章占位）+ 标题/状态 + 区间 + 摘要 + 进度。 */
+/** 行程卡：封面（首图/首视频/徽章占位）+ 区间 eyebrow + 标题/状态 + 描述 + 进度
+    （四层节奏与日记卡同语言，见文字区注）。 */
 function TripCard({
     trip,
     cover,
@@ -758,9 +823,22 @@ function TripCard({
                     <TripBadge icon={trip.icon} size="deck" />
                 </DeckCoverPlaceholder>
             )}
-            {/* 文字区卡内边距 px-6 py-5：对齐日卡口径（水平 24 / 垂直 20） */}
+            {/* 文字区：四层节奏与日记卡同语言——eyebrow（区间 11 muted tabular）/
+                标题（15 semibold + 状态 chip）/ 描述（13，flex-1 预算行数）/
+                底部进度 + meta + CTA；卡内边距 px-6 py-5 对齐日卡口径 */}
             <View className="flex-1 flex-col px-6 py-5">
-                <View className="flex-row items-center justify-between">
+                {/* 区间行 = eyebrow 槽位（对齐日记卡日期行，移到标题上方）：
+                    13px secondary → 11 muted tabular。区间文案走 formatTripSpan
+                    （持续性感知）：open 端不可用 formatTripRange */}
+                <Text
+                    numberOfLines={1}
+                    className="text-[11px] text-ink-muted dark:text-inkd-muted"
+                    style={{ fontVariant: ['tabular-nums'] }}
+                >
+                    {formatTripSpan(trip)}
+                    {trip.dayCount != null ? ` · ${trip.dayCount} 天` : ''}
+                </Text>
+                <View className="mt-1 flex-row items-center justify-between">
                     <Text
                         numberOfLines={1}
                         className="mr-2 flex-1 text-[15px] font-semibold text-ink-text dark:text-inkd-text"
@@ -769,17 +847,11 @@ function TripCard({
                     </Text>
                     <StatusChip status={trip.status} />
                 </View>
-                {/* 区间文案走 formatTripSpan（持续性感知）：open 端不可用 formatTripRange */}
-                <Text
-                    className="pt-1 text-[13px] text-ink-secondary dark:text-inkd-secondary"
-                    style={{ fontVariant: ['tabular-nums'] }}
-                >
-                    {formatTripSpan(trip)}
-                    {trip.dayCount != null ? ` · ${trip.dayCount} 天` : ''}
-                </Text>
-                {/* 摘要区：同日记卡口径；tone 对齐 trip-detail 描述行（secondary）——
-                    同一数据（trip.description）跨屏同值（原 muted 是双轨漂移） */}
-                <View className="min-h-0 flex-1 overflow-hidden" onLayout={onLayout}>
+                {/* 描述（prose 槽位）：单字段无块结构，不做引导行/正文两级切分；
+                    tone 对齐 trip-detail 描述行（secondary）——同一数据
+                    （trip.description）跨屏同值（原 muted 是双轨漂移），节奏
+                    对齐取字号/间距/槽位次序，不破既定 tone 口径 */}
+                <View className="mt-2.5 min-h-0 flex-1 overflow-hidden" onLayout={onLayout}>
                     <SummaryText
                         maxLines={maxLines}
                         lineClass="text-[13px] leading-5"

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef } from 'react';
-import { Platform, Pressable, Text, View } from 'react-native';
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { Animated, Easing, Platform, Pressable, Text, View } from 'react-native';
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import type { AudioPlayer } from 'expo-audio';
 import { BouncyPressable } from '@/core/icons';
@@ -38,6 +38,12 @@ import type { JournalMediaRow } from '../db';
  *   条 = palette.accent（已播），其余 = palette.muted（未播）；随 player
  *   updateInterval（200ms）状态流重渲换色（38 根纯 View 换色开销可忽略，
  *   无需动画节点——旧双层覆盖式进度结构整层退役，见 v4 注）。
+ *   **边界条脉冲（v5「播放到了，就动一下」）**：litCount 每前进一根，边界条
+ *   （index === litCount−1）做一次 scaleY 弹跳 1→1.35→1（timing 序列
+ *   90+90ms ≈ 180ms，transform only，native driver，不改布局卡高恒定）；
+ *   共享单 Animated.Value 复位重放（快速推进新脉冲接管旧脉冲）；暂停/播完
+ *   清脉冲回落 1；恢复 seek（暂停态跳变）不脉冲。只动边界条一根，其余 37
+ *   根恒纯 View 零动画节点（实现口径见 AudioBlock 内注）。
  *   **颜色双主题铁定可辨**：accent / muted 都从 usePalette() 取语义色
  *   （禁固定 hex）——muted 为弱灰阶、accent 为数据强调蓝，token 与 tailwind
  *   ink/inkd 严格成对，深浅两主题「已播/未播」对比均明显（切主题失效排查
@@ -81,8 +87,9 @@ import type { JournalMediaRow } from '../db';
  * - **切主题可用性（v3 硬性修复面）**：排查结论（嫌疑链逐条）——
  *   ①固定 hex / 不随主题的 tone 类：本文件无（已亮条/未亮条/时间行全部
  *     palette 语义色 + ink/inkd 类），排除；
- *   ②动画插值含 palette 依赖：v4 逐条点亮后本文件已零动画节点
- *     （旧双层覆盖式进度结构整层退役），排除；
+ *   ②动画插值含 palette 依赖：本文件现仅存的动画节点 = 边界条脉冲的
+ *     scaleY Value（v5，纯 transform，无 palette 参与，条色仍为静态
+ *     prop 换色），排除；
  *   ③useFileUrlState blob 误 revoke：该 hook effect deps 严格 [key]，
  *     主题重渲不重跑、blob 只在卸载/换 key 时 revoke（use-file-url.ts:52
  *     核实），排除；
@@ -181,6 +188,19 @@ const WAVE_BAR_MAX_HEIGHT = 40;
 const WAVE_HEIGHT = 48;
 /** 条间隙（px）。 */
 const WAVE_BAR_GAP = 2;
+
+/* ------------------------------------------------------------------ */
+/* 边界条脉冲（「播放到了，就动一下」v5）                                */
+/* ------------------------------------------------------------------ */
+
+/** 边界条 Animated 容器（模块级 createAnimatedComponent——组件级创建会在
+ *  每次渲染重建 native 组件，deck.tsx #9 同源教训）。 */
+const PulseBar = Animated.createAnimatedComponent(View);
+/** 脉冲峰值：边界条 scaleY 弹跳上冲倍率（1 → 1.35 → 1，transform only，
+ *  不改布局——媒体卡高度恒定）。 */
+const PULSE_PEAK = 1.35;
+/** 脉冲单程时长（ms）：上行/下行各一程，总长 ~180ms（克制口径，不喧宾）。 */
+const PULSE_LEG_MS = 90;
 
 /** FNV-1a 32 位哈希：同输入恒同输出，跨渲染/跨端/跨 JS 引擎稳定（无时钟、
     无随机源、纯整数运算——Math.imul 保证 32 位乘法不丢精度）。 */
@@ -286,31 +306,47 @@ function deriveWaveHeights(mediaId: string): number[] {
 
 /** 一排声纹条（逐条点亮渲染）：单排 N 根独立渲染，index < litCount 的条 =
     accent（已播），其余 = idle 色（未播 muted / loading faint）——纯 View
-    换色随 200ms 状态流重渲，开销可忽略（无需动画节点）。 */
+    换色随 200ms 状态流重渲，开销可忽略。边界条（index === litCount−1）为
+    PulseBar，scaleY 脉冲由共享单 Value 驱动（复位重放，见 AudioBlock 注）；
+    其余 37 根恒为纯 View 零动画节点。边界条零 className（css-interop 不碰
+    按压 observable 之外的动画面，样式全走 inline style，与动画值同挂）。 */
 function WaveBars({
     heights,
     litCount,
     accent,
     idle,
+    pulse,
 }: {
     heights: number[];
     /** 已点亮条数 = floor(progress × N)；跨界条整条点亮（取舍见文件头 v4 注）。 */
     litCount: number;
     accent: string;
     idle: string;
+    /** 边界条脉冲驱动值（AudioBlock 持有；静止恒 1，脉冲时 1→1.35→1）。 */
+    pulse: Animated.Value;
 }) {
+    const boundaryIndex = litCount - 1;
     return (
         <>
-            {heights.map((height, index) => (
-                <View
-                    key={index}
-                    className="flex-1 rounded-full"
-                    style={{
-                        height,
-                        backgroundColor: index < litCount ? accent : idle,
-                    }}
-                />
-            ))}
+            {heights.map((height, index) => {
+                const bar = {
+                    flex: 1,
+                    borderRadius: 9999,
+                    height,
+                    backgroundColor: index < litCount ? accent : idle,
+                };
+                if (index === boundaryIndex) {
+                    // 边界条：scaleY 脉冲（transform only，native driver；
+                    // scaleY 绕条自身中轴缩放，垂直居中不漂移、不改布局）
+                    return (
+                        <PulseBar
+                            key={index}
+                            style={[bar, { transform: [{ scaleY: pulse }] }]}
+                        />
+                    );
+                }
+                return <View key={index} style={bar} />;
+            })}
         </>
     );
 }
@@ -350,6 +386,48 @@ export function AudioBlock({
     // （单排条无覆盖层，不存在跳变穿帮面）
     const progressRatio = duration > 0 ? Math.min(Math.max(currentTime / duration, 0), 1) : 0;
     const litCount = Math.floor(progressRatio * WAVE_BAR_COUNT);
+
+    // 边界条脉冲（v5「播放到了，就动一下」）：litCount 每前进一根，边界条
+    // （index === litCount−1）做一次 scaleY 弹跳 1→1.35→1（timing 序列
+    // 90+90ms，transform only，native driver，不改布局——媒体卡高度恒定）。
+    // 实现口径：
+    // - 共享单 Animated.Value：快速连续推进时新脉冲 stopAnimation → 复位 1
+    //   → 重放，天然接管旧脉冲（不叠 Value、不排队）；
+    // - 只动边界条一根（PulseBar 随边界移动重挂，其余 37 根恒纯 View）；
+    // - 暂停/播完（playing 翻 false，含互斥让位/播完即停/卸载前态）清脉冲
+    //   回落 1；恢复 seek（暂停态位置跳变）不触发脉冲（不是「播放到了」）；
+    // - useLayoutEffect：复位先于边界条首帧绘制，新边界条不会以旧脉冲的
+    //   在飞值闪一帧；
+    // - AudioBlock 是音频卡唯一实现（照片堆不收音频），堆内复用即同行为。
+    const pulse = useRef(new Animated.Value(1)).current;
+    const litRef = useRef(0);
+    useLayoutEffect(() => {
+        const advanced = litCount > litRef.current;
+        litRef.current = litCount;
+        if (!advanced || !playing) return;
+        pulse.stopAnimation();
+        pulse.setValue(1);
+        Animated.sequence([
+            Animated.timing(pulse, {
+                toValue: PULSE_PEAK,
+                duration: PULSE_LEG_MS,
+                easing: Easing.out(Easing.quad),
+                useNativeDriver: true,
+            }),
+            Animated.timing(pulse, {
+                toValue: 1,
+                duration: PULSE_LEG_MS,
+                easing: Easing.in(Easing.quad),
+                useNativeDriver: true,
+            }),
+        ]).start();
+    }, [litCount, playing, pulse]);
+    // 暂停/播完清脉冲：条回落 1（静止位形），下次推进重新起脉冲
+    useEffect(() => {
+        if (playing) return;
+        pulse.stopAnimation();
+        pulse.setValue(1);
+    }, [playing, pulse]);
 
     // 最后已知播放位（卸载写缓存用）：状态流里同步，卸载清理函数只读 ref
     const latestTimeRef = useRef(0);
@@ -571,6 +649,7 @@ export function AudioBlock({
                             litCount={ready ? litCount : 0}
                             accent={palette.accent}
                             idle={ready ? palette.muted : palette.faint}
+                            pulse={pulse}
                         />
                     </View>
                 </View>
