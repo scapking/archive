@@ -217,49 +217,35 @@ export function countImageBlocks(
 }
 
 /**
- * pending 占位插入落点（插入流第一步，v8 修复「堆叠后无法新增图片」）：
- * - 图片：**最后一个图片媒体块之后**（无图片块则文档末尾）——回填后新图
- *   与既有连续图片串相邻，经渲染层 buildRenderUnits 的连续相邻判定并入
- *   堆叠组（组在中间也成立；孤立图 + 新图 = 成新组，同一语义）。v7 实现
- *   恒追加文档末尾：组后还有文本时新图与组隔离永不成组、且落在可视区外
- *   （「点了没反应/不出现」的体感根因之一）；
- * - 视频/音频：不参与堆叠，恒落文档末尾（不落图片串内部，不打断既有
- *   连续性）。
- * isImage 注入 kind 判定（同 countImageBlocks）；pending 占位 id 查不到行
- * → false，不被当作落点锚（在途占位不参与下一次落点计算）。
+ * pending 占位插入落点（插入流第一步，v9 语义回正，用户裁决推翻 v8）：
+ * **真实文末追加**——图片占位恒 append 到 blocks 末尾，不再「跳位」到最后
+ * 一个图片块之后。v8 的跳位行为被明确否决：堆叠在文档中间、其后又加了
+ * 输入框/音频/视频时，新图会越过这些新内容并入旧堆叠，打断文档时间线。
+ * 回填后是否并入堆叠组只由**自然相邻**决定（渲染层 buildRenderUnits 的
+ * 连续相邻判定，本函数不预设组）：前一块是同 kind 就绪媒体 → 回填后自然
+ * 并入堆叠组（堆叠恰在文末的场景）；中间有任何文本/音频/视频 → 不成组，
+ * 新图在文末独立成段（堆叠在中间的场景）。
+ * kind 参数已随跳位落点逻辑移除（三种 kind 落点统一文末，占位块结构相同）；
+ * 回填走 resolvePendingBlock 原位替换（v8 修复保留：占位不被后续编辑挤
+ * 漂移，真实媒体块留在插入位置）。
  */
-export function insertPendingBlock(
-    blocks: JournalBlock[],
-    kind: 'image' | 'video' | 'audio',
-    pendingId: string,
-    isImage: (mediaId: string) => boolean,
-): JournalBlock[] {
+export function insertPendingBlock(blocks: JournalBlock[], pendingId: string): JournalBlock[] {
     const pending: JournalBlock = {
         t: 'media',
         id: pendingId,
         mediaId: PENDING_MEDIA_ID,
     };
-    if (kind !== 'image') return [...blocks, pending];
-    let insertAt = blocks.length;
-    for (let i = blocks.length - 1; i >= 0; i--) {
-        const block = blocks[i];
-        if (block.t === 'media' && isImage(block.mediaId)) {
-            insertAt = i + 1;
-            break;
-        }
-    }
-    const next = [...blocks];
-    next.splice(insertAt, 0, pending);
-    return next;
+    return [...blocks, pending];
 }
 
 /**
- * pending 占位原位回填（插入流收口步，v8）：pendingId 块**原位替换**为
- * 真实媒体块——落点语义「按插入位置成组」由占位与回填共用同一下标保证
- * （v7 回填恒追加文档末尾，占位在中间时真实块与串隔开、还从原位「跳」到
- * 文末）。mediaId 为 null（落库失败，store 已上浮 error）时仅移除占位。
- * 只处理本 pendingId：不误伤其他在途占位（并发通道防御），占位已不在
- * （防御）时原样返回、不重建数组。
+ * pending 占位原位回填（插入流收口步，v8 引入、v9 保留）：pendingId 块
+ * **原位替换**为真实媒体块——防漂移：插入后用户继续写字/插其他媒体会把
+ * 占位挤离文末，恒追加文末的回填会让真实块从占位位置「跳」走；原位替换
+ * 保证真实媒体块留在占位出现的位置，成组与否交由渲染层 buildRenderUnits
+ * 按自然相邻判定（本函数不预设组）。mediaId 为 null（落库失败，store 已
+ * 上浮 error）时仅移除占位。只处理本 pendingId：不误伤其他在途占位（并发
+ * 通道防御），占位已不在（防御）时原样返回、不重建数组。
  */
 export function resolvePendingBlock(
     blocks: JournalBlock[],

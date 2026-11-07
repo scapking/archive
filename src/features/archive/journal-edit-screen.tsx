@@ -280,14 +280,14 @@ export function JournalEditScreen({
      * 真实媒体块。**只插媒体块**：不追加空文本段、不自动聚焦新输入框（用户
      * 反馈——想写字自己点 + →「添加输入框」，媒体插入只管媒体本身，pending
      * 占位 → 回填的既有流程不变）。异常上浮 error 并回滚占位。
-     * 落点/回填走 journal-logic 纯函数（v8 修复「堆叠后无法新增图片」）：
-     * - 占位插入点 = 图片插在**最后一个图片块之后**（回填后与既有连续图片
-     *   串相邻，buildRenderUnits 判定并入堆叠组——组在文档中间同样成立），
-     *   视频/音频恒落末尾（不参与堆叠、不打断图片串）；v7 恒追加文档末尾，
-     *   组后还有文本时新图与组隔离永不成组、且落在可视区外（「点了没反应/
-     *   不出现」的体感根因）；
-     * - 回填 = 占位**原位替换**为真实媒体块（v7 恒追加末尾：占位在中间时
-     *   真实块与串隔开不成组，还从占位位置「跳」到文末）；失败仅移除占位。
+     * 落点/回填走 journal-logic 纯函数（v9 插入语义回正，用户裁决推翻 v8）：
+     * - 占位插入点 = **真实文末追加**（不跳位：v8 的「图片插到最后一个图片
+     *   块之后」会在堆叠位于文档中间、且其后已加输入框/音频/视频时越过新
+     *   内容并入旧堆叠，破坏文档时间线）；回填后是否并入堆叠只由**自然相
+     *   邻**决定（buildRenderUnits 连续相邻判定）——堆叠恰在文末 → 新图紧
+     *   邻并入；堆叠在中间/其后有其他内容 → 新图文末独立不成组；
+     * - 回填 = 占位**原位替换**为真实媒体块（v8 修复保留：占位不被后续编
+     *   辑挤漂移，真实块留在插入位置）；失败仅移除占位。
      * updater 一律纯函数：块 id 在 updater 外预生成（#1.2：旧实现把 id 生成/
      * 焦点副作用夹进 updater，并发重跑会生成漂移 id，媒体回填竞态下布局错乱）。
      *
@@ -302,11 +302,8 @@ export function JournalEditScreen({
     ) => {
         if (!journal) return null;
         const pendingId = newBlockId();
-        // kind 判定注入（journal-logic 禁运行时 db 依赖）：pending 占位 id
-        // 查不到行 → false，在途占位不参与落点计算
-        const isImageMedia = (mediaId: string) => mediaById.get(mediaId)?.kind === 'image';
-        // 先插 pending 占位（不阻塞继续写字），落盘后原位回填真实媒体块
-        setBlocks((current) => insertPendingBlock(current, kind, pendingId, isImageMedia));
+        // 先插 pending 占位（真实文末追加，不阻塞继续写字），落盘后原位回填
+        setBlocks((current) => insertPendingBlock(current, pendingId));
         try {
             const mediaId = await store.getState().attachJournalMedia(journal.id, kind, uri, width, height);
             // 媒体块 id 在 updater 外预生成（#1.2 纯函数纪律）；落库失败不生成
