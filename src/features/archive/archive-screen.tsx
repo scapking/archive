@@ -114,9 +114,20 @@ export function ArchiveScreen() {
     }, [ready, loadAll]);
     useEffect(() => {
         let active = true;
-        getJournalByDate(null, todayLocal()).then((row) => {
-            if (active) setTodayJournal(row);
-        });
+        getJournalByDate(null, todayLocal())
+            .then((row) => {
+                if (active) setTodayJournal(row);
+            })
+            .catch((caught) => {
+                // 中断场景：今天日记读取 reject 不能 unhandled（红屏）也不能静默——
+                // 静默会把「读不到」渲染成「今天还没写」，卡片保留上次数据并上浮错误，
+                // revision / ready 变化会自动重试
+                if (active) {
+                    useArchiveStore.setState({
+                        error: `今天日记读取失败：${caught instanceof Error ? caught.message : String(caught)}`,
+                    });
+                }
+            });
         return () => {
             active = false;
         };
@@ -202,7 +213,9 @@ export function ArchiveScreen() {
                 {noContent ? (
                     <EmptyStateIcon />
                 ) : (
-                    <View className="px-5">
+                    // 屏边距 px-6（24）：与屏头 / Me / 搜索 / 行程详情同一屏边距口径
+                    //（原 px-5(20) 是与日卡 px-6 档并存的双轨，一致性收敛轮归一）
+                    <View className="px-6">
                         <View className="mx-auto w-full max-w-[560px]">
                             <CardDeck
                                 a={{
@@ -298,7 +311,7 @@ export function ArchiveScreen() {
                                     scaleTo={0.97}
                                 >
                                     <ChooserRow
-                                        icon={<LucideBookOpen size={20} strokeWidth={1.75} />}
+                                        icon={<LucideBookOpen size={20} strokeWidth={1.9} />}
                                         title="今天的日记"
                                         hint="连续写，24:00 自动收笔"
                                         tint={chooserTint}
@@ -312,7 +325,7 @@ export function ArchiveScreen() {
                                     scaleTo={0.97}
                                 >
                                     <ChooserRow
-                                        icon={<LucideCalendar size={20} strokeWidth={1.75} />}
+                                        icon={<LucideCalendar size={20} strokeWidth={1.9} />}
                                         title="新的行程"
                                         hint="图标、视频、逐日骨架"
                                         tint={chooserTint}
@@ -384,11 +397,12 @@ function withTint(node: React.ReactNode, color: string): React.ReactNode {
 
 /**
  * 卡壳：垂直两段式（封面全出血贴顶 + 文字区），overflow-hidden 让封面裁进
- * rounded-card（16）圆角；无阴影（房规），surface 底 + 1px 描边双主题成对。
+ * rounded-card（16）圆角；无阴影（房规）；surface-on-base tone 分层（#13
+ * 无边框规范收敛：卡片级描边清除，与 trip-detail 日卡同一卡片语言）。
  */
 function CardShell({ children }: { children: React.ReactNode }) {
     return (
-        <View className="h-full flex-col overflow-hidden rounded-card border border-ink-border bg-ink-surface dark:border-inkd-border dark:bg-inkd-surface">
+        <View className="h-full flex-col overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface">
             {children}
         </View>
     );
@@ -566,10 +580,11 @@ function JournalCard({
         // 空态卡 = 行动邀请（taste-skill：空态给方向，不是 mood 板）：留白居中 +
         // 轻 CTA（accent 文字 + chevron，同有内容卡的 footer 语言，不堆框不加钮）。
         // 点击语义在 deck 卡 Pressable（→ /write），卡内不放嵌套按压体——
-        // 保持 deck 触摸面纯净铁律（卡体 Pressable 零 className）
+                // 保持 deck 触摸面纯净铁律（卡体 Pressable 零 className）
         return (
             <CardShell>
-                <View className="flex-1 items-center justify-center gap-2 p-5">
+                {/* 卡内边距 px-6 py-5：对齐日卡「水平 24 / 垂直 20」口径（同层级同值） */}
+                <View className="flex-1 items-center justify-center gap-2 px-6 py-5">
                     <LucideBookOpen size={34} color={palette.muted} strokeWidth={1.5} />
                     <Text className="text-[15px] font-medium text-ink-text dark:text-inkd-text">
                         {label.monthDay} {label.weekday}
@@ -623,7 +638,8 @@ function JournalCard({
                 pointerEvents={isFront ? 'auto' : 'none'}
                 onPress={gestures.onPress}
                 onLongPress={gestures.onLongPress}
-                className="flex-1 flex-col p-5"
+                // 文字区卡内边距 px-6 py-5：对齐 trip-detail 日卡口径（水平 24 / 垂直 20）
+                className="flex-1 flex-col px-6 py-5"
                 accessibilityRole="button"
                 accessibilityLabel={canRename ? '打开笔记，长按重命名' : '打开笔记'}
             >
@@ -643,11 +659,12 @@ function JournalCard({
                     </Text>
                 </View>
                 {/* 标题（#6 重命名落点）：重命名卡的可见结果——未命名不占位，
-                    有题一行截断；视觉对齐行程卡标题（17px semibold），deck 两卡同语言 */}
+                    有题一行截断；15px semibold = 卡题档（字号阶：与行程卡标题、
+                    选择器行题同一档，一致性收敛轮从阶外 17px 归一） */}
                 {journal.title ? (
                     <Text
                         numberOfLines={1}
-                        className="pt-0.5 text-[17px] font-semibold text-ink-text dark:text-inkd-text"
+                        className="pt-0.5 text-[15px] font-semibold text-ink-text dark:text-inkd-text"
                     >
                         {journal.title}
                     </Text>
@@ -698,7 +715,8 @@ function TripCard({
         // 按压体——deck 触摸面纯净铁律不变
         return (
             <CardShell>
-                <View className="flex-1 items-center justify-center gap-2 p-5">
+                {/* 卡内边距 px-6 py-5：对齐日卡口径（同层级同值） */}
+                <View className="flex-1 items-center justify-center gap-2 px-6 py-5">
                     <LucideCalendar size={34} color={palette.muted} strokeWidth={1.5} />
                     <Text className="text-[15px] font-medium text-ink-text dark:text-inkd-text">
                         还没有行程
@@ -740,11 +758,12 @@ function TripCard({
                     <TripBadge icon={trip.icon} size="deck" />
                 </DeckCoverPlaceholder>
             )}
-            <View className="flex-1 flex-col p-5">
+            {/* 文字区卡内边距 px-6 py-5：对齐日卡口径（水平 24 / 垂直 20） */}
+            <View className="flex-1 flex-col px-6 py-5">
                 <View className="flex-row items-center justify-between">
                     <Text
                         numberOfLines={1}
-                        className="mr-2 flex-1 text-[17px] font-semibold text-ink-text dark:text-inkd-text"
+                        className="mr-2 flex-1 text-[15px] font-semibold text-ink-text dark:text-inkd-text"
                     >
                         {trip.title}
                     </Text>
@@ -758,12 +777,13 @@ function TripCard({
                     {formatTripSpan(trip)}
                     {trip.dayCount != null ? ` · ${trip.dayCount} 天` : ''}
                 </Text>
-                {/* 摘要区：同日记卡口径；无描述时容器空转（footer 仍沉底） */}
+                {/* 摘要区：同日记卡口径；tone 对齐 trip-detail 描述行（secondary）——
+                    同一数据（trip.description）跨屏同值（原 muted 是双轨漂移） */}
                 <View className="min-h-0 flex-1 overflow-hidden" onLayout={onLayout}>
                     <SummaryText
                         maxLines={maxLines}
                         lineClass="text-[13px] leading-5"
-                        textClass="text-ink-muted dark:text-inkd-muted"
+                        textClass="text-ink-secondary dark:text-inkd-secondary"
                     >
                         {trip.description}
                     </SummaryText>

@@ -25,7 +25,7 @@ export function PrimaryButton({
                 accessibilityLabel={label}
             >
                 <Text
-                    className="text-[16px] font-semibold"
+                    className="text-[15px] font-semibold"
                     style={{ color: palette.onPrimaryBtn }}
                 >
                     {label}

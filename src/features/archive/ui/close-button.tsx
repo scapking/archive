@@ -45,7 +45,7 @@ export function CloseButton({
                 accessibilityRole="button"
                 accessibilityLabel={label ?? (icon === 'back' ? '返回' : '关闭')}
             >
-                <Icon size={20} color={iconColor} strokeWidth={2} />
+                <Icon size={20} color={iconColor} strokeWidth={1.9} />
             </View>
         </BouncyPressable>
     );

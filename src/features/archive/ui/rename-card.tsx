@@ -95,11 +95,15 @@ export function RenameCard({
                         {/* 44 视觉盒：左邻题文字非按压体，右缘贴卡内边距，无重叠核算项 */}
                         <CloseButton onPress={onClose} />
                     </View>
+                    {/* 输入井：rest = surface / focus = raised（「加深一档」方向，
+                        与 FieldInput surface tone / 搜索框 / DateInput 同一语言；
+                        原实现两态反向是漂移，一致性审计轮归一）；内边距对齐
+                        FieldInput 容器口径 px-3.5 py-2 */}
                     <View
-                        className={`mt-4 rounded-control px-3 py-2.5 ${
+                        className={`mt-4 rounded-control px-3.5 py-2 ${
                             focused
-                                ? 'bg-ink-surface dark:bg-inkd-surface'
-                                : 'bg-ink-raised dark:bg-inkd-raised'
+                                ? 'bg-ink-raised dark:bg-inkd-raised'
+                                : 'bg-ink-surface dark:bg-inkd-surface'
                         }`}
                     >
                         <TextInput
@@ -133,7 +137,7 @@ export function RenameCard({
                                 accessibilityRole="button"
                                 accessibilityLabel="保存标题"
                             >
-                                <LucideCheck size={18} strokeWidth={2} color={palette.secondary} />
+                                <LucideCheck size={18} strokeWidth={1.9} color={palette.secondary} />
                                 <Text className="text-[15px] font-medium text-ink-text dark:text-inkd-text">
                                     保存
                                 </Text>
@@ -145,7 +149,7 @@ export function RenameCard({
                                 accessibilityRole="button"
                                 accessibilityLabel="取消重命名"
                             >
-                                <LucideClose size={18} strokeWidth={2} color={palette.muted} />
+                                <LucideClose size={18} strokeWidth={1.9} color={palette.muted} />
                                 <Text className="text-[15px] font-medium text-ink-muted dark:text-inkd-muted">
                                     取消
                                 </Text>

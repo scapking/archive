@@ -235,7 +235,7 @@ export function SearchScreen() {
                                 : 'bg-ink-surface dark:bg-inkd-surface'
                         }`}
                     >
-                        <LucideSearch size={16} color={palette.muted} />
+                        <LucideSearch size={16} strokeWidth={1.9} color={palette.muted} />
                         <TextInput
                             className="h-full min-w-0 flex-1 text-[15px] text-ink-text dark:text-inkd-text"
                             placeholder="搜日记正文、标题或行程…"
@@ -254,7 +254,7 @@ export function SearchScreen() {
                             // 均非命中元素，与屏边距内无相邻调用点，10 不产生重叠
                             <BouncyPressable onPress={() => setQuery('')} scaleTo={0.85} hitSlop={10}>
                                 <View className="h-6 w-6 items-center justify-center">
-                                    <LucideClose size={16} color={palette.muted} />
+                                    <LucideClose size={16} strokeWidth={1.9} color={palette.muted} />
                                 </View>
                             </BouncyPressable>
                         ) : null}
@@ -262,8 +262,10 @@ export function SearchScreen() {
 
                     {/* 时间范围分段（选择理由：检索是快进快出流，三段 DateInput×2 = 6 个
                         输入位过重，且半填状态会撞 store 的日期校验；分段把精确输入收进
-                        「自定义」显式入口，默认路径零输入成本；样式与 Me 页外观分段同构） */}
-                    <View className="mt-3 flex-row gap-1 rounded-control border border-ink-border bg-ink-surface p-1 dark:border-inkd-border dark:bg-inkd-surface">
+                        「自定义」显式入口，默认路径零输入成本；样式与 Me 页外观分段同构。
+                        轨道无边框 + 选中「加深一档」（raised）：与 ThemeSection /
+                        EndModeSwitch 同一轨道与亮度语言（一致性收敛轮）） */}
+                    <View className="mt-3 flex-row gap-1 rounded-control bg-ink-surface p-1 dark:bg-inkd-surface">
                         {RANGE_OPTIONS.map((option) => {
                             const active = rangeMode === option.key;
                             return (
@@ -274,9 +276,9 @@ export function SearchScreen() {
                                     // ——相邻分段 gap-1(4px) < 2×hitSlop，外扩会重叠（Me 页同款核算）
                                     hitSlop={{ top: 4, bottom: 4, left: 0, right: 0 }}
                                     // 条件类铁律：两侧变量集合恒等（与 ThemeSection 同款写法）
-                                    className={`h-9 flex-1 items-center justify-center rounded-lg active:bg-ink-raised dark:active:bg-inkd-raised ${
+                                    className={`h-9 flex-1 items-center justify-center rounded-thumb active:bg-ink-raised dark:active:bg-inkd-raised ${
                                         active
-                                            ? 'bg-ink-base dark:bg-inkd-raised'
+                                            ? 'bg-ink-raised dark:bg-inkd-raised'
                                             : 'bg-ink-surface dark:bg-inkd-surface'
                                     }`}
                                     accessibilityRole="button"
@@ -317,8 +319,9 @@ export function SearchScreen() {
                         </View>
                     ) : null}
 
-                    {/* 日历：打点 = 有笔记（强 accent）/ 行程日（弱 accent）；点选联动结果 */}
-                    <View className="mt-3 rounded-card border border-ink-border bg-ink-surface p-3 dark:border-inkd-border dark:bg-inkd-surface">
+                    {/* 日历：打点 = 有笔记（强 accent）/ 行程日（弱 accent）；点选联动结果。
+                        卡体无边框（#13 收敛：surface-on-base tone 分层，同 me 曲线卡） */}
+                    <View className="mt-3 rounded-card bg-ink-surface p-3 dark:bg-inkd-surface">
                         <Calendar marks={marks} selected={selectedDate} onSelectDate={handleSelectDate} />
                     </View>
 
@@ -409,12 +412,14 @@ function JournalResultRow({ row, onPress }: { row: JournalRow; onPress(): void }
     return (
         <Pressable
             onPress={onPress}
-            className="flex-row items-center gap-2.5 rounded-control border border-ink-border bg-ink-surface px-3 py-2.5 active:bg-ink-raised dark:border-inkd-border dark:bg-inkd-surface dark:active:bg-inkd-raised"
+            // 行卡无边框（#13 收敛）+ 内边距对齐 Me 页行卡档 px-4 py-3（同层级同值）；
+            // 标题 font-medium 对齐行程行/Me 行标题字重（同层级同值）
+            className="flex-row items-center gap-2.5 rounded-control bg-ink-surface px-4 py-3 active:bg-ink-raised dark:bg-inkd-surface dark:active:bg-inkd-raised"
             accessibilityRole="button"
             accessibilityLabel={`笔记：${title}，${monthDay}`}
         >
             <View className="min-w-0 flex-1">
-                <Text numberOfLines={1} className="text-[14px] text-ink-text dark:text-inkd-text">
+                <Text numberOfLines={1} className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
                     {title}
                 </Text>
                 <Text
@@ -436,7 +441,8 @@ function TripResultRow({ trip, onPress }: { trip: TripCard; onPress(): void }) {
     return (
         <Pressable
             onPress={onPress}
-            className="flex-row items-center gap-3 rounded-control border border-ink-border bg-ink-surface p-2.5 active:bg-ink-raised dark:border-inkd-border dark:bg-inkd-surface dark:active:bg-inkd-raised"
+            // 行卡无边框 + px-4 py-3：与笔记行 / Me 页行卡同一行语言（一致性收敛轮）
+            className="flex-row items-center gap-3 rounded-control bg-ink-surface px-4 py-3 active:bg-ink-raised dark:bg-inkd-surface dark:active:bg-inkd-raised"
             accessibilityRole="button"
             accessibilityLabel={`行程：${trip.title}`}
         >

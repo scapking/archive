@@ -31,7 +31,10 @@ export function EmptyState({
                 // == 按钮视觉盒（44px 高），避免按钮上方 24px 空隙被算进命中区
                 <View className="mt-6">
                     <BouncyPressable onPress={onAction} scaleTo={0.96}>
-                        <View className="h-11 items-center justify-center rounded-lg border border-ink-border bg-ink-surface px-6 active:bg-ink-raised dark:border-inkd-border dark:bg-inkd-surface dark:active:bg-inkd-raised">
+                        {/* 圆角归 control 档（与其余次级按钮一致）；按压反馈由外层
+                            BouncyPressable 弹跳承担，内层 View 不用 active:（css-interop
+                            会把 View 升级成 Pressable 首帧后 remount，同 MenuRow 口径） */}
+                        <View className="h-11 items-center justify-center rounded-control border border-ink-border bg-ink-surface px-6 dark:border-inkd-border dark:bg-inkd-surface">
                             <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
                                 {actionLabel}
                             </Text>

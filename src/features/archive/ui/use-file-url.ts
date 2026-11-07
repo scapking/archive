@@ -75,9 +75,15 @@ export function useJournalMedia(journalId: string | null): JournalMediaRow[] {
             return;
         }
         let active = true;
-        mediaByJournalIds([journalId]).then((grouped) => {
-            if (active) setRows(grouped.get(journalId) ?? []);
-        });
+        mediaByJournalIds([journalId])
+            .then((grouped) => {
+                if (active) setRows(grouped.get(journalId) ?? []);
+            })
+            .catch(() => {
+                // 中断场景：媒体行刷新 reject 不能 unhandled（红屏）。静默需注释：
+                // ui 层禁 import store（v5 去环纪律）无 error 通道；失败保留上次
+                // 行（封面降级为占位，不丢卡），revision 变化自动重试
+            });
         return () => {
             active = false;
         };

@@ -139,11 +139,11 @@ function DayActionCard({
     // 行卡片与 InsertMenu MenuRow 同语言：icon 容器 40×40 rounded-control + raised
     // 触感底；行高 ~72 ≥44，不传 hitSlop（0），行距 gap-2.5（10px）为不可点间隙
     const rows: Array<{ action: DayCardAction; icon: React.ReactNode; title: string; hint: string }> = [
-        { action: 'write', icon: <LucidePencil size={20} strokeWidth={1.75} />, title: '写这一天', hint: '打开这天的笔记页' },
-        { action: 'add-plan', icon: <LucidePlus size={20} strokeWidth={1.75} />, title: '添加计划', hint: '给这天加一条安排' },
-        { action: 'set-background', icon: <LucideImage size={20} strokeWidth={1.75} />, title: '设置背景', hint: '从相册选一张，铺满这张卡' },
+        { action: 'write', icon: <LucidePencil size={20} strokeWidth={1.9} />, title: '写这一天', hint: '打开这天的笔记页' },
+        { action: 'add-plan', icon: <LucidePlus size={20} strokeWidth={1.9} />, title: '添加计划', hint: '给这天加一条安排' },
+        { action: 'set-background', icon: <LucideImage size={20} strokeWidth={1.9} />, title: '设置背景', hint: '从相册选一张，铺满这张卡' },
         ...(hasBackground
-            ? [{ action: 'clear-background' as const, icon: <LucideTrash size={20} strokeWidth={1.75} />, title: '清除背景', hint: '移除背景图，恢复文字卡' }]
+            ? [{ action: 'clear-background' as const, icon: <LucideTrash size={20} strokeWidth={1.9} />, title: '清除背景', hint: '移除背景图，恢复文字卡' }]
             : []),
     ];
 
@@ -387,7 +387,7 @@ const DayCard = memo(function DayCard({
                                     className={`h-5 w-5 items-center justify-center rounded-thumb border ${
                                         plan.done === 1
                                             ? 'border-ink-accent bg-ink-accent dark:border-inkd-accent dark:bg-inkd-accent'
-                                            : 'border-ink-control bg-transparent dark:border-inkd-control dark:bg-transparent'
+                                            : 'border-ink-control bg-ink-surface dark:border-inkd-control dark:bg-inkd-surface'
                                     }`}
                                 >
                                     {plan.done === 1 ? (
@@ -408,7 +408,10 @@ const DayCard = memo(function DayCard({
                             <Pressable
                                 key={plan.id}
                                 onPress={() => void togglePlan(plan)}
-                                className="flex-row items-center py-3 min-h-11"
+                                // 按压反馈补齐（一致性收敛轮）：勾选态非乐观更新（落库后
+                                // reload 才变），行本体给 active 底色即时反馈，语言同
+                                // Me/搜索行卡（active:bg-ink-raised）
+                                className="flex-row items-center rounded-control py-3 min-h-11 active:bg-ink-raised dark:active:bg-inkd-raised"
                                 accessibilityRole="checkbox"
                                 accessibilityLabel={`计划：${plan.content}`}
                                 accessibilityState={{ checked: plan.done === 1 }}
@@ -417,7 +420,7 @@ const DayCard = memo(function DayCard({
                                     className={`h-5 w-5 items-center justify-center rounded-thumb border ${
                                         plan.done === 1
                                             ? 'border-ink-accent bg-ink-accent dark:border-inkd-accent dark:bg-inkd-accent'
-                                            : 'border-ink-control bg-transparent dark:border-inkd-control dark:bg-transparent'
+                                            : 'border-ink-control bg-ink-surface dark:border-inkd-control dark:bg-inkd-surface'
                                     }`}
                                 >
                                     {plan.done === 1 ? (
@@ -760,7 +763,7 @@ export function TripDetailScreen() {
                                     accessibilityLabel="编辑行程"
                                     className="h-9 w-9 items-center justify-center rounded-control border border-ink-border bg-ink-surface dark:border-inkd-border dark:bg-inkd-surface"
                                 >
-                                    <LucidePencil size={16} color={palette.secondary} />
+                                    <LucidePencil size={16} strokeWidth={1.9} color={palette.secondary} />
                                 </View>
                             </BouncyPressable>
                         ) : null}

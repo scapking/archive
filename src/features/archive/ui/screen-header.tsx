@@ -31,7 +31,7 @@ export function ScreenHeader({
                         // 右邻标题为非 pressable、四周无相邻命中元素，10 不产生重叠
                         <BouncyPressable onPress={safeBack} scaleTo={0.9} hitSlop={10}>
                             <View className="h-9 w-9 items-center justify-start">
-                                <LucideBack size={22} color={palette.muted} />
+                                <LucideBack size={20} strokeWidth={1.9} color={palette.muted} />
                             </View>
                         </BouncyPressable>
                     ) : null}

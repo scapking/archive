@@ -184,13 +184,13 @@ export const Calendar = memo(function Calendar({ marks, selected, onSelectDate }
                 </BouncyPressable>
                 <BouncyPressable onPress={goPrevMonth} scaleTo={0.9} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                     <View accessibilityRole="button" accessibilityLabel="上个月" className="h-8 w-8 items-center justify-center">
-                        <LucideBack size={18} color={palette.muted} />
+                        <LucideBack size={18} strokeWidth={1.9} color={palette.muted} />
                     </View>
                 </BouncyPressable>
                 <View className="w-4" />
                 <BouncyPressable onPress={goNextMonth} scaleTo={0.9} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                     <View accessibilityRole="button" accessibilityLabel="下个月" className="h-8 w-8 items-center justify-center">
-                        <LucideChevronRight size={18} color={palette.muted} />
+                        <LucideChevronRight size={18} strokeWidth={1.9} color={palette.muted} />
                     </View>
                 </BouncyPressable>
             </View>

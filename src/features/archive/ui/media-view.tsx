@@ -6,6 +6,7 @@ import { AudioLinesIcon } from './editor-icons';
 import { AudioBlock } from './audio-player';
 import { requestViewer } from '../viewer-request';
 import { useFileUrlState } from './use-file-url';
+import { useVideoNaturalSize } from './use-video-natural-size';
 import { usePalette } from './theme';
 import type { JournalMediaRow } from '../db';
 
@@ -13,11 +14,14 @@ import type { JournalMediaRow } from '../db';
  * 媒体块渲染规格（编辑器画布 / 封面 / 缩略图统一口径）：
  *
  * - 圆角走半径体系：媒体卡片 rounded-card（16）、缩略图 rounded-thumb（8）；
- * - 1px 描边 ink/inkd-border（卡片口径，白底照片不融页面底）；
+ * - 无描边（#13 收敛）：白底照片自带边界 + raised 占位底 tone 分层，不靠线框；
  * - 占位底一律 bg-ink-raised：加载中不是裸黑块/裸白块，深浅两主题都成立；
  * - 图片自然比例（picker 落库宽高）+ 高度封顶；视频比例随元数据自适应
  *   （#7：横版 16:9 与卡同比零信箱条；竖版高度封顶 + cover 裁切，与图片同
- *   口径），缺元数据回退 16:9 + contain（录像入库不落宽高，不脑补裁切）；
+ *   口径），缺元数据（录像入库不落宽高）先按 16:9 + contain 渲染防跳变，
+ *   native 上由 use-video-natural-size 探测 player 轨道尺寸，探测到即切
+ *   实际比例 + cover（竖版视频封面容器不再左右信箱空白；web 探测不可行，
+ *   维持 16:9 + contain 回退）；
  * - 宽度恒为所在列宽（w-full）：媒体与正文左右边缘对齐，不做横向出血。
  *
  * 全屏查看：图片/视频块与缩略图点击 → requestViewer()（viewer-request 中立层，
@@ -37,11 +41,13 @@ import type { JournalMediaRow } from '../db';
  */
 
 /** 媒体高度上限（dp）：图片与竖版视频共用——按列宽铺满后高度封顶，超出部分
-    cover 裁切（媒体卡不无限占屏，编辑画布节奏与图片块一致）。 */
-const MEDIA_MAX_HEIGHT = 420;
+    cover 裁切（媒体卡不无限占屏，编辑画布节奏与图片块一致）。导出供编辑器
+    deck 式图片堆叠的组高推导复用（与 MediaImage 高度公式同源，单点事实源）。 */
+export const MEDIA_MAX_HEIGHT = 420;
 
-/** 媒体行缺宽高元数据时的图片兜底比例（4:3，卡片相机常用画幅）。 */
-const FALLBACK_IMAGE_RATIO = 4 / 3;
+/** 媒体行缺宽高元数据时的图片兜底比例（4:3，卡片相机常用画幅）。导出同上
+    （deck 组高推导与 MediaImage 同源取用）。 */
+export const FALLBACK_IMAGE_RATIO = 4 / 3;
 
 /** 视频块缺宽高元数据时的兜底比例（16:9，手机横录常用画幅）；有元数据走
     媒体自适应比例（#7）。 */
@@ -166,14 +172,14 @@ export function MediaImage({
             scaleTo={0.985}
         >
             <View
-                className="w-full overflow-hidden rounded-card border border-ink-border bg-ink-raised dark:border-inkd-border dark:bg-inkd-raised"
+                className="w-full overflow-hidden rounded-card bg-ink-raised dark:bg-inkd-raised"
                 style={{ aspectRatio: ratio, maxHeight: MEDIA_MAX_HEIGHT }}
             >
                 {status === 'ready' && uri ? (
                     <Image source={{ uri }} className="h-full w-full" resizeMode="cover" />
                 ) : status === 'missing' ? (
                     <MediaStatusHint
-                        icon={<LucideImage size={20} strokeWidth={1.8} color={palette.muted} />}
+                        icon={<LucideImage size={20} strokeWidth={1.9} color={palette.muted} />}
                         label="图片无法显示"
                     />
                 ) : null}
@@ -220,16 +226,31 @@ export function MediaVideo({
     });
     // 卡片比例随媒体元数据自适应（#7）：横版视频与卡同比 → 零信箱条；竖版在
     // MEDIA_MAX_HEIGHT 封顶后 cover 裁切（与图片块「超限裁切」同口径，中央
-    // 构图主体不丢）。缺元数据（录像入库不落宽高、行程封面占位行）回退 16:9 +
-    // contain：手机横录恰为 16:9 零信箱条，画幅未知时不脑补裁切，信箱条底与
-    // 卡底同色（raised）融合；封面等外部传 height 的场景：固定高度 + cover（原行为）。
+    // 构图主体不丢）。缺元数据（录像入库不落宽高、行程封面占位行）两段式：
+    // 探测期间维持 16:9 + contain 现比例渲染（防跳变）；native 上探测到
+    // player 轨道尺寸（use-video-natural-size，纯 JS player 不渲染画面）后
+    // 切实际比例 + cover——竖版视频封面容器随画幅收窄，不再左右信箱空白；
+    // web 无轨道数据（探测 hook 内部禁用）恒走 16:9 + contain 回退。
+    // 封面等外部传 height 的场景：固定高度 + cover（原行为，不探测）。
     const mediaWidth = media.width;
     const mediaHeight = media.height;
     const hasDimensions =
         mediaWidth != null && mediaHeight != null && mediaWidth > 0 && mediaHeight > 0;
-    const ratio = hasDimensions ? mediaWidth / mediaHeight : VIDEO_RATIO;
     const fixedHeight = height != null;
     const ready = status === 'ready' && uri != null;
+    // 探测关断条件（hook 参数传 null = 零开销）：有元数据（相册选入）行为
+    // 不变无需探测；外部传 height 的封面/预览场景比例不参与容器布局；
+    // 文件未解析（!ready）时无 URI 可探。
+    const naturalSize = useVideoNaturalSize(
+        ready && !hasDimensions && !fixedHeight ? uri : null,
+    );
+    const probeRatio =
+        naturalSize != null &&
+        naturalSize.width > 0 &&
+        naturalSize.height > 0
+            ? naturalSize.width / naturalSize.height
+            : null;
+    const ratio = hasDimensions ? mediaWidth / mediaHeight : probeRatio ?? VIDEO_RATIO;
     const openViewer = () => {
         // 键盘态开全屏：先收键盘（同 MediaImage，#17/#18 修复项）
         Keyboard.dismiss();
@@ -252,7 +273,7 @@ export function MediaVideo({
             scaleTo={0.985}
         >
             <View
-                className="w-full overflow-hidden rounded-card border border-ink-border bg-ink-raised dark:border-inkd-border dark:bg-inkd-raised"
+                className="w-full overflow-hidden rounded-card bg-ink-raised dark:bg-inkd-raised"
                 style={
                     fixedHeight
                         ? { height }
@@ -271,7 +292,11 @@ export function MediaVideo({
                             <VideoView
                                 player={player}
                                 nativeControls={false}
-                                contentFit={fixedHeight || hasDimensions ? 'cover' : 'contain'}
+                                contentFit={
+                                    fixedHeight || hasDimensions || probeRatio != null
+                                        ? 'cover'
+                                        : 'contain'
+                                }
                                 style={{ flex: 1, backgroundColor: palette.raised }}
                                 allowsPictureInPicture={false}
                             />
@@ -286,7 +311,7 @@ export function MediaVideo({
                     </>
                 ) : status === 'missing' ? (
                     <MediaStatusHint
-                        icon={<LucideVideo size={20} strokeWidth={1.8} color={palette.muted} />}
+                        icon={<LucideVideo size={20} strokeWidth={1.9} color={palette.muted} />}
                         label="视频无法播放"
                     />
                 ) : (
@@ -363,7 +388,7 @@ export function MediaThumb({ media, size = 64 }: { media: JournalMediaRow; size?
     return (
         <BouncyPressable onPress={ready ? openViewer : undefined} scaleTo={0.94}>
             <View
-                className="overflow-hidden rounded-thumb border border-ink-border bg-ink-raised dark:border-inkd-border dark:bg-inkd-raised"
+                className="overflow-hidden rounded-thumb bg-ink-raised dark:bg-inkd-raised"
                 style={{ width: size, height: size }}
             >
                 {uri && media.kind === 'image' ? (
@@ -376,13 +401,13 @@ export function MediaThumb({ media, size = 64 }: { media: JournalMediaRow; size?
                                 <LucidePlay size={11} color="#FFFFFF" strokeWidth={2.4} />
                             </View>
                         ) : status === 'missing' ? (
-                            <LucideVideo size={16} strokeWidth={1.8} color={palette.muted} />
+                            <LucideVideo size={16} strokeWidth={1.9} color={palette.muted} />
                         ) : null}
                     </View>
                 ) : media.kind === 'audio' ? (
                     // 音频缩略图：声纹图标占位（音频无全屏态，仅占位标识）
                     <View className="h-full w-full items-center justify-center">
-                        <AudioLinesIcon size={16} strokeWidth={1.8} color={palette.secondary} />
+                        <AudioLinesIcon size={16} strokeWidth={1.9} color={palette.secondary} />
                     </View>
                 ) : null}
             </View>

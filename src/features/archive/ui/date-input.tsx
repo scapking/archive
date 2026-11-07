@@ -84,7 +84,7 @@ export function DateInput({
                     ) : null}
                     <TextInput
                         ref={seg.ref}
-                        className={`h-12 min-w-0 flex-1 rounded-control text-center text-[15px] ${
+                        className={`h-11 min-w-0 flex-1 rounded-control text-center text-[15px] ${
                             // 无边框规范（#13）：border 零，聚焦 raised / 失焦 surface
                             //（亮度变化语言，双主题 token 对成对；写法参照 trip-form
                             // BorderlessInput 的 onFocus/onBlur 本地状态模式）

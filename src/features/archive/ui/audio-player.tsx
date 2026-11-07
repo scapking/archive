@@ -8,8 +8,9 @@ import { usePalette } from './theme';
 import type { JournalMediaRow } from '../db';
 
 /**
- * 音频块卡片（录音回放）：与图片/视频块同一套圆角/描边/间距体系
- * （rounded-card16 + 1px ink-border + surface 卡底，禁阴影/渐变）。
+ * 音频块卡片（录音回放）：与图片/视频块同一套圆角/间距体系
+ * （rounded-card16 + surface 卡底 tone 分层，禁阴影/渐变；#13 无边框规范
+ * 收敛：卡片级描边清除，一致性审计轮与全站卡片语言归一）。
  *
  * 版式 v3（真机验收返工口径：「声纹太丑 / 时间移底部 / 卡片加高」，改
  * 「波浪+右置时间列」单行横排为 **上波浪下时间竖排**）：
@@ -62,14 +63,21 @@ import type { JournalMediaRow } from '../db';
  *   就绪后一次性 seekTo(缓存位)（暂停态停在原位，按播放继续）；播完
  *   （didJustFinish）清缓存位。切主题若触发 Android 树重建（见 v3 主题注），
  *   重挂卡靠此恢复到原位；
- * - **循环播放（用户口径：播完不继续 = 缺陷）**：didJustFinish 后自动
- *   seekTo(0) + play() 保持播放态（loop 续播链与「到尾再点播放」共用
- *   restartFromHead）；播放中随时可暂停（暂停让出互斥位，seek 链复核互斥
- *   位后才续播——暂停竞态不回弹）。loopContinueRef 闩防 didJustFinish 在
- *   seek 落地前的多帧重入（web 端 media.ended 持续 true 每 200ms 重发）。
- *   与旧「播完复位暂停」逻辑的冲突以用户口径裁决：正常时长一律循环继续；
- *   旧行为仅保留为 **零长/未知时长文件的防死循环降级**（duration≤0.05s 时
- *   复位暂停不续播，否则损坏文件会以 150-200ms 周期无限重播）；
+ * - **播完即停（用户口径 2026-11：声音播放一次，不是循环播放，全部音频）**：
+ *   didJustFinish → 让互斥位 → 进度缓存清位 → pause（显式停止）→ seekTo(0)
+ *   进度归位；按钮态由 playerStatus.playing 派生自动回「未播放」，进度行归
+ *   零。旧 loopContinueRef 自动续播链（didJustFinish 自动 seekTo(0)+play）
+ *   整链删除；「到尾再点播放 → 从头播」的主动路径保留（togglePlay 的
+ *   atEnd 分支 → restartFromHead，播完即停口径下唯一的重播入口）。
+ *   行为矩阵（全部音频统一，无例外分支）：
+ *   · 未播 / 中途暂停 → 点按从原位续播（缓存恢复位或暂停位）；
+ *   · 播放中 → 点按暂停（写缓存、让互斥位）；
+ *   · 播完 → 自动停在头部、回「未播放」态（不循环）；
+ *   · 播完 / 到尾再点播放 → 从头播（用户主动）。
+ *   零长/损坏文件随同一停止路径天然降级：不再存在任何自动续播路径，
+ *   旧「损坏文件以 150-200ms 周期无限重播」的死循环面随之消灭；
+ *   与进度缓存不冲突：缓存只服务挂载恢复（restoreDoneRef 一次性读取），
+ *   播完即清位，重挂后读到空缓存从头播；
  * - **切主题可用性（v3 硬性修复面）**：排查结论（嫌疑链逐条）——
  *   ①固定 hex / 不随主题的 tone 类：本文件无（已亮条/未亮条/时间行全部
  *     palette 语义色 + ink/inkd 类），排除；
@@ -338,14 +346,14 @@ export function AudioBlock({
     const remainingSeconds = duration > 0 ? Math.max(duration - currentTime, 0) : 0;
     // 逐条点亮进度（0..1，渲染期纯派生，无动画节点/无额外 state）：随 200ms
     // 状态流重渲换色（38 根纯 View 换色开销可忽略）；duration 未知（0）时
-    // ratio 恒 0 = 全灭；恢复 seek / 循环回头的位置跳变直接整排重着色
+    // ratio 恒 0 = 全灭；恢复 seek / 播完归位的位置跳变直接整排重着色
     // （单排条无覆盖层，不存在跳变穿帮面）
     const progressRatio = duration > 0 ? Math.min(Math.max(currentTime / duration, 0), 1) : 0;
     const litCount = Math.floor(progressRatio * WAVE_BAR_COUNT);
 
     // 最后已知播放位（卸载写缓存用）：状态流里同步，卸载清理函数只读 ref
     const latestTimeRef = useRef(0);
-    // 存活门控：seekTo(...).then(续播) 与循环续播的异步链在卸载/换源（player
+    // 存活门控：seekTo(...).then(续播) 与到尾重播的异步链在卸载/换源（player
     // 重建）后不得再触碰旧 player——released SharedObject 的方法调用会抛
     // （native）或以 AbortError 拒绝（web media element 已移出文档）。
     // uri null→file:// 会重建一次 player，旧实例同样在此门控下作废。
@@ -364,10 +372,10 @@ export function AudioBlock({
         };
     }, [player, media.id]);
 
-    // 循环续播核心：抢互斥位 → seekTo(0) → 复核存活/互斥后 play()。
-    // didJustFinish 自动循环与「到尾再点播放」共用同一条链（单一出口，
-    // 行为矩阵见文件头「循环播放」节）。seek 异常（卸载/换源竞态）无界面
-    // 可更新，静默即可。
+    // 到尾重播（用户主动路径，播完即停口径下唯一的重播入口）：抢互斥位 →
+    // seekTo(0) → 复核存活/互斥后 play()。「播完/到尾再点播放」走此链
+    // （行为矩阵见文件头「播完即停」节）。seek 异常（卸载/换源竞态）无
+    // 界面可更新，静默即可。
     const restartFromHead = () => {
         // 先抢互斥位再 seek：seek 是异步 promise，续播前复核存活 + 互斥位
         // （窗口内用户可能已暂停/别的卡可能已起播——都不得回弹续播）
@@ -384,41 +392,33 @@ export function AudioBlock({
             });
     };
 
-    // 循环续播闩：web 端 didJustFinish = media.ended，seek 落地前每 200ms
-    // 状态帧都为 true——不闩会重复 seek/play；seek 归 0 后首帧 false 解闩。
-    const loopContinueRef = useRef(false);
-    // 播完自然结束：清互斥位前的循环续播（用户口径「播完不继续 = 缺陷」）。
-    // 正常时长（>0.05s）一律 seekTo(0)+play 保持播放态；零长/未知时长文件
-    // 退回「复位暂停」（旧行为仅在此存活）：损坏/空文件若循环续播会以
-    // 150-200ms 周期无限重播，防死循环优先于循环口径。
+    // 播完即停（用户口径 2026-11：声音播放一次，不是循环播放，全部音频）：
+    // didJustFinish → 让互斥位 → 进度缓存清位 → pause（显式停止，按钮态由
+    // playerStatus.playing 派生自动回「未播放」）→ seekTo(0) 进度归位。
+    // 旧 loopContinueRef 自动续播闩与续播链整链删除，无替代闩——web 端
+    // seek 落地前 media.ended 可持续为 true（200ms 状态帧重复进入），重复
+    // pause/seekTo(0) 幂等无声，旧闩防的是重复 seek+play 的可闻续播，该链
+    // 已不存在。零长/损坏文件随同一停止路径天然降级（不再有续播路径可
+    // 死循环）。与进度缓存不冲突：缓存只服务挂载恢复，播完即清。
     useEffect(() => {
-        if (!playerStatus.didJustFinish) {
-            loopContinueRef.current = false;
-            return;
-        }
-        if (loopContinueRef.current) return;
-        loopContinueRef.current = true;
-        // 播完清缓存位（循环重启后由 200ms 状态流回写新位置；didJustFinish
-        // 帧本身跳过同步写入——见下方状态流同步 effect 的守卫）
+        if (!playerStatus.didJustFinish) return;
+        // 让出互斥位（登记语义 = 「正在播」的唯一一张）
+        if (activePlayback?.playerId === player.id) activePlayback = null;
+        // 播完清缓存位：重听 = 用户主动（到尾再点播放 → 从头播）
         playbackPositions.delete(media.id);
         if (!aliveRef.current) return;
-        if (duration > 0.05) {
-            restartFromHead();
-        } else {
-            // 零长/未知时长降级：复位暂停
-            if (activePlayback?.playerId === player.id) activePlayback = null;
-            void player.seekTo(0).catch(() => {
-                // 卸载/换源竞态：静默
-            });
-        }
-        // restartFromHead 闭包只消费 player/aliveRef（均稳定），不入 deps
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [playerStatus.didJustFinish, player, media.id, duration]);
+        player.pause();
+        void player.seekTo(0).catch(() => {
+            // 卸载/换源竞态：静默（点亮条停在归位后的 0，不穿帮）
+        });
+        // pause/seekTo 只消费 player 与稳定引用（aliveRef / 模块级登记），
+        // player 与 media.id 已在 deps
+    }, [playerStatus.didJustFinish, player, media.id]);
 
     // 会话缓存随状态流同步：updateInterval 200ms 已是节流 cadence，直接同步
-    // 写入不再叠 throttle；didJustFinish 帧跳过（播完清位语义归上面的循环
-    // effect 管，避免把尾部位置又写回缓存）。暂停后 currentTime 不再变化，
-    // 本 effect 停在最后已知位——暂停显式写入点见 togglePlay。
+    // 写入不再叠 throttle；didJustFinish 帧跳过（播完清位语义归上面的播完
+    // 即停 effect 管，避免把尾部位置又写回缓存）。暂停后 currentTime 不再
+    // 变化，本 effect 停在最后已知位——暂停显式写入点见 togglePlay。
     useEffect(() => {
         if (!playerStatus.isLoaded || playerStatus.didJustFinish) return;
         playbackPositions.set(media.id, { positionMs: Math.round(currentTime * 1000) });
@@ -462,8 +462,8 @@ export function AudioBlock({
             if (activePlayback?.playerId === player.id) activePlayback = null;
             return;
         }
-        // 播完/到尾再点播放：从头开始（循环口径的用户主动路径——didJustFinish
-        // 自动续播的事件丢失窗口由这里兜底）。duration 未知（0）时不得把
+        // 播完/到尾再点播放：从头开始（播完即停口径下的用户主动重播路径，
+        // 行为矩阵见文件头「播完即停」节）。duration 未知（0）时不得把
         // 「从头播」当默认分支——先直接 play
         const atEnd = playerStatus.didJustFinish || (duration > 0 && currentTime >= duration - 0.05);
         if (atEnd) {
@@ -543,7 +543,7 @@ export function AudioBlock({
             disabled={!ready}
             scaleTo={0.985}
         >
-            <View className="rounded-card border border-ink-border bg-ink-surface px-5 py-4 dark:border-inkd-border dark:bg-inkd-surface">
+            <View className="rounded-card bg-ink-surface px-5 py-4 dark:bg-inkd-surface">
                 {/* 上：声纹波浪区（48dp，条形垂直居中）。整卡触摸体由
                     BouncyPressable 承担（命中区 = 波浪 + 时间行，≥44dp 等效
                     目标，无 hitSlop 外扩——与邻卡间距 16dp > 8，无重叠核算项） */}
@@ -618,7 +618,7 @@ export function AudioBlock({
         // 失败态：同一卡面语言（surface 底 + ink-border）；纯文字行——装饰 icon
         // 一并退场（用户口径：卡面只要文字）
         return (
-            <View className="rounded-card border border-ink-border bg-ink-surface px-5 py-4 dark:border-inkd-border dark:bg-inkd-surface">
+            <View className="rounded-card bg-ink-surface px-5 py-4 dark:bg-inkd-surface">
                 <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">
                     录音无法播放
                 </Text>

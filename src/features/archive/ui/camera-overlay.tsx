@@ -56,13 +56,18 @@ export function CameraCaptureOverlay({
     /** 相册导入兜底（权限拒绝态入口；上游切换到 picker 流）。 */
     onLibraryFallback: () => void;
 }) {
-    const [permission, setPermission] = useState<'checking' | 'granted' | 'denied'>('checking');
+    // checking / granted / denied 之外补 unavailable：权限查询/弹窗被系统中断
+    // （reject）必须落明确失败态——卡在 checking = 永久「正在打开相机…」spinner，
+    // 覆盖层整个不可用（任务口径：加载失败落失败态而非永久 spinner）
+    const [permission, setPermission] = useState<'checking' | 'granted' | 'denied' | 'unavailable'>('checking');
     const [mode, setMode] = useState<'photo' | 'video'>(initialMode);
     const [facing, setFacing] = useState<'back' | 'front'>('back');
     const [capturing, setCapturing] = useState(false);
     const [recording, setRecording] = useState(false);
     const [recordSeconds, setRecordSeconds] = useState(0);
     const [micDenied, setMicDenied] = useState(false);
+    // 快门失败提示（拍照/录像 promise 被打断）：可见可重试，不是「按了没反应」
+    const [shutterError, setShutterError] = useState<string | null>(null);
     // 系统设置跳转失败提示（Android 无 app-settings: scheme 时）
     const [settingsHint, setSettingsHint] = useState(false);
     const cameraRef = useRef<CameraView>(null);
@@ -70,22 +75,26 @@ export function CameraCaptureOverlay({
     // 卸载/关闭时兜底 stop，promise then 里的 onCapture 因组件已卸载由外层守卫
     const recordingRef = useRef(false);
 
-    // 权限预检（进覆盖层即查/请求；拒绝进引导态，不给黑屏取景器）
-    useEffect(() => {
-        let active = true;
-        void (async () => {
+    // 权限预检（进覆盖层即查/请求；拒绝进引导态，不给黑屏取景器）。
+    // 可重试：checkPermission 收口，unavailable 态的「重试」钮重新走一遍
+    const checkPermission = useCallback(async () => {
+        try {
             const current = await camera.getPermissionAsync();
             if (current.granted) {
-                if (active) setPermission('granted');
+                setPermission('granted');
                 return;
             }
             const requested = await camera.requestPermissionAsync();
-            if (active) setPermission(requested.granted ? 'granted' : 'denied');
-        })();
-        return () => {
-            active = false;
-        };
+            setPermission(requested.granted ? 'granted' : 'denied');
+        } catch {
+            // 中断场景：权限 API reject（系统回收/环境异常）→ 失败态 + 重试入口
+            setPermission('unavailable');
+        }
     }, []);
+
+    useEffect(() => {
+        void checkPermission();
+    }, [checkPermission]);
 
     // 关闭/卸载兜底停录：防离开覆盖层后摄像头还在录
     useEffect(() => {
@@ -129,6 +138,10 @@ export function CameraCaptureOverlay({
                     height: picture.height ?? null,
                 });
             }
+        } catch {
+            // 中断场景：拍照 promise 被打断（相机被系统回收/占占）必须可见——
+            // 只写 finally 会变 unhandled rejection + 「按了快门没反应」
+            setShutterError('拍照失败，请重试。');
         } finally {
             setCapturing(false);
         }
@@ -170,6 +183,13 @@ export function CameraCaptureOverlay({
             if (result?.uri) {
                 onCapture({ kind: 'video', uri: result.uri, width: null, height: null });
             }
+        } catch {
+            // 中断场景：录像 promise 被打断（recordAsync reject，如相机被系统回收）
+            // ——不复位 recording 会让界面永久停在「录制中」红块且 stopRecording
+            // 永远等不到 resolve；finally 只复位 capturing，录制态必须在 catch 归零
+            recordingRef.current = false;
+            setRecording(false);
+            setShutterError('录制失败，请重试。');
         } finally {
             setCapturing(false);
         }
@@ -177,6 +197,7 @@ export function CameraCaptureOverlay({
 
     const onShutterPress = useCallback(() => {
         if (permission !== 'granted') return;
+        setShutterError(null); // 重试即清上次失败提示
         if (mode === 'photo') void capturePhoto();
         else void toggleRecording();
     }, [permission, mode, capturePhoto, toggleRecording]);
@@ -188,6 +209,49 @@ export function CameraCaptureOverlay({
                 <View className="w-full max-w-[400px] items-center justify-center gap-3 rounded-card bg-black py-16">
                     <ActivityIndicator color="#FFFFFF" />
                     <Text className="text-[12px] text-white/60">正在打开相机…</Text>
+                </View>
+            </View>
+        );
+    }
+
+    if (permission === 'unavailable') {
+        return (
+            <View className="absolute inset-0 z-50 items-center justify-center bg-ink-scrim px-6 dark:bg-inkd-scrim">
+                {/* 失败态卡（与权限卡同容器语言）：可重试自愈，不是死黑屏 */}
+                <View className="w-full max-w-[400px] rounded-card bg-black p-5">
+                    <View className="flex-row items-center justify-between">
+                        <Text className="text-[15px] font-semibold text-white">相机启动失败</Text>
+                        <CloseButton onDark onPress={onClose} label="关闭相机" />
+                    </View>
+                    <View className="items-center gap-3 py-6">
+                        <LucideCamera size={36} color="#FFFFFF66" strokeWidth={1.5} />
+                        <Text className="text-center text-[13px] leading-5 text-white/60">
+                            相机没能打开，可以重试，或先从相册导入。
+                        </Text>
+                    </View>
+                    <View className="gap-2.5">
+                        <BouncyPressable
+                            onPress={() => {
+                                setPermission('checking');
+                                void checkPermission();
+                            }}
+                            scaleTo={0.96}
+                        >
+                            <View className="h-11 items-center justify-center rounded-control bg-white">
+                                <Text className="text-[14px] font-semibold text-black">重试</Text>
+                            </View>
+                        </BouncyPressable>
+                        <BouncyPressable onPress={onLibraryFallback} scaleTo={0.96}>
+                            <View className="h-11 items-center justify-center rounded-control border border-white/30">
+                                <View className="flex-row items-center gap-1.5">
+                                    <LucideImage size={15} color="#FFFFFFB3" strokeWidth={1.9} />
+                                    <Text className="text-[14px] font-medium text-white">
+                                        从相册导入
+                                    </Text>
+                                </View>
+                            </View>
+                        </BouncyPressable>
+                    </View>
                 </View>
             </View>
         );
@@ -283,13 +347,14 @@ export function CameraCaptureOverlay({
                                 </Text>
                             </View>
                         ) : null}
-                        {micDenied ? (
+                        {micDenied || shutterError ? (
+                            // 提示槽单例（同一位置不叠两层）：麦克风引导优先，其次快门失败
                             <View
                                 className="absolute inset-x-3 bottom-3 z-10 items-center"
                                 pointerEvents="none"
                             >
                                 <Text className="rounded-full bg-black/45 px-3 py-1.5 text-[12px] text-white/80">
-                                    需要麦克风权限才能录视频
+                                    {micDenied ? '需要麦克风权限才能录视频' : shutterError}
                                 </Text>
                             </View>
                         ) : null}

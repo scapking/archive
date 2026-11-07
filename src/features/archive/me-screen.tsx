@@ -58,8 +58,8 @@ export function MeScreen() {
                         </View>
                     </View>
 
-                    {/* 30 天曲线 */}
-                    <View className="mt-4 rounded-card border border-ink-border bg-ink-surface p-4 dark:border-inkd-border dark:bg-inkd-surface">
+                    {/* 30 天曲线（#13 无边框规范收敛：卡片级描边清除，tone 分层靠 surface-on-base） */}
+                    <View className="mt-4 rounded-card bg-ink-surface p-4 dark:bg-inkd-surface">
                         <View className="mb-1 flex-row items-center justify-between">
                             <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
                                 最近 30 天写作量
@@ -96,7 +96,7 @@ export function MeScreen() {
                                             onPress={() =>
                                                 router.push({ pathname: '/trip/[id]', params: { id: trip.id } })
                                             }
-                                            className="rounded-control border border-ink-border bg-ink-surface px-4 py-3 active:bg-ink-raised dark:border-inkd-border dark:bg-inkd-surface dark:active:bg-inkd-raised"
+                                            className="rounded-control bg-ink-surface px-4 py-3 active:bg-ink-raised dark:bg-inkd-surface dark:active:bg-inkd-raised"
                                         >
                                             <View className="flex-row items-center justify-between">
                                                 <Text
@@ -148,9 +148,9 @@ export function MeScreen() {
 
 function MetricCell({ value, unit, label }: { value: string; unit: string; label: string }) {
     return (
-        <View className="flex-1 rounded-card border border-ink-border bg-ink-surface px-4 py-3 dark:border-inkd-border dark:bg-inkd-surface">
+        <View className="flex-1 rounded-card bg-ink-surface px-4 py-3 dark:bg-inkd-surface">
             <Text
-                className="text-[24px] font-semibold text-ink-text dark:text-inkd-text"
+                className="text-[20px] font-semibold text-ink-text dark:text-inkd-text"
                 style={{ fontVariant: ['tabular-nums'] }}
             >
                 {value}
@@ -175,12 +175,12 @@ function SearchEntryCard() {
     return (
         <Pressable
             onPress={() => router.push('/search' as never)}
-            className="mt-4 flex-row items-center gap-3 rounded-card border border-ink-border bg-ink-surface px-4 py-3 active:bg-ink-raised dark:border-inkd-border dark:bg-inkd-surface dark:active:bg-inkd-raised"
+            className="mt-4 flex-row items-center gap-3 rounded-card bg-ink-surface px-4 py-3 active:bg-ink-raised dark:bg-inkd-surface dark:active:bg-inkd-raised"
             accessibilityRole="button"
             accessibilityLabel="搜索笔记与行程"
         >
             <View className="h-10 w-10 items-center justify-center rounded-control bg-ink-raised dark:bg-inkd-raised">
-                <LucideSearch size={18} color={palette.secondary} />
+                <LucideSearch size={18} strokeWidth={1.9} color={palette.secondary} />
             </View>
             <View className="min-w-0 flex-1">
                 <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
@@ -190,7 +190,7 @@ function SearchEntryCard() {
                     按关键词或日期，翻找写过的字与走过的路
                 </Text>
             </View>
-            <LucideChevronRight size={16} color={palette.faint} />
+            <LucideChevronRight size={16} strokeWidth={1.9} color={palette.faint} />
         </Pressable>
     );
 }
@@ -209,7 +209,9 @@ function ThemeSection() {
             <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
                 外观（当前 {theme === 'dark' ? '深色' : '浅色'}）
             </Text>
-            <View className="flex-row gap-1 rounded-control border border-ink-border bg-ink-surface p-1 dark:border-inkd-border dark:bg-inkd-surface">
+            {/* 轨道无边框（#13 收敛：容器级描边清除，surface-on-base 即 tone 档），
+                与 trip-form EndModeSwitch / search 范围分段同一轨道语言 */}
+            <View className="flex-row gap-1 rounded-control bg-ink-surface p-1 dark:bg-inkd-surface">
                 {options.map((option) => {
                     const active = pref === option.key;
                     return (
@@ -219,12 +221,14 @@ function ThemeSection() {
                             // 分段本体 h-9(36px) < 44：纵向 hitSlop 4 补足 44 等效；
                             // 横向必须归 0——相邻分段 gap-1(4px) < 2×hitSlop，横向外扩会重叠
                             hitSlop={{ top: 4, bottom: 4, left: 0, right: 0 }}
-                            className={`h-9 flex-1 items-center justify-center rounded-lg active:bg-ink-raised dark:active:bg-inkd-raised ${
-                                // 条件类两侧变量集合必须恒等（bg-色 类都携带 --tw-bg-opacity）：
+                            className={`h-9 flex-1 items-center justify-center rounded-thumb active:bg-ink-raised dark:active:bg-inkd-raised ${
+                                // 条件类铁律：两侧变量集合必须恒等（bg-色 类都携带 --tw-bg-opacity）：
                                 // 一侧 transparent/空串 会让变量在首帧后"凭空出现"，触发
-                                // css-interop 的 upgrade-remount 路径（dev 下 stringify 还会炸）
+                                // css-interop 的 upgrade-remount 路径（dev 下 stringify 还会炸）。
+                                // 选中方向收敛为「加深一档」（raised），与 EndModeSwitch /
+                                // 输入框聚焦态同一亮度语言（原 light 侧 bg-ink-base 是反向漂移）
                                 active
-                                    ? 'bg-ink-base dark:bg-inkd-raised'
+                                    ? 'bg-ink-raised dark:bg-inkd-raised'
                                     : 'bg-ink-surface dark:bg-inkd-surface'
                             }`}
                             accessibilityRole="button"

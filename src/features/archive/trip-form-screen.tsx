@@ -62,6 +62,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
  * 轨道 = surface 底；选中段 = raised 底 + 主文本色（亮度变化语言，不上彩——
  * 颜色只上数据，选中是交互态不是数据）。相邻两段 gap-1（4px）且均不传 hitSlop
  * （0）：命中区 == 视觉盒（h-11 ≥44 规范），4px 为停车距，无重叠核算项。
+ * 按压范式收敛（一致性审计轮）：分段控制的按压反馈统一为 active: 底色一档
+ * （与 Me 外观分段 / 搜索范围分段同一轨道 + 同一亮度语言），不再走 Bouncy 弹跳。
  */
 function EndModeSwitch({
     mode,
@@ -82,32 +84,29 @@ function EndModeSwitch({
             {options.map((option) => {
                 const active = mode === option.key;
                 return (
-                    // 外层 flex-1 撑等宽两段（BouncyPressable 无 flex 能力，由包裹层承担）
-                    <View key={option.key} className="flex-1">
-                        <BouncyPressable onPress={() => onChange(option.key)} scaleTo={0.97}>
-                            {/* 无障碍属性挂内层 View（BouncyPressable 契约不透传） */}
-                            <View
-                                accessibilityRole="radio"
-                                accessibilityLabel={option.label}
-                                accessibilityState={{ selected: active }}
-                                className={`h-11 items-center justify-center rounded-control ${
-                                    active
-                                        ? 'bg-ink-raised dark:bg-inkd-raised'
-                                        : 'bg-ink-surface dark:bg-inkd-surface'
-                                }`}
-                            >
-                                <Text
-                                    className={`text-[15px] font-medium ${
-                                        active
-                                            ? 'text-ink-text dark:text-inkd-text'
-                                            : 'text-ink-secondary dark:text-inkd-secondary'
-                                    }`}
-                                >
-                                    {option.label}
-                                </Text>
-                            </View>
-                        </BouncyPressable>
-                    </View>
+                    // 分段本体即按压体（flex-1 撑等宽两段；结构对齐 ThemeSection 分段）
+                    <Pressable
+                        key={option.key}
+                        onPress={() => onChange(option.key)}
+                        accessibilityRole="radio"
+                        accessibilityLabel={option.label}
+                        accessibilityState={{ selected: active }}
+                        className={`h-11 flex-1 items-center justify-center rounded-control active:bg-ink-raised dark:active:bg-inkd-raised ${
+                            active
+                                ? 'bg-ink-raised dark:bg-inkd-raised'
+                                : 'bg-ink-surface dark:bg-inkd-surface'
+                        }`}
+                    >
+                        <Text
+                            className={`text-[15px] font-medium ${
+                                active
+                                    ? 'text-ink-text dark:text-inkd-text'
+                                    : 'text-ink-secondary dark:text-inkd-secondary'
+                            }`}
+                        >
+                            {option.label}
+                        </Text>
+                    </Pressable>
                 );
             })}
         </View>
@@ -132,7 +131,9 @@ function DeleteTripControl({
             className={`h-12 items-center justify-center rounded-control border ${
                 confirmDelete
                     ? 'border-ink-negative bg-ink-negative-bg dark:border-inkd-negative dark:bg-inkd-negative-bg'
-                    : 'border-ink-border bg-transparent dark:border-inkd-border'
+                    : // 条件类铁律：bg-transparent 会缺 --tw-bg-opacity 变量槽位，用 base 底
+                      //（按钮坐在 base 画布上，视觉等价透明）保持两侧变量集恒等
+                      'border-ink-border bg-ink-base dark:border-inkd-border dark:bg-inkd-base'
             }`}
             accessibilityRole="button"
             accessibilityLabel="删除行程"
@@ -234,28 +235,39 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
     const submit = async () => {
         if (!canSubmit) return;
         setSubmitting(true);
-        if (trip) {
-            const ok = await updateTrip(trip.id, {
+        try {
+            if (trip) {
+                const ok = await updateTrip(trip.id, {
+                    title,
+                    startDate,
+                    endDate: endDateValue,
+                    description,
+                    icon,
+                    videoKey,
+                });
+                if (ok) safeBack();
+                return;
+            }
+            const created = await createTrip({
                 title,
                 startDate,
                 endDate: endDateValue,
                 description,
                 icon,
-                videoKey,
             });
+            if (created) router.replace({ pathname: '/trip/[id]', params: { id: created.id } });
+        } catch (caught) {
+            // 防御：updateTrip/createTrip 契约不 throw（失败走 false/null + store.error），
+            // 这里只兜环境级意外，不让异常变 unhandled rejection
+            useArchiveStore.setState({
+                error: `保存失败：${caught instanceof Error ? caught.message : String(caught)}`,
+            });
+        } finally {
+            // 中断场景：store 方法意外 reject 时复位提交态——PrimaryButton 由
+            // submitting 禁用，不复位 = 按钮永久禁用；常规失败走 false/null +
+            // store.error（不禁按钮，可直接重试）
             setSubmitting(false);
-            if (ok) safeBack();
-            return;
         }
-        const created = await createTrip({
-            title,
-            startDate,
-            endDate: endDateValue,
-            description,
-            icon,
-        });
-        setSubmitting(false);
-        if (created) router.replace({ pathname: '/trip/[id]', params: { id: created.id } });
     };
 
     const pickVideo = async () => {
@@ -287,8 +299,10 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
 
     const removeVideo = async () => {
         if (!trip) return;
-        setVideoKey(null);
-        await updateTrip(trip.id, { videoKey: null });
+        setVideoKey(null); // 乐观摘预览（成功路径即时反馈，行为不变）
+        const ok = await updateTrip(trip.id, { videoKey: null });
+        // 失败回滚预览：防「界面删了、数据还在」的半更新态（失败文案经 store.error 上浮）
+        if (!ok) setVideoKey(trip.video_key ?? null);
     };
 
     const remove = async () => {
@@ -370,13 +384,13 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                     <View className="mt-3">
                         {/* #1 推广收口：标题输入换 FieldInput（tone surface，容器承载
                             视觉 + 聚焦亮度一档 + 平台 props 单点收口），表单逻辑零改动。
-                        标题输入放大（#尺寸组反馈）：字号升 20（字号阶「20 屏题」档）+
-                        字重 semibold，容器 h-14（56dp）档——FieldInput 的 style 合并在
-                        tone 默认之后（调用方优先）、containerClassName 追加到容器
-                        （height 56 与默认 min-h-44 并存取大者，justify-center 已内置
-                        垂直居中），props 覆盖即可，field-input.tsx 零改动、其他调用点
-                        （描述/搜索/内联计划输入）不受影响。行高 28 = 20 字号的 1.4 倍，
-                        单行输入在 56 容器内呼吸感充足 */}
+                        标题输入放大（#尺寸组反馈，二轮纠正）：用户要的是「盒子大了、
+                        字不变」——容器保持 h-14（56dp）档，文字不传 style 覆盖即回落
+                        FIELD_TONE_TEXT.surface 默认 15/22 normal（撤销上一轮
+                        20/semibold/lineHeight-28 覆盖）。containerClassName 追加到
+                        容器（height 56 与默认 min-h-44 并存取大者，justify-center 已
+                        内置垂直居中），props 覆盖即可，field-input.tsx 零改动、其他
+                        调用点（描述/搜索/内联计划输入）不受影响 */}
                         <FieldInput
                             tone="surface"
                             value={title}
@@ -385,7 +399,6 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                             maxLength={40}
                             returnKeyType="next"
                             containerClassName="h-14"
-                            style={{ fontSize: 20, lineHeight: 28, fontWeight: '600' }}
                         />
                     </View>
                 </Section>
@@ -404,7 +417,8 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                                 <Text className="mb-1.5 text-[11px] text-ink-muted dark:text-inkd-muted">出发</Text>
                                 <DateInput value={startDate} onChange={setStartDate} />
                             </View>
-                            <Text className="pb-3.5 text-ink-muted dark:text-inkd-muted">→</Text>
+                            {/* 箭头基线随 DateInput 高度收敛（h-12→h-11）下移一档：pb-2.5 */}
+                            <Text className="pb-2.5 text-ink-muted dark:text-inkd-muted">→</Text>
                             <View className="flex-1">
                                 <Text className="mb-1.5 text-[11px] text-ink-muted dark:text-inkd-muted">返回</Text>
                                 <DateInput value={endDate} onChange={setEndDate} />
@@ -427,9 +441,13 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
 
                 {/* 描述（可选） */}
                 <Section title="描述">
-                    {/* 多行起手高度：原 BorderlessInput 的 min-h-[96px] 挂在 TextInput 自身
-                        （含其 py-3 内衬）；FieldInput 的内衬由容器 py-2（上下共 16）承担，
-                        TextInput minHeight 96-16=80 → 容器总高仍为原 96（起手三行节奏不变），
+                    {/* 多行起手高度 + 顶距（#尺寸组反馈，二轮纠正）：描述首行与容器顶缘
+                        间距明显加大——FieldInput 是共享组件不可改，在调用侧给 TextInput
+                        paddingTop 16（pt-4 档）：调用侧 style 位于合并数组末位，且 Yoga
+                        中具体边缘属性 paddingTop 覆盖 INPUT_TRANSPARENT_STYLE 的简写
+                        paddingVertical:0 → 生效顶距 = 容器 py-2 上沿 8 + 内衬 16 =
+                        24（修前 8）。minHeight 80 为 Yoga border-box（含内衬），三行
+                        16+66=82 微超即自然撑开一档，自动增高与光标位置不受影响，
                         继续增高仍随内容自然撑开 */}
                     <FieldInput
                         tone="surface"
@@ -438,7 +456,7 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                         onChangeText={setDescription}
                         placeholder="一句话说明这次出行（可选）"
                         maxLength={500}
-                        style={{ minHeight: 80 }}
+                        style={{ minHeight: 80, paddingTop: 16 }}
                     />
                 </Section>
 
@@ -471,14 +489,17 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                             </View>
                         ) : (
                             <BouncyPressable onPress={() => void pickVideo()} scaleTo={0.98}>
+                                {/* 按压反馈由外层 BouncyPressable 弹跳承担：内层 View 不用
+                                    active: 伪类（css-interop 会把 View 升级成 Pressable
+                                    首帧后 remount，触摸中途被杀——同 ChooserRow/MenuRow 口径） */}
                                 <View
-                                    className={`h-[104px] items-center justify-center gap-1.5 rounded-control border border-dashed border-ink-border bg-ink-surface active:bg-ink-raised dark:border-inkd-border dark:bg-inkd-surface dark:active:bg-inkd-raised ${
+                                    className={`h-[104px] items-center justify-center gap-1.5 rounded-control border border-dashed border-ink-border bg-ink-surface dark:border-inkd-border dark:bg-inkd-surface ${
                                         videoBusy ? 'opacity-50' : ''
                                     }`}
                                     accessibilityRole="button"
                                     accessibilityLabel="选择封面视频"
                                 >
-                                    <LucideVideo size={20} strokeWidth={1.75} color={palette.muted} />
+                                    <LucideVideo size={20} strokeWidth={1.9} color={palette.muted} />
                                     <Text className="text-[13px] text-ink-secondary dark:text-inkd-secondary">
                                         {videoBusy ? '上传中…' : '从相册选择视频'}
                                     </Text>

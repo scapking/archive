@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     BackHandler,
     Keyboard,
@@ -13,6 +13,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
     BouncyPressable,
+    LucideBookOpen,
     LucidePencil,
     LucidePlus,
     LucideTrash,
@@ -46,6 +47,7 @@ import {
     BlockEditor,
     CameraCaptureOverlay,
     CloseButton,
+    EmptyState,
     InsertMenu,
     LoadingView,
     PENDING_MEDIA_ID,
@@ -129,10 +131,16 @@ export function JournalEditScreen({
         [],
     );
 
-    // 载入日记 + 行程上下文
-    useEffect(() => {
-        let active = true;
-        void (async () => {
+    // 载入日记 + 行程上下文（失败落明确失败态可重试，不永久 spinner）：
+    // getJournal/getTrip 是裸 db 调用可 reject；ensureJournal 失败也返回 null——
+    // 两者若不接住，本屏会永远停在 LoadingView（错误横幅在 journal 就绪后才渲染，
+    // 根本没机会显示）。卸载/重试竞态用 attempt 序号守卫，防旧响应回填。
+    const [loadFailed, setLoadFailed] = useState(false);
+    const loadAttemptRef = useRef(0);
+    const load = useCallback(async () => {
+        const attempt = ++loadAttemptRef.current;
+        setLoadFailed(false);
+        try {
             let row: JournalRow | null = null;
             if (journalId) {
                 row = await getJournal(journalId);
@@ -141,27 +149,56 @@ export function JournalEditScreen({
             } else {
                 row = await ensureTodayJournal();
             }
-            if (!active) return;
+            if (attempt !== loadAttemptRef.current) return;
+            // row = null（日记已被删 / ensureJournal 失败后 store.error 已落文案）：
+            // 同样进失败态，不能拿 null 硬撑 LoadingView
+            if (!row) {
+                setLoadFailed(true);
+                return;
+            }
             setJournal(row);
-            setBlocks(row ? parseBlocks(row.blocks) : []);
-            if (row?.trip_id) setTrip(await getTrip(row.trip_id));
-        })();
-        return () => {
-            active = false;
-        };
+            setBlocks(parseBlocks(row.blocks));
+            if (row.trip_id) {
+                const tripRow = await getTrip(row.trip_id);
+                if (attempt !== loadAttemptRef.current) return;
+                setTrip(tripRow);
+            }
+        } catch (caught) {
+            // 中断场景：db 调用被中断/失败（db 异常、web 非安全上下文等）必须落失败态
+            if (attempt !== loadAttemptRef.current) return;
+            setLoadFailed(true);
+        }
     }, [journalId, tripId, date, ensureJournal, ensureTodayJournal]);
+
+    useEffect(() => {
+        void load();
+        return () => {
+            // 卸载即作废在途载入：setState-after-unmount 防护（序号守卫）
+            loadAttemptRef.current += 1;
+        };
+    }, [load]);
 
     // 媒体行随 revision 重载
     useEffect(() => {
         if (!journal) return;
         let active = true;
-        mediaByJournalIds([journal.id]).then((grouped) => {
-            if (active) setMedia(grouped.get(journal.id) ?? []);
-        });
+        mediaByJournalIds([journal.id])
+            .then((grouped) => {
+                if (active) setMedia(grouped.get(journal.id) ?? []);
+            })
+            .catch((caught) => {
+                // 中断场景：媒体行刷新 reject 不能 unhandled（红屏）；失败上浮可感知，
+                // revision 变化（含下一次保存成功）会自动重试，无需手动干预
+                if (active) {
+                    store.setState({
+                        error: `媒体列表读取失败：${caught instanceof Error ? caught.message : String(caught)}`,
+                    });
+                }
+            });
         return () => {
             active = false;
         };
-    }, [journal, revision]);
+    }, [journal, revision, store]);
 
     // 防抖自动保存（800ms）：跳过载入回填帧。
     // blocks/journal 同步进 ref（卸载兜底 flush 要取最新值）；dirty 标记是否有未落库改动
@@ -317,6 +354,15 @@ export function JournalEditScreen({
         setBusy(true);
         try {
             await doAttach(kind, uri, width, height, durationMs);
+        } catch (caught) {
+            // 中断场景：doAttach 之外的意外 reject 也必须可见——只写 finally 会让
+            // busy 复位但异常变 unhandled rejection，占位块回滚无人执行
+            store.setState({
+                error: `媒体插入失败：${caught instanceof Error ? caught.message : String(caught)}`,
+            });
+            setBlocks((current) =>
+                current.filter((b) => !(b.t === 'media' && b.mediaId === PENDING_MEDIA_ID)),
+            );
         } finally {
             setBusy(false);
         }
@@ -476,6 +522,29 @@ export function JournalEditScreen({
         setBlocks((current) => removeBlock(current, id));
     };
 
+    // 载入失败态（自愈口径，参照 useFileUrlState 三态）：明确失败 + 重试入口，
+    // 绝不把失败渲染成永久 spinner；store.error（如「日记初始化失败」）一并展示
+    if (loadFailed) {
+        return (
+            <View className="flex-1 bg-ink-base dark:bg-inkd-base">
+                <View style={{ paddingTop: insets.top }} className="flex-1">
+                    {error ? (
+                        <Text className="px-6 pb-2 pt-2 text-[12px] text-ink-negative dark:text-inkd-negative">
+                            {error}
+                        </Text>
+                    ) : null}
+                    <EmptyState
+                        icon={<LucideBookOpen size={40} color={palette.muted} strokeWidth={1.5} />}
+                        title="打不开这一页"
+                        hint="日记可能已被删除，或数据读取失败。"
+                        actionLabel="重试"
+                        onAction={() => void load()}
+                    />
+                </View>
+            </View>
+        );
+    }
+
     if (!journal) return <LoadingView />;
 
     return (
@@ -532,7 +601,7 @@ export function JournalEditScreen({
                                     accessibilityLabel="编辑标题"
                                     className="h-9 w-9 items-center justify-center rounded-control border border-ink-border bg-ink-surface dark:border-inkd-border dark:bg-inkd-surface"
                                 >
-                                    <LucidePencil size={16} color={palette.secondary} />
+                                    <LucidePencil size={16} strokeWidth={1.9} color={palette.secondary} />
                                 </View>
                             </BouncyPressable>
                         ) : null}
@@ -658,8 +727,9 @@ export function JournalEditScreen({
                     上传中也能打开选择器，动作分发处统一给可见反馈），杀掉
                     「上传中点 + 没反应 → 再点一下才好」的假双击感知 */}
                 {editable ? (
+                    // right-6（24）：与 ComposeFab 同一屏隅口径（原 right-5(20) 双轨，收敛）
                     <View
-                        className="absolute right-5 z-10"
+                        className="absolute right-6 z-10"
                         style={{ bottom: insets.bottom + 24 }}
                         pointerEvents="box-none"
                     >
@@ -698,9 +768,14 @@ export function JournalEditScreen({
                     onSave={(title) => store.getState().updateJournalTitle(journal.id, title)}
                     onClose={() => {
                         setRenameOpen(false);
-                        void getJournal(journal.id).then((row) => {
-                            if (row) setJournal(row);
-                        });
+                        void getJournal(journal.id)
+                            .then((row) => {
+                                if (row) setJournal(row);
+                            })
+                            .catch(() => {
+                                // 回读失败保留当前标题（幂等刷新，保存本体已在卡内确认），
+                                // 下次进入按 DB 校正；静默需注释：无界面可回滚的只读刷新
+                            });
                     }}
                     errorText={error}
                 />
@@ -709,7 +784,15 @@ export function JournalEditScreen({
             {menuOpen ? (
                 <InsertMenu
                     onClose={() => setMenuOpen(false)}
-                    onAction={(action) => void runInsert(action)}
+                    onAction={(action) =>
+                        void runInsert(action).catch((caught) => {
+                            // 中断场景：录音权限/收笔通道 reject（系统中断、环境异常）
+                            // 必须可见，不能 unhandled rejection 红屏
+                            store.setState({
+                                error: `操作失败：${caught instanceof Error ? caught.message : String(caught)}`,
+                            });
+                        })
+                    }
                 />
             ) : null}
             {/* 录音覆盖层：卡片浮层 + 声纹条；停止落库 / 取消丢弃 */}
@@ -778,21 +861,22 @@ function BlockActionCard({
     }> = [
         {
             key: 'up',
-            icon: <ChevronUpIcon size={18} strokeWidth={2} color={palette.secondary} />,
+            icon: <ChevronUpIcon size={18} strokeWidth={1.9} color={palette.secondary} />,
             label: '上移',
             disabled: !canUp,
             onPress: () => onMove(-1),
         },
         {
             key: 'down',
-            icon: <ChevronDownIcon size={18} strokeWidth={2} color={palette.secondary} />,
+            icon: <ChevronDownIcon size={18} strokeWidth={1.9} color={palette.secondary} />,
             label: '下移',
             disabled: !canDown,
             onPress: () => onMove(1),
         },
         {
+            // 尺寸档收敛：17 → 16（16/18/20/24 档内），stroke 1.9 全仓图标口径
             key: 'delete',
-            icon: <LucideTrash size={17} strokeWidth={2} color={palette.negative} />,
+            icon: <LucideTrash size={16} strokeWidth={1.9} color={palette.negative} />,
             label: '删除',
             danger: true,
             disabled: false,

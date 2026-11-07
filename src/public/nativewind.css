@@ -680,14 +680,6 @@ video {
   margin-bottom: 1rem;
 }
 
-.mb-7 {
-  margin-bottom: 1.75rem;
-}
-
-.ml-1 {
-  margin-left: 0.25rem;
-}
-
 .ml-2 {
   margin-left: 0.5rem;
 }
@@ -730,10 +722,6 @@ video {
 
 .mt-2 {
   margin-top: 0.5rem;
-}
-
-.mt-2\.5 {
-  margin-top: 0.625rem;
 }
 
 .mt-3 {
@@ -824,6 +812,10 @@ video {
   height: 1.25rem;
 }
 
+.h-56 {
+  height: 14rem;
+}
+
 .h-6 {
   height: 1.5rem;
 }
@@ -872,8 +864,12 @@ video {
   min-height: 2.75rem;
 }
 
-.min-h-\[96px\] {
-  min-height: 96px;
+.min-h-44 {
+  min-height: 11rem;
+}
+
+.min-h-\[150px\] {
+  min-height: 150px;
 }
 
 .w-1 {
@@ -980,10 +976,6 @@ video {
   flex-shrink: 0;
 }
 
-.origin-left {
-  transform-origin: left;
-}
-
 .-translate-y-2 {
   --tw-translate-y: -0.5rem;
   transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
@@ -1065,10 +1057,6 @@ video {
   gap: 0.75rem;
 }
 
-.gap-3\.5 {
-  gap: 0.875rem;
-}
-
 .overflow-hidden {
   overflow: hidden;
 }
@@ -1095,10 +1083,6 @@ video {
 
 .rounded-lg {
   border-radius: 0.5rem;
-}
-
-.rounded-md {
-  border-radius: 0.375rem;
 }
 
 .rounded-thumb {
@@ -1273,10 +1257,6 @@ video {
   padding: 0.5rem;
 }
 
-.p-2\.5 {
-  padding: 0.625rem;
-}
-
 .p-3 {
   padding: 0.75rem;
 }
@@ -1364,24 +1344,19 @@ video {
   padding-bottom: 0.5rem;
 }
 
-.py-2\.5 {
-  padding-top: 0.625rem;
-  padding-bottom: 0.625rem;
-}
-
 .py-3 {
   padding-top: 0.75rem;
   padding-bottom: 0.75rem;
 }
 
-.py-3\.5 {
-  padding-top: 0.875rem;
-  padding-bottom: 0.875rem;
-}
-
 .py-4 {
   padding-top: 1rem;
   padding-bottom: 1rem;
+}
+
+.py-5 {
+  padding-top: 1.25rem;
+  padding-bottom: 1.25rem;
 }
 
 .py-6 {
@@ -1397,12 +1372,16 @@ video {
   padding-bottom: 0.5rem;
 }
 
+.pb-2\.5 {
+  padding-bottom: 0.625rem;
+}
+
 .pb-3 {
   padding-bottom: 0.75rem;
 }
 
-.pb-3\.5 {
-  padding-bottom: 0.875rem;
+.pb-4 {
+  padding-bottom: 1rem;
 }
 
 .pb-5 {
@@ -1433,6 +1412,14 @@ video {
   padding-top: 0.75rem;
 }
 
+.pt-3\.5 {
+  padding-top: 0.875rem;
+}
+
+.pt-4 {
+  padding-top: 1rem;
+}
+
 .pt-5 {
   padding-top: 1.25rem;
 }
@@ -1461,20 +1448,12 @@ video {
   font-size: 15px;
 }
 
-.text-\[16px\] {
-  font-size: 16px;
-}
-
 .text-\[17px\] {
   font-size: 17px;
 }
 
 .text-\[20px\] {
   font-size: 20px;
-}
-
-.text-\[24px\] {
-  font-size: 24px;
 }
 
 .text-\[30px\] {

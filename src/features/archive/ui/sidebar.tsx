@@ -60,12 +60,16 @@ export function Sidebar() {
                                 onPress={() => router.navigate(item.href)}
                                 // h-11 = 44px 最小触摸目标（平板触屏也会走到 ≥1024 宽的侧栏）
                                 className={`h-11 flex-row items-center gap-2.5 rounded-control px-2.5 active:opacity-80 ${
-                                    active ? 'bg-ink-raised dark:bg-inkd-raised' : 'bg-transparent'
+                                    // 条件类铁律：两侧变量集恒等（bg-transparent 缺变量槽位，
+                                    // 用 base 底 = 视觉等价透明）
+                                    active
+                                        ? 'bg-ink-raised dark:bg-inkd-raised'
+                                        : 'bg-ink-base dark:bg-inkd-base'
                                 }`}
                             >
                                 <Icon
-                                    size={17}
-                                    strokeWidth={1.75}
+                                    size={16}
+                                    strokeWidth={1.9}
                                     color={active ? palette.text : palette.muted}
                                 />
                                 <Text

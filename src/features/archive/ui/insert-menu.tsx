@@ -79,17 +79,17 @@ export function InsertMenu({
     /** 行配置：web 能力边界内裁剪（录音 MediaRecorder 缺失 / 视频 recordAsync 无 web 实现）。 */
     const rows: Array<{ action: InsertAction; icon: React.ReactNode; title: string; hint: string }> = [
         ...(isRecordingSupported()
-            ? [{ action: 'record' as const, icon: <LucideMic size={20} strokeWidth={1.75} />, title: '录音', hint: '声纹即时记录' }]
+            ? [{ action: 'record' as const, icon: <LucideMic size={20} strokeWidth={1.9} />, title: '录音', hint: '声纹即时记录' }]
             : []),
-        { action: 'photo', icon: <LucideCamera size={20} strokeWidth={1.75} />, title: '拍照', hint: '现场快照，直接进日记' },
+        { action: 'photo', icon: <LucideCamera size={20} strokeWidth={1.9} />, title: '拍照', hint: '现场快照，直接进日记' },
         ...(isVideoCaptureSupported()
-            ? [{ action: 'video' as const, icon: <LucideVideo size={20} strokeWidth={1.75} />, title: '拍视频', hint: '时长不限' }]
+            ? [{ action: 'video' as const, icon: <LucideVideo size={20} strokeWidth={1.9} />, title: '拍视频', hint: '时长不限' }]
             : []),
-        { action: 'library-image', icon: <LucideImage size={20} strokeWidth={1.75} />, title: '相册图片', hint: '从图库选取' },
-        { action: 'library-video', icon: <ImagePlayIcon size={20} strokeWidth={1.75} />, title: '相册视频', hint: '从图库选取' },
+        { action: 'library-image', icon: <LucideImage size={20} strokeWidth={1.9} />, title: '相册图片', hint: '从图库选取' },
+        { action: 'library-video', icon: <ImagePlayIcon size={20} strokeWidth={1.9} />, title: '相册视频', hint: '从图库选取' },
         // 「+」语言一致（添加语义同 FAB 罗盘本钮）；排在媒体行之后、完成收笔之前（#11）
-        { action: 'append-text', icon: <LucidePlus size={20} strokeWidth={1.75} />, title: '添加输入框', hint: '末尾另起一段继续写' },
-        { action: 'complete', icon: <LucideCheck size={20} strokeWidth={1.75} />, title: '完成收笔', hint: '收笔后不可再修改' },
+        { action: 'append-text', icon: <LucidePlus size={20} strokeWidth={1.9} />, title: '添加输入框', hint: '末尾另起一段继续写' },
+        { action: 'complete', icon: <LucideCheck size={20} strokeWidth={1.9} />, title: '完成收笔', hint: '收笔后不可再修改' },
     ];
 
     const run = (action: InsertAction) => {
@@ -151,7 +151,7 @@ export function InsertMenu({
                                         accessibilityLabel="确认收笔"
                                     >
                                         <Text
-                                            className="text-[14px] font-semibold"
+                                            className="text-[15px] font-semibold"
                                             style={{ color: palette.onPrimaryBtn }}
                                         >
                                             确认收笔

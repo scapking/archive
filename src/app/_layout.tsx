@@ -18,8 +18,11 @@ export const unstable_settings = { anchor: '(tabs)' };
 
 /** Android edge-to-edge：把窗口背景（= 透明导航栏露出的区域）重设为当前主题
     的 sceneBg（与 Stack contentStyle 同源）。幂等可重入：主题变化与路由 state
-    变化都会调用，重复设同色无副作用；expo-system-ui 会把该色持久化，下次冷
-    启动 JS 未执行前原生即恢复，消除首帧导航栏底色不确定。 */
+    变化两条路径都会调用——真机实测，窗口底色只在主题变化时设置的话，路由
+    切换/转场后导航栏条带会停留陈旧底色、直到下一次窗口重绘才恢复（「点击
+    一些界面底部导航栏边缘没有刷新，刷新之后又正常」），故每次屏切换也幂等
+    重设一次强制该条带跟手；重复设同色无原生副作用。expo-system-ui 会把该色
+    持久化，下次冷启动 JS 未执行前原生即恢复，消除首帧导航栏底色不确定。 */
 function applyAndroidSceneBackground(theme: 'light' | 'dark'): void {
     SystemUI.setBackgroundColorAsync(getPalette(theme).sceneBg).catch((e: unknown) => {
         console.warn('[system-ui] setBackgroundColorAsync failed:', e);
@@ -31,6 +34,9 @@ export default function RootLayout() {
     const ready = useArchiveStore((s) => s.ready);
     const loadAll = useArchiveStore((s) => s.loadAll);
     const theme = useEffectiveTheme();
+    // expo-router 模块级单例 ref（= 挂在 NavigationContainer 上的同一个对象）：
+    // 跨挂载稳定，仅用于订阅 state 变化事件（不消费 .current，无渲染依赖）
+    const navigationRef = useNavigationContainerRef();
 
     useEffect(() => {
         if (!ready) void loadAll();
@@ -58,16 +64,24 @@ export default function RootLayout() {
         // 有时黑取决于系统深浅）、重渲后按钮外观跳变。见 react-native-edge-to-edge
         // README「Transparent navigation bar」：透明导航栏需自管样式，与状态栏同等待遇。
         if (Platform.OS !== 'android') return;
-        const palette = getPalette(theme);
-        // 底色取 sceneBg（与 Stack contentStyle 同源）。expo-system-ui 会把该色持久化，
-        // 下次冷启动 JS 未执行前原生即恢复，消除首帧导航栏底色不确定。
-        SystemUI.setBackgroundColorAsync(palette.sceneBg).catch((e: unknown) => {
-            console.warn('[system-ui] setBackgroundColorAsync failed:', e);
-        });
+        // 路径①主题翻转（deps 含 theme，effect 重跑即触发；挂载首帧同样覆盖）：
+        // 立即幂等重设窗口底色 + 按钮深浅
+        applyAndroidSceneBackground(theme);
         // 按钮深浅随主题：浅色主题配深色按钮图标（'dark'），深色主题配浅色图标（'light'）。
         // 3-button 模式生效前提：app.json 中 expo-navigation-bar 插件 enforceContrast=false。
         NavigationBar.setStyle(theme === 'dark' ? 'light' : 'dark');
-    }, [theme]);
+        // 路径②屏切换兜底（真机「底部导航栏边缘没有刷新」）：订阅根容器 state
+        // 变化——含嵌套 tab 切换 / push / pop / modal（嵌套导航状态变化会上抛
+        // 到容器 state）——每次变化幂等重设一次窗口底色，强制导航栏条带跟手。
+        // addListener 是事件订阅不触发 React 重渲（对比 useRootNavigationState
+        // 的 state 订阅重渲路径），零重渲风暴；theme 变化时本 effect 重跑重建
+        // 监听，闭包 theme 恒为当前值。回调即「state 变化时调用一次」，不在
+        // 渲染期触碰原生 API。
+        const unsubscribe = navigationRef.addListener('state', () => {
+            applyAndroidSceneBackground(theme);
+        });
+        return unsubscribe;
+    }, [theme, navigationRef]);
 
     return (
         <>
