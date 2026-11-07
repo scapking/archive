@@ -347,7 +347,11 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
         >
             <ScrollView
                 contentContainerStyle={{
-                    paddingTop: insets.top + 8,
+                    // 顶部只垫 insets.top：屏头带顶距的 pt-2(8) 由 ScreenHeader 容器
+                    // 自带（四屏统一口径 = insets.top + 8 + h-11(44)）。旧写法在此
+                    // 再 +8，与 ScreenHeader 的 pt-2 双计，屏头带比笔记编辑/行程
+                    // 详情/搜索低 8dp（用户反馈「顶部不一致」的修前主因之一）
+                    paddingTop: insets.top,
                     paddingBottom: insets.bottom + 32,
                     paddingHorizontal: 24,
                 }}
@@ -388,9 +392,10 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                         字不变」——容器保持 h-14（56dp）档，文字不传 style 覆盖即回落
                         FIELD_TONE_TEXT.surface 默认 15/22 normal（撤销上一轮
                         20/semibold/lineHeight-28 覆盖）。containerClassName 追加到
-                        容器（height 56 与默认 min-h-44 并存取大者，justify-center 已
-                        内置垂直居中），props 覆盖即可，field-input.tsx 零改动、其他
-                        调用点（描述/搜索/内联计划输入）不受影响 */}
+                        容器（height 56 与默认 min-h-44 并存取大者）；输入体在容器内
+                        stretch 填满（field-input 填充轮），点击区/视觉与容器一致，
+                        文字垂直居中由输入体承担，props 覆盖即可、其他调用点
+                        （描述/内联计划输入）不受影响 */}
                         <FieldInput
                             tone="surface"
                             value={title}
@@ -442,13 +447,14 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                 {/* 描述（可选） */}
                 <Section title="描述">
                     {/* 多行起手高度 + 顶距（#尺寸组反馈，二轮纠正）：描述首行与容器顶缘
-                        间距明显加大——FieldInput 是共享组件不可改，在调用侧给 TextInput
+                        间距明显加大——多行态文字从顶部排，在调用侧给 TextInput
                         paddingTop 16（pt-4 档）：调用侧 style 位于合并数组末位，且 Yoga
                         中具体边缘属性 paddingTop 覆盖 INPUT_TRANSPARENT_STYLE 的简写
                         paddingVertical:0 → 生效顶距 = 容器 py-2 上沿 8 + 内衬 16 =
                         24（修前 8）。minHeight 80 为 Yoga border-box（含内衬），三行
                         16+66=82 微超即自然撑开一档，自动增高与光标位置不受影响，
-                        继续增高仍随内容自然撑开 */}
+                        继续增高仍随内容自然撑开；填充轮后输入体在容器内 stretch，
+                        多行内容增长时容器随内容撑开的语义不变 */}
                     <FieldInput
                         tone="surface"
                         multiline
