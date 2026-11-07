@@ -46,7 +46,9 @@ import { PENDING_MEDIA_ID } from '../db';
  *   EDITOR_RHYTHM 常量表——#2/#11「间距体系混乱」的单点事实源）：
  *   段 ↔ 段 = 4dp（续写紧凑）；文本段 ↔ 媒体块 = 16dp；
  *   媒体块 ↔ 媒体块 = 16dp（多图节奏与图文一致）；报头 → 首段 = 24dp
- *   （报头 pb-2 8dp + 画布 pt 16dp 叠加，由屏层消费）；
+ *   （报头 pb-2 8dp + 画布 pt 16dp 叠加，由屏层消费）；照片堆前后净空同
+ *   表值 16dp——底缘计数行锚定点按带底、带内零空气，堆后不再多出 8~16dp
+ *   视觉空隙（节奏调优修复面，几何核算见 DECK_EDGE_TOTAL 注）；
  * - 块模型自上而下：文本段（自动增高、可聚焦续写）与行内媒体（图/视频/音频）混排，
  *   媒体插入即显示 pending 占位（上传中不阻塞继续写字）；
  * - 连续图片照片堆（渲染层合并，数据仍是独立块）：连续相邻的图片媒体块
@@ -451,8 +453,12 @@ const DECK_VISIBLE_EDGES = 2;
  *  达标、零 hitSlop）。不用 hitSlop 外扩的原因：命中链逐层要求祖先 frame
  *  包含触点，hitSlop 伸出 overflow-hidden 容器 / 祖先 frame 的部分三端命中
  *  不可靠（iOS pointInside 对越界触点直接不下探），真实 frame 预留才是
- *  确定性命中。露边只占其中 8~16dp，余量为点按空气带（计数浮层置于带内，
- *  pointerEvents none 不参与命中，点按区连续无死区）。 */
+ *  确定性命中。带的全高同时是堆的**可视纵深**：露边占顶部 8~16dp，计数行
+ *  锚定带底缘（bottom 0）收口尾部——带内零空气，堆的视觉底 = 布局底，堆后
+ *  视觉净空 = 组 margin + 栈 gap = 节奏表 16dp，与堆前对称（修前计数行贴
+ *  露边、带底余 8~16dp 空气，堆后视觉净空 24~32 与堆前 16 不对称，即用户
+ *  感知的「输入框与媒体块间隔不协调」主源）；计数浮层 pointerEvents none
+ *  不参与命中，点按区连续无死区。 */
 const DECK_EDGE_TOTAL = 44;
 /** 横滑方向锁（onMoveShouldSetPanResponder）：|dx| 超过 10 且
  *  |dx| > 1.5|dy| 才认领手势——横向意图判定，画布纵向滚动零仲裁。 */
@@ -581,7 +587,9 @@ function DeckEdgeCard({
  *       8×i，静止只露底缘 8dp；N=2 只有 1 层（第 2 层不再渲染同一张前卡）；
  *   底缘点按体：absolute top = 前卡高、高 44、横向满宽（zIndex 恒最高，
  *       几何即命中——露边可视带与点按空气带合一，计数浮层置带内且
- *       pointerEvents none 不参与命中，点按区连续无死区）。
+ *       pointerEvents none 不参与命中，点按区连续无死区）；计数行锚定带
+ *       底缘（bottom 0）→ 带 44dp 全高纳入堆的可视纵深，堆后视觉净空 =
+ *       组 margin + 栈 gap（节奏表 16dp），与堆前对称。
  *
  * 层级 zIndex（静态常量分层——本设计无换槽身份轮转，zIndex 恒定）：点按体
  * 4 > 前卡 3 > 露边层1 2 > 露边层2 1。
@@ -796,7 +804,6 @@ function ImageDeckStack({
     for (let offset = 1; offset <= stripCount; offset += 1) {
         stripItems.push(items[(safeIndex + offset) % itemCount]);
     }
-    const stripTotal = stripCount * DECK_EDGE_STEP;
 
     return (
         <View
@@ -875,9 +882,13 @@ function ImageDeckStack({
                     accessibilityLabel={`第 ${safeIndex + 1} 张，共 ${itemCount} 张，点按查看下一张`}
                 />
             ) : null}
-            {/* 计数（current+1/N）：露边带下方 4dp 居中——muted 12px
-                tabular-nums、无 pill chrome（克制口径）；pointerEvents none +
-                a11y 隐藏（计数已并入点按体 label，不重复播报） */}
+            {/* 计数（current+1/N）：锚定 44dp 点按带底缘（bottom 0）居中——
+                带 44dp 全高纳入堆可视纵深（露边 → 计数行连续着墨、带内零
+                空气），堆后视觉净空 = 组 margin + 栈 gap 与堆前对称（节奏表
+                16dp）；bottom 锚定把三端行高差（±2px）吃进带内，不污染块间
+                净空。muted 12px tabular-nums、无 pill chrome（克制口径）；
+                pointerEvents none + a11y 隐藏（计数已并入点按体 label，
+                不重复播报） */}
             {frontHeight > 0 ? (
                 <View
                     pointerEvents="none"
@@ -885,7 +896,7 @@ function ImageDeckStack({
                     importantForAccessibility="no-hide-descendants"
                     style={{
                         position: 'absolute',
-                        top: frontHeight + stripTotal + 4,
+                        bottom: 0,
                         left: 0,
                         right: 0,
                         alignItems: 'center',
