@@ -13,7 +13,8 @@ export const sharing = {
 
     /**
      * 分享本地文件或远程 URL。
-     * web 端 Web Share API 不可用时回退：取回内容（fetch）→ 触发浏览器下载。
+     * web 端 Web Share API 不可用时回退：取回内容（fetch）→ 触发浏览器下载；
+     * 下载文件名从 URI 路径/blob mime 推断，dialogTitle 仅作分享标题不充当文件名。
      */
     async shareAsync(uri: string, options?: Sharing.SharingOptions): Promise<void> {
         if (await Sharing.isAvailableAsync()) {
@@ -27,7 +28,7 @@ export const sharing = {
 export type { SharingOptions } from 'expo-sharing';
 export { SharingError, type SharingErrorCode } from './errors';
 
-async function downloadFallback(uri: string, filename: string): Promise<void> {
+async function downloadFallback(uri: string, fallbackName: string): Promise<void> {
     if (!globalThis.document?.createElement || !globalThis.URL?.createObjectURL) {
         throw new SharingError('sharing/unsupported', '当前环境既不支持分享也不支持下载');
     }
@@ -45,10 +46,51 @@ async function downloadFallback(uri: string, filename: string): Promise<void> {
     try {
         const anchor = globalThis.document.createElement('a');
         anchor.href = url;
-        anchor.download = filename;
+        anchor.download = inferDownloadFilename(uri, blob.type, fallbackName);
         anchor.click();
     } finally {
         // 下载已触发，稍后释放引用
         globalThis.setTimeout(() => globalThis.URL.revokeObjectURL(url), 10_000);
+    }
+}
+
+/** 常见 mime → 扩展名（下载回退无法从 URI 推断扩展名时补齐，保证 OS 能识别文件类型）。 */
+const MIME_EXTENSIONS: Record<string, string> = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+    'video/mp4': 'mp4',
+    'audio/mpeg': 'mp3',
+    'audio/wav': 'wav',
+    'audio/mp4': 'm4a',
+    'application/pdf': 'pdf',
+    'application/zip': 'zip',
+    'application/json': 'json',
+    'text/plain': 'txt',
+};
+
+/**
+ * 从 URI 路径名与 blob mime 推断下载文件名：
+ * ① URI 路径末段（去查询/片段）自带扩展名 → 原样使用；
+ * ② 路径末段无扩展名但 mime 可识别 → 补扩展名（如 blob: 的 uuid 名）；
+ * ③ 都推断不出 → 保留原兜底名（dialogTitle ?? 'download'），mime 可识别时同样补扩展名。
+ */
+function inferDownloadFilename(uri: string, mimeType: string, fallbackName: string): string {
+    const fallback = fallbackName || 'download';
+    const segment = uri.split(/[?#]/)[0].split('/').filter(Boolean).pop() ?? '';
+    const mimeExtension = MIME_EXTENSIONS[mimeType.split(';')[0].trim().toLowerCase()];
+    const name = segment ? decodeURIComponentSafe(segment) : '';
+    if (/\.[a-zA-Z0-9]{1,8}$/.test(name)) return name;
+    if (name && mimeExtension) return `${name}.${mimeExtension}`;
+    if (mimeExtension) return `${fallback}.${mimeExtension}`;
+    return fallback;
+}
+
+function decodeURIComponentSafe(text: string): string {
+    try {
+        return decodeURIComponent(text);
+    } catch {
+        return text; // 含非法百分号编码时退回原文
     }
 }

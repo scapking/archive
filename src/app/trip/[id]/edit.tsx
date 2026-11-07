@@ -1,19 +1,19 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
-import { getTrip } from '@/features/archive/db';
-import { TripFormScreen } from '@/features/archive';
+import { LoadingView, TripFormScreen, useArchiveStore } from '@/features/archive';
 
-/** 编辑行程：按 id 载入后进表单。 */
+/** 编辑行程：按 id 载入后进表单（取数走域入口 resolveTrip，不做深路径 import）。 */
 export default function TripEditRoute() {
     const { id } = useLocalSearchParams<{ id: string }>();
-    const [trip, setTrip] = useState<Awaited<ReturnType<typeof getTrip>>>(null);
+    const resolveTrip = useArchiveStore((s) => s.resolveTrip);
+    const [trip, setTrip] = useState<Awaited<ReturnType<typeof resolveTrip>>>(null);
     const [missing, setMissing] = useState(false);
 
     useEffect(() => {
         let active = true;
         if (typeof id === 'string') {
-            getTrip(id).then((row) => {
+            void resolveTrip(id).then((row) => {
                 if (!active) return;
                 if (row) setTrip(row);
                 else setMissing(true);
@@ -22,7 +22,7 @@ export default function TripEditRoute() {
         return () => {
             active = false;
         };
-    }, [id]);
+    }, [id, resolveTrip]);
 
     if (missing) {
         return (
@@ -31,12 +31,6 @@ export default function TripEditRoute() {
             </View>
         );
     }
-    if (!trip) {
-        return (
-            <View className="flex-1 items-center justify-center bg-ink-base dark:bg-inkd-base">
-                <ActivityIndicator color="#3B82F6" />
-            </View>
-        );
-    }
+    if (!trip) return <LoadingView />;
     return <TripFormScreen trip={trip} />;
 }

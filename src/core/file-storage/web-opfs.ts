@@ -41,8 +41,15 @@ export const opfsBackend = {
         const dir = await dirHandle(dirs, true);
         const fileHandle = await dir.getFileHandle(name, { create: true });
         const writable = await fileHandle.createWritable();
-        await writable.write(content as FileSystemWriteChunkType);
-        await writable.close();
+        try {
+            await writable.write(content as FileSystemWriteChunkType);
+            await writable.close();
+        } catch (error) {
+            // write/close 失败时必须 abort 释放句柄，否则 OPFS 文件锁泄漏，
+            // 该 key 的后续读写会一直失败直到页面刷新
+            await writable.abort().catch(() => undefined);
+            throw error;
+        }
     },
 
     /** 读字节；不存在时抛 NotFoundError（DOMException），由上层转 FileStorageError。 */
@@ -100,14 +107,18 @@ export const opfsBackend = {
         };
         if (prefix) {
             // 前缀可能是目录（如 "photos/"）或文件名前缀：先试目录，失败退化为全量过滤
+            // （与 native 语义一致：全树收集后 startsWith 过滤，而非静默返回空列表）
             try {
                 const dir = await dirHandle(prefix.replace(/\/+$/, '').split('/'), false);
                 const base = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix;
                 await walk(dir, base);
+                return keys;
             } catch {
-                return [];
+                // walk 可能已推入部分结果，先清空再全量收集，避免重复
+                keys.length = 0;
+                await walk(root, '');
+                return keys.filter((key) => key.startsWith(prefix));
             }
-            return keys;
         }
         await walk(root, '');
         return keys;

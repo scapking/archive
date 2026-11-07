@@ -27,13 +27,17 @@ export function EmptyState({
                 {hint}
             </Text>
             {actionLabel && onAction ? (
-                <BouncyPressable onPress={onAction} scaleTo={0.96}>
-                    <View className="mt-6 h-11 items-center justify-center rounded-lg border border-ink-border bg-ink-surface px-6 active:bg-ink-raised dark:border-inkd-border dark:bg-inkd-surface dark:active:bg-inkd-raised">
-                        <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
-                            {actionLabel}
-                        </Text>
-                    </View>
-                </BouncyPressable>
+                // 间距放 Pressable 外层包裹（margin 不计入命中区）：Pressable 框
+                // == 按钮视觉盒（44px 高），避免按钮上方 24px 空隙被算进命中区
+                <View className="mt-6">
+                    <BouncyPressable onPress={onAction} scaleTo={0.96}>
+                        <View className="h-11 items-center justify-center rounded-lg border border-ink-border bg-ink-surface px-6 active:bg-ink-raised dark:border-inkd-border dark:bg-inkd-surface dark:active:bg-inkd-raised">
+                            <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
+                                {actionLabel}
+                            </Text>
+                        </View>
+                    </BouncyPressable>
+                </View>
             ) : null}
         </View>
     );

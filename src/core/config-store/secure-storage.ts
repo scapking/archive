@@ -50,9 +50,15 @@ export function createSecureFieldStorage<T extends object>(
         for (const field of secureKeys) {
             const key = secureFieldKey(field);
             const value = state[field];
-            if (value === undefined) continue;
-            const raw = JSON.stringify(value);
             try {
+                if (value === undefined) {
+                    // stripSecureFields 会把 undefined 字段从 AsyncStorage 文档剔除，
+                    // 底层值若不显式删除，下次 getItem 又会合并回来——「清空凭据」静默复活
+                    if (isWeb) globalThis.localStorage?.removeItem(key);
+                    else await SecureStore.deleteItemAsync(key);
+                    continue;
+                }
+                const raw = JSON.stringify(value);
                 if (isWeb) await writeWebValue(key, raw, onError);
                 else await SecureStore.setItemAsync(key, raw);
             } catch (error) {

@@ -20,7 +20,7 @@
 | database / data-store / cache-store | web = WASM + IndexedDB | 🟡 | SQL 语义三端一致（完整 SQLite）；web 打开库时自动申请 `navigator.storage.persist()`（已做）；残余风险：Safari 配额更保守、隐私模式会拒绝持久化 |
 | file-storage | web = OPFS | ✅ | 读写一致；持久化申请（已做）；`url()` web 返回会话级 blob:（revokeUrl 释放）vs native 持久 file://——语义统一为"本会话可用的本地 URL" |
 | file-storage（checksum） | MD5 仅 native 提供 | ✅ | **已用代码弥补**：checksum 统一为 **SHA-256 hex**（写入时自算，存 file_meta 表；缺元数据时 stat 懒计算回填），三端一致 |
-| migration | web 无跨设备文件通道 | ✅ | **已用代码弥补**：迁移包改为**单个 zip**（store 模式，zip.ts 自研零依赖，防 zip-slip + CRC 校验）；native 走系统分享、web 走 `migration.url()`（blob:）+ sharing 下载回退——三端都能把包带出/带进设备 |
+| migration | web 无跨设备文件通道 | ✅ | **已用代码弥补**：迁移包改为**单个 zip**（store 模式，zip.ts 自研零依赖，防 zip-slip + CRC 校验）；native 走系统分享、web 走 `migration.url()`（blob:）+ sharing 下载回退——三端都能把包带出/带进设备。web 分流判定统一为 `Platform.OS === 'web'`（2026-11-06 起，与 file-storage 同一模式：不用能力嗅探，native 环境带 Blob/URL polyfill 时不再误入 web 分支） |
 | notifications | web 依赖 Service Worker + 浏览器推送权限 | 🟡 | 本地通知：web 走 Notification API（iOS Safari 需 PWA 安装）；push token：web 走 PushSubscription，需注册 expo 的 SW（上线前配置，expo 未提供注册 API，属构建配置项）。**已抹平**：createChannel 非 Android 空操作；调度触发器 web 对 calendar 类支持有限，尽量用 timeInterval/date |
 | camera | web 取景能力子集 | 🟡 | 权限接口三端一致；实时扫码/闪光灯等高级参数 web 受限（组件层差异，features 处理）；scanFromURLAsync iOS 仅二维码 |
 | location | web 无"最近缓存位置"、无后台定位 | ✅/🔴 | `getLastKnownPositionAsync` web 恒返回 null（**已抹平**，语义=null=未知）；后台定位未纳入接口（🔴，硬限制） |

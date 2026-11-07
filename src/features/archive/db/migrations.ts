@@ -3,6 +3,8 @@ import {
     DAY_PLANS_DDL,
     JOURNALS_DDL,
     JOURNAL_MEDIA_DDL,
+    TRIP_DAY_META_DDL,
+    TRIP_MEDIA_DDL,
     TRIPS_DDL,
 } from './schema';
 
@@ -50,6 +52,59 @@ export const ARCHIVE_MIGRATIONS: SchemaMigration[] = [
             'CREATE INDEX IF NOT EXISTS idx_journals_trip_id ON journals(trip_id)',
             'CREATE INDEX IF NOT EXISTS idx_journal_media_journal ON journal_media(journal_id)',
             'CREATE INDEX IF NOT EXISTS idx_day_plans_trip_date_v2 ON day_plans(trip_id, local_date)',
+        ],
+    },
+    {
+        version: 3,
+        statements: [
+            // v3：journals 同日唯一（修复 ensureJournal get-then-insert 并发竞态产生同日重复日记）。
+            // 表达式 COALESCE(trip_id, '')：SQLite UNIQUE 将 NULL 视为互不相等，不归一的话
+            // （NULL, local_date）的日常日记拦不住；部分索引 WHERE deleted_at IS NULL：
+            // 软删行不占唯一名额（对齐「删除一律软删除」的域约定）。
+            // 升级前先清史：对升级时已存在的同日重复行，保留最早一条（created_at、rowid 升序），
+            // 其余软删（数据不销毁）——否则存量重复会让 CREATE UNIQUE INDEX 直接失败、库打不开。
+            `UPDATE journals SET deleted_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000
+             WHERE deleted_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM journals AS keeper
+                   WHERE COALESCE(keeper.trip_id, '') = COALESCE(journals.trip_id, '')
+                     AND keeper.local_date = journals.local_date
+                     AND keeper.deleted_at IS NULL
+                     AND (keeper.created_at < journals.created_at
+                          OR (keeper.created_at = journals.created_at AND keeper.rowid < journals.rowid))
+               )`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_journals_trip_date_unique
+             ON journals(COALESCE(trip_id, ''), local_date) WHERE deleted_at IS NULL`,
+        ],
+    },
+    {
+        version: 4,
+        statements: [
+            // v4（DEV.md #4/#6/#7）：
+            // ① journals.title 笔记标题：可空（NULL = 未命名），存量行 ALTER 后自动为 NULL，
+            //    无需回填；列表/搜索侧对 NULL 回退到日期与正文预览（UI 层决策）。
+            'ALTER TABLE journals ADD COLUMN title TEXT',
+            // ② trip_media 行程内媒体：行程独立容器化后，图/视频/录音直接挂行程。
+            //    deleted_at 列对齐域约定「删除一律软删除」（软删行不参与任何查询）。
+            TRIP_MEDIA_DDL,
+            'CREATE INDEX IF NOT EXISTS idx_trip_media_trip ON trip_media(trip_id)',
+            // ③ trips 持续性（end_date 语义扩展为 TRIP_OPEN_ENDED 哨兵）：零 DDL——
+            //    end_date 列保持 TEXT NOT NULL，SQLite ALTER 无法去除 NOT NULL 约束，
+            //    重建表（copy+drop+rename）违背最小迁移且对存量数据高风险；
+            //    'open' 哨兵自解释、不会与漏填的空串混淆，且存量 end_date 均为真实
+            //    日期无需迁移。语义与派生逻辑集中在 schema.ts / trip-logic.ts。
+        ],
+    },
+    {
+        version: 5,
+        statements: [
+            // v5（行程逐日卡重构）：日卡背景指针表。背景图本体 = trip_media 的一行
+            // （复用行程媒体上传流与软删/文件清理链路），本表只存
+            // (trip_id, local_date) → background_media_id 指针；复合主键即
+            // 「一天至多一张背景」的唯一约束，同时是按行程取全部逐日指针的前缀索引，
+            // 无需额外二级索引。指针行无内容、清除 = 删行，故不设 deleted_at
+            // （对域约定的显式例外，决策与删除链路见 schema.ts 注释）。
+            TRIP_DAY_META_DDL,
         ],
     },
 ];

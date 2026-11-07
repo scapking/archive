@@ -2,6 +2,7 @@ import { gcm } from '@noble/ciphers/aes.js';
 import { pbkdf2Async } from '@noble/hashes/pbkdf2.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import * as ExpoCrypto from 'expo-crypto';
+import { CodedError } from 'expo-modules-core';
 
 /**
  * 加密接口：AES-256-GCM（认证加密）+ PBKDF2 密钥派生。
@@ -19,6 +20,29 @@ export const NONCE_BYTES = 12;
 /** OWASP 推荐的 PBKDF2-SHA256 迭代次数下限 */
 export const PBKDF2_ITERATIONS = 310_000;
 
+/**
+ * 加密模块的类型化错误（H11：core 运行时错误必须是 CodedError 子类）。
+ * code 遵循 error-handling.md 的 `<capability>/<kind>` 契约；此处各 kind
+ * 均为确定性输入/参数错误，重试必然复现，retryable 一律 false。
+ */
+export type CryptoErrorCode =
+    | 'crypto/weak-params'
+    | 'crypto/invalid-envelope'
+    | 'crypto/invalid-key'
+    | 'crypto/invalid-base64';
+
+export class CryptoError extends CodedError {
+    readonly cause?: unknown;
+    readonly retryable: boolean;
+
+    constructor(code: CryptoErrorCode, message: string, cause?: unknown, retryable = false) {
+        super(code, message);
+        this.name = 'CryptoError';
+        this.cause = cause;
+        this.retryable = retryable;
+    }
+}
+
 /** 生成 256 位对称密钥（加密安全随机）。 */
 export async function generateKey(): Promise<Uint8Array> {
     return ExpoCrypto.getRandomBytesAsync(KEY_BYTES);
@@ -34,7 +58,7 @@ export async function deriveKey(
     iterations: number = PBKDF2_ITERATIONS,
 ): Promise<Uint8Array> {
     if (iterations < 10_000) {
-        throw new RangeError(`crypto.deriveKey: iterations 过低（${iterations}），至少 10_000`);
+        throw new CryptoError('crypto/weak-params', `crypto.deriveKey: iterations 过低（${iterations}），至少 10_000`);
     }
     return pbkdf2Async(sha256, password, salt, { c: iterations, dkLen: KEY_BYTES });
 }
@@ -60,7 +84,7 @@ export async function decrypt(
 ): Promise<Uint8Array> {
     assertKey(key);
     if (envelope.length <= NONCE_BYTES) {
-        throw new RangeError('crypto.decrypt: 信封长度不合法（缺少 nonce 或密文）');
+        throw new CryptoError('crypto/invalid-envelope', 'crypto.decrypt: 信封长度不合法（缺少 nonce 或密文）');
     }
     const nonce = envelope.slice(0, NONCE_BYTES);
     const sealed = envelope.slice(NONCE_BYTES);
@@ -79,7 +103,7 @@ export async function decryptText(key: Uint8Array, envelopeBase64: string, aad?:
 
 function assertKey(key: Uint8Array): void {
     if (key.length !== KEY_BYTES) {
-        throw new RangeError(`crypto: 密钥必须为 ${KEY_BYTES} 字节（AES-256），收到 ${key.length}`);
+        throw new CryptoError('crypto/invalid-key', `crypto: 密钥必须为 ${KEY_BYTES} 字节（AES-256），收到 ${key.length}`);
     }
 }
 
@@ -126,7 +150,7 @@ const BASE64_LOOKUP = new Map<string, number>(
 export function base64ToBytes(text: string): Uint8Array {
     const clean = text.replace(/=+$/, '');
     if (clean.length % 4 === 1) {
-        throw new RangeError('crypto: base64 长度不合法');
+        throw new CryptoError('crypto/invalid-base64', 'crypto: base64 长度不合法');
     }
     const out = new Uint8Array(Math.floor((clean.length * 3) / 4));
     let offset = 0;
@@ -134,7 +158,7 @@ export function base64ToBytes(text: string): Uint8Array {
     let bits = 0;
     for (const char of clean) {
         const value = BASE64_LOOKUP.get(char);
-        if (value === undefined) throw new RangeError(`crypto: base64 含非法字符 "${char}"`);
+        if (value === undefined) throw new CryptoError('crypto/invalid-base64', `crypto: base64 含非法字符 "${char}"`);
         buffer = (buffer << 6) | value;
         bits += 6;
         if (bits >= 8) {

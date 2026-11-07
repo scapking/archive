@@ -1,0 +1,44 @@
+/*
+ * Web 输入框 reset（RNW TextInput 平台差异修复，仅进 web 产物）：
+ *
+ * 本文件仅由 app/+html.tsx 以 <link rel="stylesheet" href="/web-reset.css"> 引入，
+ * 走 web 静态资源通道；绝不 import 进任何 JS/TS 文件——global.css 会经
+ * `import '../global.css'` 进入 metro，cssToReactNativeRuntime 解析不了
+ * 元素选择器/裸声明，Android 原生 bundle 会直接崩
+ * （SyntaxError: Unexpected token Delim('*')）。
+ *
+ * RNW 把 TextInput 渲染为 <textarea>（多行）/ <input>（单行），其内联样式
+ * 已含 border: 0 solid / WebkitAppearance: none / backgroundColor: transparent，
+ * 但不含 outline 与 box-shadow 重置（RNW 0.19+ 为键盘可达性保留了浏览器
+ * focus ring）——亮色 focus ring 与 UA 主题样式在深色页面上表现为
+ * 「输入框自带亮色边框」，native 无此概念，故在 web 侧统一抹平。
+ *
+ * scope 依据（按 RNW 产物 DOM 核实）：RNW 仅在 TextInput 处产出这两类元素，
+ * app 无手写 HTML 表单，@expo/dom-webview 是独立文档不受外层 CSS 影响；
+ * 元素选择器特异性 (0,0,1)，业务 tailwind 类（bg-*/border-*）可正常覆盖。
+ * 焦点反馈与 native 对齐，由光标 / placeholder 承担，不保留浏览器 focus ring。
+ */
+textarea,
+input {
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+  appearance: none;
+  /* textarea 默认可拖拽缩放（resize handle）是 web 独有体验噪音，一并禁掉 */
+  resize: none;
+  /* 部分 UA 主题会给 input 默认 border，RNW 内联不含 border-width 重置 */
+  border: none;
+}
+
+/*
+ * 全局滚动条隐藏（DEV.md #11）：本 app 全程不需要滚动条指示——内容边界由
+ * 分组与留白表达，滚动条只是 web 预览口径下的视觉噪音（native ScrollView
+ * 本就按需隐藏指示器，这里把 web 的 UA 滚动条抹平对齐）。
+ * web 是预览口径：仅作用于 web 产物，不影响 native。
+ */
+::-webkit-scrollbar {
+  display: none;
+}
+html {
+  scrollbar-width: none;
+}

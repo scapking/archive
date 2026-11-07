@@ -18,6 +18,7 @@ core 的错误契约：让 features 层**可以编程地判断错误**（凭 cod
 | 能力 | codes |
 |---|---|
 | config-store | `config-store/read`、`config-store/write`、`config-store/corrupt` |
+| crypto | `crypto/weak-params`、`crypto/invalid-envelope`、`crypto/invalid-key`、`crypto/invalid-base64`（加密层自有 `CryptoError`，2026-11-06 登记各 kind 均为确定性输入/参数错误，**retryable 一律 false**；expo-crypto 直用部分仍透传 expo `CodedError`，见 R4） |
 | database | `database/failure`、`database/migration` |
 | file-storage | `file-storage/invalid-key`、`file-storage/not-found`、`file-storage/io` |
 | migration | `migration/invalid-bundle`、`migration/not-found`、`migration/io`（zip.ts 的包完整性错误同用 `migration/invalid-bundle`） |
@@ -25,7 +26,7 @@ core 的错误契约：让 features 层**可以编程地判断错误**（凭 cod
 | sharing | `sharing/unsupported`、`sharing/io`（仅 web 下载回退路径；native 透传 expo 错误） |
 | post（service） | `post/network`（retryable）、`post/http` |
 | socket（service） | `socket/closed`、`socket/full` |
-| 薄封装模块（camera/location/audio/video/image-picker/image-manipulator/clipboard/crypto/linking） | 不自定义错误：透传 expo `CodedError`（code 如 `ERR_UNAVAILABLE`），见 R4 |
+| 薄封装模块（camera/location/audio/video/image-picker/image-manipulator/clipboard/linking） | 不自定义错误：透传 expo `CodedError`（code 如 `ERR_UNAVAILABLE`），见 R4（crypto 加密层已移出本行，codes 见上行） |
 
 **判定**：各能力错误类的 `code` 字段逐一对照本表；`grep -rnE "code: '[a-z-]+'" src/core` 或读各 errors.ts 的 type 联合。
 

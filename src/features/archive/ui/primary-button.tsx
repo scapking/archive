@@ -1,9 +1,11 @@
-import { Text } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
+import { Text, View } from 'react-native';
 import { BouncyPressable } from '@/core/icons';
-import { useAccentGradient } from './theme';
+import { usePalette } from './theme';
 
-/** 实心主按钮：品牌渐变蓝（唯一允许渐变的地方），modal 内的提交动作。 */
+/**
+ * 实心主按钮（系统极简）：近黑/反白 primary-btn，不用渐变（app-screens 房规：
+ * 主按钮不用强调色，蓝只上数据）。modal 内的提交动作。
+ */
 export function PrimaryButton({
     label,
     onPress,
@@ -13,22 +15,22 @@ export function PrimaryButton({
     onPress: () => void;
     disabled?: boolean;
 }) {
-    const [from, to] = useAccentGradient();
+    const palette = usePalette();
     return (
         <BouncyPressable onPress={disabled ? undefined : onPress} scaleTo={0.98}>
-            <LinearGradient
-                start={{ x: 0, y: 0.5 }}
-                end={{ x: 1, y: 0.5 }}
-                colors={[from, to]}
-                className="h-[52px] items-center justify-center rounded-xl"
-                style={{ opacity: disabled ? 0.4 : 1 }}
+            <View
+                className="h-[52px] items-center justify-center rounded-control"
+                style={{ backgroundColor: palette.primaryBtn, opacity: disabled ? 0.4 : 1 }}
                 accessibilityRole="button"
                 accessibilityLabel={label}
             >
-                <Text className="text-[16px] font-semibold text-ink-base dark:text-inkd-base">
+                <Text
+                    className="text-[16px] font-semibold"
+                    style={{ color: palette.onPrimaryBtn }}
+                >
                     {label}
                 </Text>
-            </LinearGradient>
+            </View>
         </BouncyPressable>
     );
 }

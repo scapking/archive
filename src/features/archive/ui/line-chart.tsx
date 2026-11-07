@@ -9,21 +9,19 @@ import {
     xLabelPoints,
     type ChartPoint,
 } from '../chart-logic';
-import { useEffectiveTheme } from './theme';
+import { getPalette, useEffectiveTheme } from './theme';
 
 let GRAD_SEQ = 0;
 
 /**
- * 折线图（app-screens §6 + action 图表纪律）：2px 直线、面积 accent→透明渐变、
- * 3-5 条横网格（grid 令牌双主题）、4 个 x 标签、无图例无数据点。空数据显示空框。
+ * 折线图（app-screens §6 + 图表房规）：2px 直线、面积填充 ≤14%（accent→透明）、
+ * 3-5 条横网格、刻度与 x 标签 12px（字号下限 11 的 SVG 场景）、无图例无数据点。
+ * 色全部走 palette（grid/muted/accent），空数据显示空框。
  */
 export function LineChart({ points, height = 168 }: { points: ChartPoint[]; height?: number }) {
     const [width, setWidth] = useState(0);
     const gradientId = useState(() => `ink-chart-${(GRAD_SEQ += 1)}`)[0];
-    const theme = useEffectiveTheme();
-    const gridColor = theme === 'dark' ? '#1B211F' : '#ECEEF1';
-    const labelColor = theme === 'dark' ? '#7A827F' : '#8B939C';
-    const strokeColor = theme === 'dark' ? '#5B9DFF' : '#2563EB';
+    const palette = getPalette(useEffectiveTheme());
     const maxV = points.reduce((m, p) => Math.max(m, p.value), 0);
     const { ticks, top } = niceTicks(maxV);
     const m = plotMetrics(points, top, { width, height, lane: 34, foot: 20, head: 12 });
@@ -35,8 +33,8 @@ export function LineChart({ points, height = 168 }: { points: ChartPoint[]; heig
                 <Svg width={width} height={height}>
                     <Defs>
                         <LinearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-                            <Stop offset="0" stopColor={strokeColor} stopOpacity={0.2} />
-                            <Stop offset="1" stopColor={strokeColor} stopOpacity={0.02} />
+                            <Stop offset="0" stopColor={palette.accent} stopOpacity={0.14} />
+                            <Stop offset="1" stopColor={palette.accent} stopOpacity={0.02} />
                         </LinearGradient>
                     </Defs>
                     {ticks.map((tick) => (
@@ -46,7 +44,7 @@ export function LineChart({ points, height = 168 }: { points: ChartPoint[]; heig
                             x2={width}
                             y1={m.y(tick)}
                             y2={m.y(tick)}
-                            stroke={gridColor}
+                            stroke={palette.grid}
                             strokeWidth={1}
                         />
                     ))}
@@ -55,9 +53,9 @@ export function LineChart({ points, height = 168 }: { points: ChartPoint[]; heig
                         <SvgText
                             key={`label-${tick}`}
                             x={m.left - 6}
-                            y={m.y(tick) + 3.5}
-                            fontSize={9}
-                            fill={labelColor}
+                            y={m.y(tick) + 4}
+                            fontSize={12}
+                            fill={palette.muted}
                             textAnchor="end"
                         >
                             {tick}
@@ -66,7 +64,7 @@ export function LineChart({ points, height = 168 }: { points: ChartPoint[]; heig
                     {hasData ? (
                         <>
                             <Path d={areaPath(points, m)} fill={`url(#${gradientId})`} />
-                            <Path d={linePath(points, m)} fill="none" stroke={strokeColor} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+                            <Path d={linePath(points, m)} fill="none" stroke={palette.accent} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
                         </>
                     ) : null}
                     {labels.map((label) => (
@@ -74,8 +72,8 @@ export function LineChart({ points, height = 168 }: { points: ChartPoint[]; heig
                             key={`x-${label.index}`}
                             x={m.x(label.index)}
                             y={height - 4}
-                            fontSize={9}
-                            fill={labelColor}
+                            fontSize={12}
+                            fill={palette.muted}
                             textAnchor={label.index === 0 ? 'start' : label.index === points.length - 1 ? 'end' : 'middle'}
                         >
                             {label.label}

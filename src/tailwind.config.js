@@ -1,8 +1,14 @@
 /**
- * 设计令牌（action panel 纪律 + app-screens 房规）：颜色只上数据、1px 细边分隔、
- * 唯一强调色系 = 冷蓝渐变（不用绿色）。双主题：
- * `ink` = 浅色（灰白，默认类名），`inkd` = 深色（dark: 变体）。
- * hatch 组保留供 core 既有类名编译，业务层统一 ink/inkd。
+ * 设计令牌 v2（系统极简 / Apple Journal 口径，app-screens 房规）：
+ *
+ * - 颜色只上数据：蓝色（accent）只允许出现在数据与进行中状态（进度条、连续天数、
+ *   状态徽章圆点）；主行动一律近黑（primary-btn），不再用渐变；深色为真中性黑阶。
+ * - 半径体系（房规「双峰取一支」，全仓只用这几档）：卡片 16 / 控件与输入 10 /
+ *   缩略图 8 / 状态徽章与药丸 rounded-full；卡片禁止阴影。
+ * - 字号阶（下限 11）：30 报头（编辑器日期，唯一签名元素）/ 20 屏题 / 15 正文 /
+ *   14 辅文 / 12 meta / 11 角注；一切数字位配 tabular-nums。
+ * - 双主题：`ink` = 浅色（默认类名），`inkd` = 深色（dark: 变体）。
+ *   hatch 组保留供 core 既有类名编译，业务层统一 ink/inkd。
  */
 /** @type {import('tailwindcss').Config} */
 module.exports = {
@@ -18,6 +24,13 @@ module.exports = {
     presets: [require('nativewind/preset')],
     theme: {
         extend: {
+            // 半径令牌：rounded-card（16，卡片）/ rounded-control（10，按钮与输入）/
+            // rounded-thumb（8，缩略图）；状态徽章与药丸用 rounded-full。禁用其余档位。
+            borderRadius: {
+                card: '16px',
+                control: '10px',
+                thumb: '8px',
+            },
             colors: {
                 // 浅色（灰白）：默认类名
                 ink: {
@@ -27,15 +40,17 @@ module.exports = {
                     border: '#E5E8EC',      // 卡片 1px 边
                     rule: '#EEF0F3',        // 行分隔细线
                     control: '#D9DDE2',     // 控件描边
-                    text: '#171A1E',        // 主文本
+                    text: '#171A1E',        // 主文本（近黑，兼主行动底色）
                     secondary: '#5A626B',   // 次文本
                     muted: '#8B939C',       // 弱文本
                     faint: '#B4BAC2',       // 无文字语义标记
-                    accent: '#2563EB',      // 唯一强调（渐变蓝深端）
+                    accent: '#2563EB',      // 数据强调（进度/进行中），禁上 chrome
                     'accent-press': '#1D4ED8',
                     'accent-bright': '#3B82F6',
                     'accent-deep': '#1D4ED8',
                     'accent-bg': '#EAF1FE',
+                    'primary-btn': '#171A1E',     // 主行动底（近黑，房规：主按钮不用强调色）
+                    'on-primary-btn': '#FFFFFF',
                     positive: '#2563EB',
                     'positive-bg': '#EAF1FE',
                     negative: '#DC4A5E',
@@ -44,8 +59,9 @@ module.exports = {
                     'warning-bg': '#FBF3E4',
                     grid: '#ECEEF1',
                     'on-accent': '#FFFFFF',
+                    scrim: 'rgba(0,0,0,0.5)',   // 全屏遮罩（弹层压暗），深浅两档同值
                 },
-                // 深色：dark: 变体（panel 纪律 + 冷蓝）
+                // 深色：dark: 变体（真中性黑阶，无海军蓝偏移；提亮即激活，不上彩）
                 inkd: {
                     base: '#080A0A',
                     surface: '#0E1111',
@@ -62,6 +78,8 @@ module.exports = {
                     'accent-bright': '#8FBDFF',
                     'accent-deep': '#2E6FD9',
                     'accent-bg': '#0E1B2E',
+                    'primary-btn': '#E7EAE9',     // 深色主行动 = 反白近白
+                    'on-primary-btn': '#101314',
                     positive: '#7CB5FF',
                     'positive-bg': '#10203A',
                     negative: '#E5566F',
@@ -70,6 +88,7 @@ module.exports = {
                     'warning-bg': '#2A2113',
                     grid: '#1B211F',
                     'on-accent': '#080A0A',
+                    scrim: 'rgba(0,0,0,0.5)',   // 全屏遮罩（弹层压暗），深浅两档同值
                 },
                 hatch: {
                     base: '#080A0A',        // 页面底

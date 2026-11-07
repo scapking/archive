@@ -1,11 +1,17 @@
 import { Directory, File, Paths } from 'expo-file-system';
 import * as Crypto from 'expo-crypto';
+import { Platform } from 'react-native';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import { openDatabase } from '@/core/database';
 import { fileStorage } from '@/core/file-storage';
 import { SCHEMA_MIGRATIONS as DATA_STORE_SCHEMA } from '@/core/data-store';
 import { SCHEMA_MIGRATIONS as CACHE_STORE_SCHEMA } from '@/core/cache-store';
 import { MigrationError, toMigrationError } from './errors';
 import { createZip, readZip } from './zip';
+
+/** web 分流标记（与 file-storage 同一判定模式）：不用能力嗅探，native 不误入 web 分支。 */
+const WEB = Platform.OS === 'web';
 
 /**
  * 通用迁移接口：app 生成的数据整体打包导出 / 导入，支撑设备间快速迁移与备份恢复。
@@ -168,41 +174,64 @@ export const migration = {
             let files = 0;
             let records = 0;
             let cacheEntries = 0;
-            const db = await openDatabase(DATABASE_NAME, { migrations: ALL_SCHEMA_MIGRATIONS });
 
-            await db.withTransaction(async () => {
-                for (const record of manifest.records ?? []) {
-                    const verb = overwrite ? 'INSERT OR REPLACE' : 'INSERT OR IGNORE';
-                    const result = await db.run(
-                        `${verb} INTO documents (collection, id, payload, created_at, updated_at)
-                         VALUES (?, ?, ?, ?, ?)`,
-                        [record.collection, record.id, record.payload, record.createdAt, record.updatedAt],
-                    );
-                    records += result.changes;
-                }
-                for (const entry of manifest.cache ?? []) {
-                    const verb = overwrite ? 'INSERT OR REPLACE' : 'INSERT OR IGNORE';
-                    const result = await db.run(
-                        `${verb} INTO cache_entries (key, payload, expires_at) VALUES (?, ?, ?)`,
-                        [entry.key, entry.payload, entry.expiresAt],
-                    );
-                    cacheEntries += result.changes;
-                }
-            });
-
+            // ① 原子性预检：先对全部文件字节做 SHA-256 校验，任何不一致都在落库落盘前拒绝导入
+            //    （此前是先提交 DB 事务再逐文件校验，坏内容已落盘、记录已导入，无法回退）
             const declaredChecksums = new Map(manifest.files.map((file) => [file.key, file.sha256]));
-            for (const entry of entries) {
-                if (!entry.name.startsWith(FILES_ENTRY_PREFIX)) continue;
+            const fileEntries = entries.filter((entry) => entry.name.startsWith(FILES_ENTRY_PREFIX));
+            for (const entry of fileEntries) {
                 const key = entry.name.slice(FILES_ENTRY_PREFIX.length);
-                const stat = await fileStorage.put(key, entry.data);
                 const declared = declaredChecksums.get(key);
-                if (declared && stat.checksum !== declared) {
+                if (!declared) continue;
+                if (bytesToHex(sha256(entry.data)) !== declared) {
                     throw new MigrationError(
                         'migration/invalid-bundle',
                         `migration.import: 文件校验不一致（${key}）——包可能被篡改`,
                     );
                 }
-                files += 1;
+            }
+
+            const db = await openDatabase(DATABASE_NAME, { migrations: ALL_SCHEMA_MIGRATIONS });
+
+            // ② 先落盘：写入失败时清理本次已写入的文件，数据库未动，无半写状态
+            //    （overwrite 覆盖的既有文件旧内容不可恢复——replace 语义本身如此）
+            const writtenKeys: string[] = [];
+            try {
+                for (const entry of fileEntries) {
+                    const key = entry.name.slice(FILES_ENTRY_PREFIX.length);
+                    await fileStorage.put(key, entry.data);
+                    writtenKeys.push(key);
+                    files += 1;
+                }
+            } catch (error) {
+                await discardFiles(writtenKeys);
+                throw error;
+            }
+
+            // ③ 后落库：事务失败自动回滚，并回滚已落盘文件，保持导入整体原子
+            try {
+                await db.withTransaction(async () => {
+                    for (const record of manifest.records ?? []) {
+                        const verb = overwrite ? 'INSERT OR REPLACE' : 'INSERT OR IGNORE';
+                        const result = await db.run(
+                            `${verb} INTO documents (collection, id, payload, created_at, updated_at)
+                             VALUES (?, ?, ?, ?, ?)`,
+                            [record.collection, record.id, record.payload, record.createdAt, record.updatedAt],
+                        );
+                        records += result.changes;
+                    }
+                    for (const entry of manifest.cache ?? []) {
+                        const verb = overwrite ? 'INSERT OR REPLACE' : 'INSERT OR IGNORE';
+                        const result = await db.run(
+                            `${verb} INTO cache_entries (key, payload, expires_at) VALUES (?, ?, ?)`,
+                            [entry.key, entry.payload, entry.expiresAt],
+                        );
+                        cacheEntries += result.changes;
+                    }
+                });
+            } catch (error) {
+                await discardFiles(writtenKeys);
+                throw error;
             }
 
             return { bundleId: manifest.id, files, records, cacheEntries };
@@ -252,7 +281,9 @@ export const migration = {
         if (!bundleFile.exists) {
             throw new MigrationError('migration/not-found', `migration.url: 包不存在 "${bundleId}"`);
         }
-        if (globalThis.URL?.createObjectURL) {
+        // 用 Platform 判定而非嗅探 globalThis.URL?.createObjectURL：native 环境带 Blob
+        // （或 URL polyfill）时嗅探会误判为 web，走进 createObjectURL 死路
+        if (WEB) {
             return globalThis.URL.createObjectURL(new Blob([bundleFile]));
         }
         return bundleFile.uri;
@@ -265,6 +296,13 @@ function resolveBundleFile(source: string): File {
         throw new MigrationError('migration/invalid-bundle', `migration: 非法包 id "${source}"`);
     }
     return new File(bundlesRoot(), `${source}.zip`);
+}
+
+/** 导入失败路径的半写清理：尽力删除本次已写入的文件；单个失败不掩盖原始错误。 */
+async function discardFiles(keys: string[]): Promise<void> {
+    for (const key of keys) {
+        await fileStorage.remove(key).catch(() => undefined);
+    }
 }
 
 function readManifestFromZip(zipBytes: Uint8Array): Manifest {

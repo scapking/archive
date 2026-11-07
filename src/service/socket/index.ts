@@ -140,7 +140,10 @@ class SocketClient implements Socket {
                 socket = new NativeWebSocket(this.options.url, [], { headers: this.options.headers });
             }
         } catch (error) {
-            this.scheduleReconnect(error);
+            // 构造器同步抛错（如 URL 非法的 TypeError）属于配置类永久错误：
+            // 重试必然复现，停止自动重连并走现有错误上报通道；state 归位 closed 供调用方感知
+            this.setState('closed');
+            console.warn('[socket] 连接创建失败，停止重连:', error instanceof Error ? error.message : error);
             return;
         }
         this.socket = socket;
@@ -177,11 +180,7 @@ class SocketClient implements Socket {
         };
     }
 
-    private scheduleReconnect(cause?: unknown): void {
-        if (cause instanceof SocketError) {
-            console.warn('[socket] 停止重连:', cause.message);
-            return;
-        }
+    private scheduleReconnect(): void {
         this.attempt += 1;
         // 0.4s 起指数退避；封顶为每次 1–4s 的随机间隔
         const cap = CAP_FLOOR_MS + Math.random() * (CAP_CEILING_MS - CAP_FLOOR_MS);

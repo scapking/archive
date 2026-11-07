@@ -1,9 +1,8 @@
 import { Pressable, Text, View } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
 import { LucideBookOpen, LucideUser } from '@/core/icons';
-import { useAccentGradient } from './theme';
+import { usePalette } from './theme';
 
 const NAV_ITEMS = [
     { href: '/(tabs)', label: 'Archive', icon: LucideBookOpen },
@@ -17,13 +16,14 @@ function isActive(pathname: string, href: string): boolean {
 
 /**
  * 桌面侧栏（≥1024，action shell 惯例）：产品标记 + 两个目的地。
- * 暗色导航纪律：激活项只提亮（text 提亮 + raised 底），不上彩色药丸。
+ * 品牌标记 = 近黑方块（primary-btn 体系，无渐变）；激活项按亮度提亮
+ * （text 提亮 + raised 底），不上彩色药丸（房规：active nav by brightness）。
  */
 export function Sidebar() {
     const router = useRouter();
     const pathname = usePathname() ?? '';
     const insets = useSafeAreaInsets();
-    const [from, to] = useAccentGradient();
+    const palette = usePalette();
 
     return (
         <View
@@ -32,14 +32,12 @@ export function Sidebar() {
         >
             <View>
                 <View className="flex-row items-center gap-2.5 px-2">
-                    <LinearGradient
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        colors={[from, to]}
-                        className="h-7 w-7 items-center justify-center rounded-md"
+                    <View
+                        className="h-7 w-7 items-center justify-center rounded-control"
+                        style={{ backgroundColor: palette.primaryBtn }}
                     >
-                        <LucideBookOpen size={15} color="#FFFFFF" />
-                    </LinearGradient>
+                        <LucideBookOpen size={15} color={palette.onPrimaryBtn} />
+                    </View>
                     <View className="min-w-0 flex-1">
                         <Text className="text-[15px] font-semibold text-ink-text dark:text-inkd-text">
                             Archive
@@ -60,22 +58,15 @@ export function Sidebar() {
                                 accessibilityRole="link"
                                 accessibilityLabel={item.label}
                                 onPress={() => router.navigate(item.href)}
-                                className={`h-10 flex-row items-center gap-2.5 rounded-md px-2.5 ${
-                                    active
-                                        ? 'bg-ink-raised dark:bg-inkd-raised'
-                                        : 'bg-transparent'
+                                // h-11 = 44px 最小触摸目标（平板触屏也会走到 ≥1024 宽的侧栏）
+                                className={`h-11 flex-row items-center gap-2.5 rounded-control px-2.5 active:opacity-80 ${
+                                    active ? 'bg-ink-raised dark:bg-inkd-raised' : 'bg-transparent'
                                 }`}
                             >
                                 <Icon
                                     size={17}
                                     strokeWidth={1.75}
-                                    color={
-                                        active
-                                            ? '#3B82F6'
-                                            : pathname
-                                                ? '#8B939C'
-                                                : '#8B939C'
-                                    }
+                                    color={active ? palette.text : palette.muted}
                                 />
                                 <Text
                                     className={`text-[14px] ${
@@ -87,7 +78,7 @@ export function Sidebar() {
                                     {item.label}
                                 </Text>
                             </Pressable>
-                                        );
+                        );
                     })}
                 </View>
             </View>
