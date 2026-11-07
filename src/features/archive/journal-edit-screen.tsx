@@ -26,14 +26,19 @@ import { imagePicker } from '@/core/image-picker';
 import { audio } from '@/core/audio';
 import { useArchiveRevision, useArchiveStore } from './store';
 import {
+    canInsertImages,
+    countImageBlocks,
+    insertPendingBlock,
     isEditable,
     moveBlock,
     newBlockId,
     newParagraphBlock,
     parseBlocks,
     removeBlock,
+    resolvePendingBlock,
     todayEntryDate,
     wordCount,
+    JOURNAL_IMAGE_LIMIT,
     type JournalBlock,
 } from './journal-logic';
 import { formatDateParts } from './trip-logic';
@@ -50,7 +55,6 @@ import {
     EmptyState,
     InsertMenu,
     LoadingView,
-    PENDING_MEDIA_ID,
     RecordingOverlay,
     RenameCard,
     TRIP_ICON_DEFAULT,
@@ -61,7 +65,9 @@ import {
     usePalette,
 } from './ui';
 
-/** 每篇日记的媒体上限（防误触爆量；商业版放开为分页）。 */
+/** 每篇日记的媒体上限（防误触爆量；商业版放开为分页）。图片另有更严的
+ *  JOURNAL_IMAGE_LIMIT = 9（journal-logic，微信九图口径）——图片路径两道
+ *  闸都过，视频/音频仍只受本值约束。 */
 const MAX_MEDIA = 12;
 
 /**
@@ -274,8 +280,18 @@ export function JournalEditScreen({
      * 真实媒体块。**只插媒体块**：不追加空文本段、不自动聚焦新输入框（用户
      * 反馈——想写字自己点 + →「添加输入框」，媒体插入只管媒体本身，pending
      * 占位 → 回填的既有流程不变）。异常上浮 error 并回滚占位。
+     * 落点/回填走 journal-logic 纯函数（v8 修复「堆叠后无法新增图片」）：
+     * - 占位插入点 = 图片插在**最后一个图片块之后**（回填后与既有连续图片
+     *   串相邻，buildRenderUnits 判定并入堆叠组——组在文档中间同样成立），
+     *   视频/音频恒落末尾（不参与堆叠、不打断图片串）；v7 恒追加文档末尾，
+     *   组后还有文本时新图与组隔离永不成组、且落在可视区外（「点了没反应/
+     *   不出现」的体感根因）；
+     * - 回填 = 占位**原位替换**为真实媒体块（v7 恒追加末尾：占位在中间时
+     *   真实块与串隔开不成组，还从占位位置「跳」到文末）；失败仅移除占位。
      * updater 一律纯函数：块 id 在 updater 外预生成（#1.2：旧实现把 id 生成/
      * 焦点副作用夹进 updater，并发重跑会生成漂移 id，媒体回填竞态下布局错乱）。
+     *
+     * @returns 本次插入的 pending 占位块 id（供调用方兜底 catch 精确回滚）。
      */
     const doAttach = async (
         kind: 'image' | 'video' | 'audio',
@@ -284,55 +300,63 @@ export function JournalEditScreen({
         height: number | null,
         durationMs?: number,
     ) => {
-        if (!journal) return;
+        if (!journal) return null;
         const pendingId = newBlockId();
-        // 先插 pending 占位（不阻塞继续写字），落盘后回填真实媒体块
-        setBlocks((current) => [
-            ...current,
-            { t: 'media', id: pendingId, mediaId: PENDING_MEDIA_ID },
-        ]);
+        // kind 判定注入（journal-logic 禁运行时 db 依赖）：pending 占位 id
+        // 查不到行 → false，在途占位不参与落点计算
+        const isImageMedia = (mediaId: string) => mediaById.get(mediaId)?.kind === 'image';
+        // 先插 pending 占位（不阻塞继续写字），落盘后原位回填真实媒体块
+        setBlocks((current) => insertPendingBlock(current, kind, pendingId, isImageMedia));
         try {
             const mediaId = await store.getState().attachJournalMedia(journal.id, kind, uri, width, height);
             // 媒体块 id 在 updater 外预生成（#1.2 纯函数纪律）；落库失败不生成
             const mediaBlockId = mediaId ? newBlockId() : null;
-            setBlocks((current) => {
-                // 回填 = 原内容（占位退场）+ 真实媒体块，**段落数量不变**——
-                // 不追加空文本段（「媒体后自动建段并抢焦点」已按用户反馈取消）
-                const cleaned = current.filter(
-                    (b) => !(b.t === 'media' && b.mediaId === PENDING_MEDIA_ID),
-                );
-                if (!mediaId || !mediaBlockId) {
-                    // 落库失败（store 已上浮 error）：占位退场后保持原内容，
-                    // 不进无效媒体块、也不补段（画布段落由既有不变量保证非空）
-                    return cleaned;
-                }
-                return [
-                    ...cleaned,
-                    {
-                        t: 'media',
-                        id: mediaBlockId,
-                        mediaId,
-                        ...(durationMs != null ? { durationMs } : {}),
-                    },
-                ];
-            });
+            setBlocks((current) =>
+                // 原位回填：段落数量不变、不补空文本段；落库失败（store 已上浮
+                // error）仅移除占位，不进无效媒体块（画布段落由既有不变量保证
+                // 非空）；只动本 pendingId，不误伤其他在途占位
+                resolvePendingBlock(
+                    current,
+                    pendingId,
+                    mediaId && mediaBlockId
+                        ? { blockId: mediaBlockId, mediaId, durationMs }
+                        : null,
+                ),
+            );
         } catch (caught) {
             // 通道失败（环境/权限/取消异常）必须可见，不能是"点了没反应"
             const label = kind === 'video' ? '视频' : kind === 'audio' ? '录音' : '图片';
             store.setState({
                 error: `${label}保存失败：${caught instanceof Error ? caught.message : String(caught)}`,
             });
-            // 回滚 pending 占位
-            setBlocks((current) =>
-                current.filter((b) => !(b.t === 'media' && b.mediaId === PENDING_MEDIA_ID)),
-            );
+            // 回滚 pending 占位（按 pendingId 精确回滚，不全局过滤）
+            setBlocks((current) => resolvePendingBlock(current, pendingId, null));
         }
+        return pendingId;
+    };
+
+    /**
+     * 图片配额守卫（相册/拍照两路径统一入口，#5b）：现有图片数 + 待插张数
+     * 超过 JOURNAL_IMAGE_LIMIT（journal-logic 常量，微信九图口径）→ 落
+     * store.error 可见提示并拒绝。守卫触发必须给可见反馈（同 busy 守卫
+     * #1 口径）；kind 判定注入 mediaById（pending 占位查不到行不计入）。
+     * 返回 true = 放行。
+     */
+    const assertImageQuota = (incoming: number): boolean => {
+        const imageCount = countImageBlocks(
+            blocks,
+            (mediaId) => mediaById.get(mediaId)?.kind === 'image',
+        );
+        if (canInsertImages(imageCount, incoming)) return true;
+        store.setState({ error: `图片最多 ${JOURNAL_IMAGE_LIMIT} 张。` });
+        return false;
     };
 
     /**
      * 插入统一入口（录音/拍摄完成回调用）：busy 守卫 + 上限守卫 + 统一流。
      * 守卫触发必须给可见反馈（#1「点了没反应」修复面）：静默 return 会被
-     * 感知为「没点上，再点一下才好」。
+     * 感知为「没点上，再点一下才好」。图片路径在总量守卫之外再过图片配额
+     * （JOURNAL_IMAGE_LIMIT = 9，拍照与相册同闸）。
      */
     const attachMedia = async (
         kind: 'image' | 'video' | 'audio',
@@ -351,24 +375,26 @@ export function JournalEditScreen({
             store.setState({ error: `本篇媒体最多 ${MAX_MEDIA} 个。` });
             return;
         }
+        if (kind === 'image' && !assertImageQuota(1)) return;
         setBusy(true);
         try {
             await doAttach(kind, uri, width, height, durationMs);
         } catch (caught) {
             // 中断场景：doAttach 之外的意外 reject 也必须可见——只写 finally 会让
-            // busy 复位但异常变 unhandled rejection，占位块回滚无人执行
+            // busy 复位但异常变 unhandled rejection。占位回滚已由 doAttach 自愈
+            // （其内部 catch 按 pendingId 精确回滚，v8 起不再在外层做全局 pending
+            // 过滤——那会误删其他在途占位）
             store.setState({
                 error: `媒体插入失败：${caught instanceof Error ? caught.message : String(caught)}`,
             });
-            setBlocks((current) =>
-                current.filter((b) => !(b.t === 'media' && b.mediaId === PENDING_MEDIA_ID)),
-            );
         } finally {
             setBusy(false);
         }
     };
 
-    /** 相册通道：权限 → 选图/选视频 → 统一插入流。 */
+    /** 相册通道：权限 → 选图/选视频 → 统一插入流。图片在打开 picker 前先过
+     *  配额守卫（与拍照同闸，省一次权限流程；当前通道单张选入，incoming=1，
+     *  未来放开多选时传批量张数即可）。 */
     const pick = async (kind: 'image' | 'video') => {
         if (!journal) return;
         if (busy) {
@@ -380,6 +406,7 @@ export function JournalEditScreen({
             store.setState({ error: `本篇媒体最多 ${MAX_MEDIA} 个。` });
             return;
         }
+        if (kind === 'image' && !assertImageQuota(1)) return;
         setBusy(true);
         try {
             const permission = await imagePicker.getMediaLibraryPermissionAsync();

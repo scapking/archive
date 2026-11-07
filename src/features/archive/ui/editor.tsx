@@ -56,13 +56,15 @@ import { PENDING_MEDIA_ID } from '../db';
  * - 连续图片照片堆（渲染层合并，数据仍是独立块）：连续相邻的图片媒体块
  *   （中间无文本/视频/音频/pending 打断）≥2 张合并为「相纸堆」照片堆
  *   （ImageDeckStack v7，Apple Photos Stacks 式印刷相纸隐喻）——中卡 =
- *   自然比例自适应图片（宽 = 列宽 66%，高按中卡图自然宽高比派生 +
- *   MEDIA_MAX_HEIGHT 封顶，超限 cover 裁切，居中构图）；上一张/下一张以
- *   「相纸」压在卡底：同 frame 微缩 0.96 + 下移 26 + ±3° 镜像倾斜 + 压暗
- *   0.92，底缘露出倾斜楔形（楔形的斜边 + 圆角 + 真实邻图内容是「另一张
+ *   统一画幅 4:3 横版标准档（宽 = 列宽 66%，高按统一画幅派生 +
+ *   MEDIA_MAX_HEIGHT 封顶，cover 裁切，居中构图；混分辨率组换张零形变，
+ *   单张不成组仍走自然比例自适应）；上一张/下一张以
+ *   「相纸」压在卡底：同 frame 微缩 0.96 + 下移 26 + ±4° 镜像倾斜 + 压暗
+ *   0.85，底缘露出倾斜楔形（楔形的斜边 + 圆角 + 真实邻图内容是「另一张
  *   照片」的形状语法——轴向平行直条会被读作边框/chrome，v2/v3/v5 三版
- *   可读性翻车的同源根因；2dp raised 垫边保证白底照片在浅色页上的楔缘
- *   可辨，表面分层全靠 tone step，无阴影无渐变）；3 张起左右都有，2 张时
+ *   可读性翻车的同源根因；4dp raised 垫边 + 前卡 1px hairline 相框描边
+ *   （照片 mat 装裱惯例）保证白底/同色照片在浅色页上的楔缘可辨，表面
+ *   分层全靠 tone step，无阴影无渐变）；3 张起左右都有，2 张时
  *   只有右侧（左相纸空缺）；中卡横滑换位（PanResponder 方向锁：|dx|>10
  *   且 |dx|>1.5|dy| 才认领——画布纵滚零仲裁；|dx|>60 提交真转场、否则
  *   spring 回弹；左滑 = 下一张 / 右滑 = 上一张，循环），点底缘楔形带
@@ -455,28 +457,43 @@ const DeckAnimatedSlot = Animated.createAnimatedComponent(View);
 /* ------------------------------------------------------------------ */
 
 /**
- * 中卡宽档位（列宽比例，62-70% 档取 66% 中值）：中卡 = 自然比例自适应图
- * （高按中卡图自然宽高比派生、MEDIA_MAX_HEIGHT 封顶），居中构图（用户
- * 认可保留项）；两侧留白由相纸堆的留白节奏承担（见 ImageDeckStack 注）。
+ * 中卡宽档位（列宽比例，62-70% 档取 66% 中值）：中卡 = 统一画幅 4:3 横版
+ * 标准档（高 = 宽 ÷ DECK_UNIFORM_RATIO、MEDIA_MAX_HEIGHT 封顶），居中构图
+ * （用户认可保留项）；两侧留白由相纸堆的留白节奏承担（见 ImageDeckStack 注）。
  */
 const DECK_FRONT_WIDTH_RATIO = 0.66;
 
+/**
+ * 堆叠组统一画幅（4:3 横版标准档）：组内三槽（中卡/左右相纸）共用同一
+ * 宽高比 + cover 裁切，混合分辨率（正方形 + 长方形等）换张零 reflow 零
+ * 形变——v7 按中卡图自然比例派生组高，换张（索引轮转）时组高随新图比例
+ * 跳变，混分辨率组的「翻页」全程在变形。取值与 media-view 的缺元数据回退
+ * FALLBACK_IMAGE_RATIO 同值同源（4:3 = 卡片相机常用画幅，照片主旋律横
+ * 构图的少裁切档）；**单张不成组保持自然比例自适应不变**（MediaImage 路
+ * 径零改动），统一画幅只约束堆叠组。
+ */
+const DECK_UNIFORM_RATIO = FALLBACK_IMAGE_RATIO;
+
 /** 后卡（相纸）位形：同 frame 微缩 0.96（深度线索）+ 下移 26（底缘露出
- *  带）+ ±3° 镜像倾斜（左 −3° / 右 +3° 扇形；倾斜斜边 + 圆角 + 真实邻图
+ *  带）+ ±4° 镜像倾斜（左 −4° / 右 +4° 扇形；倾斜斜边 + 圆角 + 真实邻图
  *  内容 = 「另一张照片」的形状语法——v2 侧缘直条 / v3 底缘直条 / v5 窄边
  *  三版可读性翻车同源：轴向平行直条在视觉语法里读作边框/chrome，不读作
- *  另一张照片）+ 压暗 0.92（motion.md 戒律 dims no lower than 40%：压而
- *  不没）。无阴影设计下后卡与中卡的分层 = 缩放 + 遮挡 + 垫边 tone，归中
- *  时 spring 回 1/0°/1/1。 */
+ *  另一张照片）+ 压暗 0.85（motion.md 戒律 dims no lower than 40%：压而
+ *  不没）。无阴影设计下后卡与中卡的分层 = 缩放 + 遮挡 + 垫边 tone + 描
+ *  边 + 亮度差，归中时 spring 回 1/0°/1/1。±4° 与压暗 0.85 为分离度强化
+ *  档（用户反馈「相近颜色图片堆叠不可辨」：3°/0.92 在同色系照片上四路
+ *  分层线索全部弱到不可辨）。 */
 const DECK_BACK_SCALE = 0.96;
 const DECK_BACK_DROP = 26;
-const DECK_BACK_ROTATE_DEG = 3;
-const DECK_BACK_OPACITY = 0.92;
-/** 相纸垫边（dp）：后卡图内收 2dp 露 raised 垫底——白底照片的楔缘在浅色
+const DECK_BACK_ROTATE_DEG = 4;
+const DECK_BACK_OPACITY = 0.85;
+/** 相纸垫边（dp）：后卡图内收 4dp 露 raised 垫底——白底照片的楔缘在浅色
  *  页上也有 tone 可依（taste-skill app-screens：表面靠 tone step 分层，
  *  不靠线不靠阴影；#13 无描边口径的延伸——垫边是填充 tone 不是 border）。
- *  外层 rounded-card overflow-hidden 裁切，内图零圆角（不新增半径档位）。 */
-const DECK_MAT = 2;
+ *  2 → 4 为分离度强化档：2dp 在同色照片 + 浅色页组合下垫边窄到不可辨，
+ *  4dp 与相纸装裱的常规留白档一致（照片 mat 惯例）。外层 rounded-card
+ *  overflow-hidden 裁切，内图零圆角（不新增半径档位）。 */
+const DECK_MAT = 4;
 /** 计数行（12px 字配 18dp 行，2dp 网格）与楔形带的呼吸缝：计数行锚定在
  *  楔形带之下（几何核算见 ImageDeckStack 注），不与相纸楔形重叠。 */
 const DECK_COUNTER_LINE = 18;
@@ -568,8 +585,15 @@ function DeckFrontCard({
             disabled={!usable}
             scaleTo={0.985}
         >
+            {/* 1px hairline 描边（border/ink-border）：照片「卡纸装裱」（mat）语义
+                ——相纸照片的常规装裱惯例是照片四周留白衬纸 + 细内线定界，与卡片
+                级 chrome 无关（#13 清除的是卡片级描边；照片边缘定界属照片本体
+                惯例）。分离度强化件之一：相近色调的前后卡叠放时，hairline 在
+                前卡边缘给出精确轮廓（垫边 tone 与压暗都随图色漂移，唯描边恒
+                定）。border-box 下内图显式宽高溢出 content box ≤2px 被
+                overflow-hidden 裁切，cover 裁切语义内不可感知。 */}
             <View
-                className="overflow-hidden rounded-card bg-ink-raised dark:bg-inkd-raised"
+                className="overflow-hidden rounded-card border border-ink-border bg-ink-raised dark:border-inkd-border dark:bg-inkd-raised"
                 style={{ width, height }}
             >
                 {ready ? (
@@ -593,7 +617,7 @@ function DeckFrontCard({
  * 压暗）由宿主层的 AnimatedSlot 恒挂通道施加——静止时底缘楔形露在中卡
  * 之下（z 恒在中卡之下）；转场时它即归中卡体（位形 spring 归零由宿主
  * AnimatedSlot 驱动，随中卡滑出让位逐步揭开）。
- * 2dp raised 垫边（DECK_MAT）= 相纸的「纸缘」tone step：白底照片的楔缘
+ * 4dp raised 垫边（DECK_MAT）= 相纸的「纸缘」tone step：白底照片的楔缘
  * 在浅色页上也可辨（taste-skill：表面分层靠 tone step 不靠线；#13 无描边
  * 口径的延伸——垫边是容器底色透出，不是 border 线）；外层 rounded-card
  * overflow-hidden 裁切，内图零圆角（不新增半径档位）。
@@ -628,7 +652,7 @@ function DeckBackCard({
 }
 
 /**
- * 连续图片照片堆（v7 相纸堆：居中自然比例中卡 + 底缘倾斜相纸 + 归中真转场）。
+ * 连续图片照片堆（v7 相纸堆：居中统一画幅中卡 + 底缘倾斜相纸 + 归中真转场）。
  * 设计语言由 design skill 结论主导（候选方向与条款依据见本组设计决策书）：
  * **Apple Photos Stacks 式「印刷相纸」隐喻**——堆叠的可读性来自形状语法
  * （倾斜楔形 + 圆角 + 邻图内容），不来自露边宽度（v2 44dp 侧缘直条 /
@@ -640,20 +664,28 @@ function DeckBackCard({
  * 的实现基础——楔形越出容器缘的部分与滑出的出卡都被列缘裁切，不出血到
  * 画布留白）：
  *   中卡：宽 C = 列宽 × 66%（62-70% 档中值，居中 frame left = 列宽×17%），
- *       高 = min(C ÷ 自然比例, MEDIA_MAX_HEIGHT)——自然比例 = 中卡图落库
- *       宽高比（缺元数据回退 4:3，与 MediaImage 同源取 FALLBACK_IMAGE_
- *       RATIO；显式数值宽高 + cover 裁切，组高与点按体 frame 都依赖数值
- *       高）。代价 = 换张（索引轮转）时组高随新中卡比例变化，转场收口帧
- *       单次 reflow（transform/opacity 白名单内无高度动画通道，接受此
- *       跳变，见换位状态机注）；
- *   后卡（相纸）：与中卡同 frame，位形 = 微缩 0.96 + 下移 26 + 左 −3°/
- *       右 +3° 镜像倾斜（transform 数组序 [ty, rot, scale] = 缩放、旋转
+ *       高 = min(C ÷ DECK_UNIFORM_RATIO, MEDIA_MAX_HEIGHT)——**堆叠组统一
+ *       画幅 4:3 横版标准档**（与 media-view 缺元数据回退 FALLBACK_IMAGE_
+ *       RATIO 同值同源；显式数值宽高 + cover 裁切，组高与点按体 frame 都
+ *       依赖数值高）。统一画幅是混分辨率修复面：v7 按中卡图自然比例派生
+ *       组高，正方形 + 长方形混合组换张（索引轮转）时组高随新图比例跳变、
+ *       全程变形；组内三槽共用同一画幅后换张零 reflow 零形变（相纸/中卡
+ *       同 frame 的前提也由此恒成立）。**单张不成组保持自然比例自适应**
+ *       （MediaImage 路径零改动），统一画幅只约束堆叠组；
+ *   后卡（相纸）：与中卡同 frame，位形 = 微缩 0.96 + 下移 26 + 左 −4°/
+ *       右 +4° 镜像倾斜（transform 数组序 [ty, rot, scale] = 缩放、旋转
  *       围绕布局中心，translate 纯平移——下移量不随旋转偏斜）；左右镜像
  *       成扇，底缘露出倾斜楔形，最低点越过中卡底缘的量按几何精确解：
  *         wedgeDepth = DROP − H·(0.5 − s/2·cosθ) + (W·s/2)·sinθ
- *       （典型画幅 ≈ 24~32dp，随画幅派生）；N=2 时左槽不渲染（只有右侧
- *       相纸，左侧空——单楔形 + 单点按区，退化优雅）；
- *   垫边：后卡图内收 2dp 露 raised（相纸「纸缘」tone，白图浅页可辨）；
+ *       （统一画幅下随列宽单调派生：312dp 列 ≈ 29.6、342dp 列 ≈ 30.0、
+ *       430dp 列 ≈ 31.0，均在 25~33dp 区间；桌面 620dp 全宽列 ≈ 33.2，
+ *       4:3 比原自然比例长图更高、W·sinθ 项随之增大——pileBand 按派生值
+ *       收口无重叠无裁切，容忍 +0.2）；N=2 时左槽不渲染（只有右侧相纸，
+ *       左侧空——单楔形 + 单点按区，退化优雅）；
+ *   垫边：后卡图内收 4dp 露 raised（相纸「纸缘」tone，白图浅页可辨）；
+ *   前卡描边：1px hairline（ink-border/inkd-border）——照片「卡纸装裱」
+ *       （mat）语义，照片本体惯例非卡片级 chrome（#13 口径不变），相近
+ *       色调前后卡叠放时的恒定轮廓线（详见 DeckFrontCard 注）；
  *   计数行：楔形带之下（top = 中卡高 + max(wedgeDepth, 24) + 2——下限
  *       兜极窄列，楔形带 + 计数行合计 ≥44 触达口径），横向锚定中卡两缘、
  *       右对齐，与楔形渲染零重叠。
@@ -677,7 +709,7 @@ function DeckBackCard({
  * - 统一编排 beginAdvance(dir)：中卡（出卡层，内容不换）沿换位方向
  *   frontX timing 220ms（ease-out quint）滑出列缘（透明度走 xFade 的
  *   |x|>列宽区段 0.72→0，与拖拽下限同一条插值）+ dir 侧相纸四值 spring
- *   归中（ty 26→0、±3°→0°、scale 0.96→1、opacity 0.92→1，~310ms 无过冲
+ *   归中（ty 26→0、±4°→0°、scale 0.96→1、opacity 0.85→1，~310ms 无过冲
  *   收敛——「放平在堆上」的落定）；相纸恒在中卡之下，随出卡让位逐步
  *   揭开；330ms deadline 统一收口（finishAdvance：全值 snap 复位 +
  *   advancing 闩释放 + 索引轮转，同批 React 提交零闪帧——归中相纸终态
@@ -695,8 +727,8 @@ function DeckBackCard({
  *   一侧相纸 ← 旧中卡（刚在出卡层渲染过，原生 Image 缓存秒回）；归中
  *   相纸 snap 回位形并 ← 新 dir 侧邻卡（N=3 时 = 刚离场的另一侧相纸，
  *   秒回；N≥4 未渲染过，至多一帧 raised 占位——仅楔形带压暗露出区）；
- *   同帧中卡比例换挡 → 组高/三槽尺寸按新中卡图自然比例重派生（单次
- *   reflow，自然比例口径的固有代价）；
+ *   统一画幅下三槽 frame 与组高恒定，收口帧零 reflow（v7 按中卡图自然
+ *   比例派生组高时的单次 reflow 已随统一画幅消除）；
  * - N=2 退化：左相纸空缺（左槽/左点按体不渲染，prev 与 next 同图），
  *   dir=−1（上一张）无左相纸可归中 → 与 dir=+1 同编排（中卡沿换位方向
  *   滑出 + 右相纸归中），出卡方向仍沿换位方向，视觉语义一致。
@@ -777,7 +809,8 @@ function ImageDeckStack({
     // 中卡索引（clamp 后派生，组收缩不越界）
     const safeIndex = Math.min(Math.max(frontIndex, 0), itemCount - 1);
 
-    // 中卡条目（clamp 后取数；中卡/后卡几何都由它的自然比例派生）
+    // 中卡条目（clamp 后取数；统一画幅下几何只由列宽派生，条目只供内容
+    // 渲染与操作卡定位）
     const frontItem = items[safeIndex];
 
     // 动画值：frontX = 中卡横滑（拖拽跟手 + 出卡滑出 + 回弹收口）；frontFade
@@ -796,28 +829,25 @@ function ImageDeckStack({
     const rightScale = useRef(new Animated.Value(DECK_BACK_SCALE)).current;
     const rightOpacity = useRef(new Animated.Value(DECK_BACK_OPACITY)).current;
 
-    // 几何派生（全部由列宽 + 中卡图自然比例单点导出；量取前 cardWidth 为
+    // 几何派生（全部由列宽 + 统一画幅单点导出；量取前 cardWidth 为
     // 0 → 槽不渲染）：
     //   cardWidth = 中卡宽 = 列宽 × 66%（62-70% 档中值，居中）；
-    //   frontRatio = 中卡图自然宽高比（落库宽高优先，缺元数据回退 4:3，与
-    //       MediaImage 同源取 FALLBACK_IMAGE_RATIO）；
-    //   deckHeight = 中卡高 = min(中卡宽 ÷ 自然比例, MEDIA_MAX_HEIGHT)——
-    //       自然比例自适应（显式数值宽高 + cover 裁切，组高与点按体 frame
-    //       都依赖数值高）；
+    //   deckHeight = 中卡高 = min(中卡宽 ÷ DECK_UNIFORM_RATIO, MEDIA_MAX_HEIGHT)
+    //       ——统一画幅 4:3（显式数值宽高 + cover 裁切，组高与点按体 frame
+    //       都依赖数值高）。不随中卡图自然比例变化 → 换张（索引轮转）组高
+    //       恒定，混合分辨率组的转场全程零 reflow 零形变（v7 按自然比例派
+    //       生，换张单次 reflow 是混分辨率组的变形根因）；
     //   stripWidth = 中卡居中留白 = (列宽 − 中卡宽) / 2（中卡 frame 锚定）；
     //   wedgeDepth = 相纸楔形带深 = 倾斜后卡最低点越过中卡底缘的量（几何
     //       精确解：后卡绕中心转 θ 后底缘最低点半高 = s/2·(H·cosθ + W·sinθ)，
     //       加下移 DROP，减中卡半高 H/2）——计数行锚定用它，不写 magic
-    //       number（画幅/列宽变化自适应）；
+    //       number（画幅/列宽变化自适应）；统一画幅下楔形深度随列宽单调、
+    //       手机画幅区间 29~31dp（几何核对见组件注）；
     //   pileBand = 楔形带 + 呼吸缝（wedgeDepth 下限 24 兜极窄列：带 +
     //       计数行合计 ≥44 触达口径）。
     const cardWidth = containerWidth * DECK_FRONT_WIDTH_RATIO;
-    const frontRatio =
-        frontItem && frontItem.media.width && frontItem.media.height
-            ? frontItem.media.width / frontItem.media.height
-            : FALLBACK_IMAGE_RATIO;
     const deckHeight =
-        cardWidth > 0 ? Math.min(cardWidth / frontRatio, MEDIA_MAX_HEIGHT) : 0;
+        cardWidth > 0 ? Math.min(cardWidth / DECK_UNIFORM_RATIO, MEDIA_MAX_HEIGHT) : 0;
     const stripWidth = (containerWidth - cardWidth) / 2;
     const backTiltRad = (DECK_BACK_ROTATE_DEG * Math.PI) / 180;
     const wedgeDepth =
@@ -873,8 +903,8 @@ function ImageDeckStack({
     // 转场收口（ADVANCE_TOTAL_MS deadline 触发）：全值 snap 复位 + 清闩 +
     // 索引轮转，同一事件帧内全部落地（归中相纸终态与轮转后中卡静止帧像素
     // 恒等，复位换内容不可见——出卡此时已完全滑出 overflow-hidden 容器；
-    // 三槽内容随轮转同帧重指派，同帧组高按新中卡自然比例重派生（单次
-    // reflow），可能的一帧垫边占位口径见组件注「收口内容重指派」）
+    // 三槽内容随轮转同帧重指派，统一画幅下组高/三槽 frame 恒定零 reflow，
+    // 可能的一帧垫边占位口径见组件注「收口内容重指派」）
     const finishAdvance = useCallback(
         (dir: 1 | -1) => {
             advanceTimerRef.current = null;
@@ -1104,7 +1134,7 @@ function ImageDeckStack({
     );
 
     // 相纸槽动效样式（恒挂左右两组归中通道；静止 = 相纸位形基准 ty 26 /
-    // ±3° / scale 0.96 / opacity 0.92，转场 = 对应组 spring 归中；transform/
+    // ±4° / scale 0.96 / opacity 0.85，转场 = 对应组 spring 归中；transform/
     // opacity 白名单键，deck 铁律）。transform 数组序 [ty, rot, scale] 语义
     // = RN 矩阵按序右乘（最后项先作用）：scale、rotate 围绕布局中心，translate
     // 是纯平移——下移量不随旋转偏斜（楔形几何推导依赖此序，见几何派生注）。
@@ -1229,8 +1259,8 @@ function ImageDeckStack({
                 重叠几何下转场提层会穿帮，见组件注层级段）：普通 wrapper
                 （静态几何 + pointerEvents none）→ AnimatedSlot（ty/rot/
                 scale/opacity 恒挂 left 通道，静止 = 相纸位形基准 ty 26 +
-                −3°，底缘楔形露在中卡之下、越出容器左缘部分被裁）→ 相纸
-                卡体（2dp raised 垫边）；N=2 不渲染（左相纸空缺，只有右侧） */}
+                −4°，底缘楔形露在中卡之下、越出容器左缘部分被裁）→ 相纸
+                卡体（4dp raised 垫边）；N=2 不渲染（左相纸空缺，只有右侧） */}
             {deckHeight > 0 && leftItem ? (
                 <View style={[cardSlot, { zIndex: 2 }]} pointerEvents="none">
                     <DeckAnimatedSlot style={[{ flex: 1 }, leftSlotStyle]}>
@@ -1242,7 +1272,7 @@ function ImageDeckStack({
                     </DeckAnimatedSlot>
                 </View>
             ) : null}
-            {/* 右相纸槽 = 下一张（zIndex 2 恒定，left 槽位形镜像 +3°）：right
+            {/* 右相纸槽 = 下一张（zIndex 2 恒定，left 槽位形镜像 +4°）：right
                 通道恒挂，转场时即归中卡卡体（内容零切换，本就渲染目标图） */}
             {deckHeight > 0 && rightItem ? (
                 <View style={[cardSlot, { zIndex: 2 }]} pointerEvents="none">

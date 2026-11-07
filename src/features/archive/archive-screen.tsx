@@ -221,8 +221,11 @@ export function ArchiveScreen() {
                     <EmptyStateIcon />
                 ) : (
                     // 屏边距 px-6（24）：与屏头 / Me / 搜索 / 行程详情同一屏边距口径
-                    //（原 px-5(20) 是与日卡 px-6 档并存的双轨，一致性收敛轮归一）
-                    <View className="px-6">
+                    //（原 px-5(20) 是与日卡 px-6 档并存的双轨，一致性收敛轮归一）。
+                    // mt-4（16）：deck 与屏头的顶部间距（修前仅屏头 pb-1 的 4dp，双卡
+                    // 几乎贴着副标题行；用户反馈「距顶部太近」）——4 + 16 = 20dp 净距，
+                    // 与底部换位指示点 mt-3 的呼吸节奏同档，仅动 deck 顶部间距
+                    <View className="mt-4 px-6">
                         <View className="mx-auto w-full max-w-[560px]">
                             <CardDeck
                                 a={{

@@ -345,22 +345,30 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
             className="flex-1 bg-ink-base dark:bg-inkd-base"
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
+            {/* 屏头固定带（新建/编辑两态共用 ScreenHeader，规格同一）：对齐
+                journal-edit / trip-detail / search 的四屏结构——ScreenHeader 在
+                滚动容器**之外**。修前它嵌在 ScrollView 内且 contentContainer
+                自带 paddingHorizontal 24，与 ScreenHeader 容器自带的 px-6(24)
+                **双计**，返回钮/屏题左缘 = 48dp（其他三屏均为 24dp），即用户
+                反馈「屏头返回键与行程/笔记不对称」的根因；且屏头随内容滚动
+                （其他三屏固定）。修后逐项对齐：几何带 = insets.top + pt-2(8) +
+                h-11(44) 与四屏相等；返回钮 = CloseButton 'back' 44 圆形触感底
+                盒（hitSlop 0，命中 = 视觉盒）、左缘 24 与表单字段同列对齐；
+                标题 20px semibold ml-2.5；safeBack 退出——全部经 ScreenHeader
+                单点收口，两态（新建/编辑）零分叉。 */}
+            <View style={{ paddingTop: insets.top }}>
+                <ScreenHeader
+                    title={isEdit ? '编辑行程' : '新建行程'}
+                    subtitle={isEdit ? '修改后立即生效。' : '起个名字，定个出发日就好。'}
+                />
+            </View>
             <ScrollView
                 contentContainerStyle={{
-                    // 顶部只垫 insets.top：屏头带顶距的 pt-2(8) 由 ScreenHeader 容器
-                    // 自带（四屏统一口径 = insets.top + 8 + h-11(44)）。旧写法在此
-                    // 再 +8，与 ScreenHeader 的 pt-2 双计，屏头带比笔记编辑/行程
-                    // 详情/搜索低 8dp（用户反馈「顶部不一致」的修前主因之一）
-                    paddingTop: insets.top,
                     paddingBottom: insets.bottom + 32,
                     paddingHorizontal: 24,
                 }}
                 keyboardShouldPersistTaps="handled"
             >
-                <ScreenHeader
-                    title={isEdit ? '编辑行程' : '新建行程'}
-                    subtitle={isEdit ? '修改后立即生效。' : '起个名字，定个出发日就好。'}
-                />
 
                 {/* 图标 + 名称 */}
                 <Section title="图标与名称">

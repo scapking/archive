@@ -1,4 +1,7 @@
 import type { JournalBlock, JournalRow, JournalStatus } from './db';
+// 运行时常量取自 schema（纯常量文件，无 core/native 依赖，不破坏本模块
+// 「可独立单测」纪律）；禁止从 './db'（index）导入——那会拖入整个 SQL 出口。
+import { PENDING_MEDIA_ID } from './db/schema';
 import { addDaysLocal, formatDateParts, todayLocal } from './trip-logic';
 
 /**
@@ -172,6 +175,111 @@ export function previewText(blocks: JournalBlock[], max = 80): string {
 /** 媒体块计数（卡片角标）。 */
 export function mediaCount(blocks: JournalBlock[]): number {
     return blocks.filter((block) => block.t === 'media').length;
+}
+
+// ─── 图片数量上限与媒体插入落点（v8，编辑器插入流纯函数）─────────────────────
+
+/**
+ * 单篇日记的图片数量上限（微信九图口径）：限制的是**日记图片总量**
+ * （blocks 中引用的图片媒体数，含堆叠组内的每一张——限制在数据层不在
+ * 展示层，堆叠展示本身不设限）。9 = 主流 IM 相册单选上限的用户心智档，
+ * 商业版可调常量放开。与屏层 MAX_MEDIA（全媒体总量防误触爆量）并存：
+ * 图片路径两道闸都过，视频/音频仍只受 MAX_MEDIA 约束。
+ */
+export const JOURNAL_IMAGE_LIMIT = 9;
+
+/**
+ * 图片插入配额校验：现有图片数 + 本次待插张数超过上限 → 拒绝。
+ * 判定语义 = 「插完 ≤ 9 张放行」：恰好插满 9 张允许，第 10 张起拒绝。
+ *
+ * @param imageCount 现有图片媒体数（屏层经 mediaById 判 kind 后传入，见
+ *   countImageBlocks——本模块禁运行时 db 依赖，kind 判定注入）。
+ * @param incoming 本次待插张数（拍照/单选取 1；未来相册多选传批量数）。
+ */
+export function canInsertImages(imageCount: number, incoming: number): boolean {
+    return imageCount + incoming <= JOURNAL_IMAGE_LIMIT;
+}
+
+/**
+ * 统计 blocks 引用的图片媒体数（配额校验与首页 meta 口径的单一实现）：
+ * isImage 由调用方注入（mediaById.get(id)?.kind === 'image'，pending 占位
+ * id 查不到行 → false，天然不计入）。
+ */
+export function countImageBlocks(
+    blocks: JournalBlock[],
+    isImage: (mediaId: string) => boolean,
+): number {
+    let count = 0;
+    for (const block of blocks) {
+        if (block.t === 'media' && isImage(block.mediaId)) count += 1;
+    }
+    return count;
+}
+
+/**
+ * pending 占位插入落点（插入流第一步，v8 修复「堆叠后无法新增图片」）：
+ * - 图片：**最后一个图片媒体块之后**（无图片块则文档末尾）——回填后新图
+ *   与既有连续图片串相邻，经渲染层 buildRenderUnits 的连续相邻判定并入
+ *   堆叠组（组在中间也成立；孤立图 + 新图 = 成新组，同一语义）。v7 实现
+ *   恒追加文档末尾：组后还有文本时新图与组隔离永不成组、且落在可视区外
+ *   （「点了没反应/不出现」的体感根因之一）；
+ * - 视频/音频：不参与堆叠，恒落文档末尾（不落图片串内部，不打断既有
+ *   连续性）。
+ * isImage 注入 kind 判定（同 countImageBlocks）；pending 占位 id 查不到行
+ * → false，不被当作落点锚（在途占位不参与下一次落点计算）。
+ */
+export function insertPendingBlock(
+    blocks: JournalBlock[],
+    kind: 'image' | 'video' | 'audio',
+    pendingId: string,
+    isImage: (mediaId: string) => boolean,
+): JournalBlock[] {
+    const pending: JournalBlock = {
+        t: 'media',
+        id: pendingId,
+        mediaId: PENDING_MEDIA_ID,
+    };
+    if (kind !== 'image') return [...blocks, pending];
+    let insertAt = blocks.length;
+    for (let i = blocks.length - 1; i >= 0; i--) {
+        const block = blocks[i];
+        if (block.t === 'media' && isImage(block.mediaId)) {
+            insertAt = i + 1;
+            break;
+        }
+    }
+    const next = [...blocks];
+    next.splice(insertAt, 0, pending);
+    return next;
+}
+
+/**
+ * pending 占位原位回填（插入流收口步，v8）：pendingId 块**原位替换**为
+ * 真实媒体块——落点语义「按插入位置成组」由占位与回填共用同一下标保证
+ * （v7 回填恒追加文档末尾，占位在中间时真实块与串隔开、还从原位「跳」到
+ * 文末）。mediaId 为 null（落库失败，store 已上浮 error）时仅移除占位。
+ * 只处理本 pendingId：不误伤其他在途占位（并发通道防御），占位已不在
+ * （防御）时原样返回、不重建数组。
+ */
+export function resolvePendingBlock(
+    blocks: JournalBlock[],
+    pendingId: string,
+    media: { blockId: string; mediaId: string; durationMs?: number } | null,
+): JournalBlock[] {
+    const index = blocks.findIndex((block) => block.id === pendingId);
+    if (index < 0) return blocks;
+    const next = [...blocks];
+    if (!media) {
+        next.splice(index, 1);
+        return next;
+    }
+    next[index] = {
+        t: 'media',
+        id: media.blockId,
+        mediaId: media.mediaId,
+        ...(media.durationMs != null ? { durationMs: media.durationMs } : {}),
+    };
+    return next;
 }
 
 // ─── 收笔规则 ────────────────────────────────────────────────────────────────
