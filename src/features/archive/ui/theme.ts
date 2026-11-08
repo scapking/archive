@@ -122,13 +122,3 @@ export function useEffectiveTheme(): 'light' | 'dark' {
     const schemeApi = useColorScheme();
     return schemeApi.colorScheme === 'dark' ? 'dark' : 'light';
 }
-
-/** 生效主题的命令式读取（非渲染期用，即时快照不订阅）：与 useEffectiveTheme
-    严格同源——hook 返回的 colorScheme 就是同一 colorScheme observable 的
-    get(effect)，这里不带订阅 effect 读当下值，两读法恒一致。供定时器/事件
-    回调里的补刷调用：触发瞬间重读，不受渲染闭包冻结影响（'system' 档冷启
-    早期 Appearance 初始化可能先报 light 后报 dark，每读一次都是当时最新
-    解析值；undefined 只出现在 web 未初始化窗口，与 hook 同样兜底为 light）。 */
-export function getEffectiveTheme(): 'light' | 'dark' {
-    return colorScheme.get() === 'dark' ? 'dark' : 'light';
-}
