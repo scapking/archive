@@ -51,7 +51,8 @@ core 是**通用能力接口层**：把 Expo 提供的三端（iOS/Android/Web�
 | `database` | **通用 SQL 调用接口**（同名库单例、PRAGMA user_version 迁移注册表、类型化查询） | expo-sqlite |
 | `data-store` | **通用文档数据接口**（collection put/get/list/remove，app 生成数据） | 经 database |
 | `cache-store` | **通用缓存接口**（TTL、前缀清除） | 经 database |
-| `file-storage` | **通用文件调用接口**（S3 风格 put/putFromUri/get/stat/list/remove/move/copy/url，key 防路径穿越；checksum=三端统一 SHA-256，元数据在 file_meta 表；底座 native=expo-file-system，web=OPFS 直连——SDK 58 web 变体是纯 stub，见 web-opfs.ts） | expo-file-system（native）/ OPFS（web）+ database |
+| `file-storage` | **通用文件调用接口**（S3 风格 put/putFromUri/get/stat/list/remove/move/copy/url，key 防路径穿越；checksum=三端统一 SHA-256，元数据在 file_meta 表；底座 native=expo-file-system，web=OPFS 直连——SDK 58 web 变体是纯 stub，见 web-opfs.ts）。**大文件直迁能力**（2026-11-08 登记）：moveFromUri/copyFromUri——native 用原生 File.move/copy 落盘（JS 线程零字节拷贝，checksum 走原生 File.digest('SHA-256')，非 file:// 源自动回退字节路径）；web 用 OPFS 流式分块写（fetch body → 2MB 块 write + 每块让出主线程）。两路均支持 onProgress（bytesWritten/totalBytes）进度上抛，节流（100ms）由调用方负责 | expo-file-system（native）/ OPFS（web）+ database |
+| `video-thumbnails` | **视频首帧缩略图生成**（getThumbnailAsync，time/quality 参数；产物常经 image-manipulator 缩边 ≤512 后落 file-storage）。web 无原生实现（官方 web stub 调用期抛错），运行时按平台分流，调用方须回退占位 | expo-video-thumbnails（native；web 官方 stub） |
 | `migration` | **通用迁移接口**（单个 zip 打包导出/导入：documents + files + 可选 cache；自研 store 模式 zip，防 zip-slip + CRC 校验，跨设备传输三端可用） | 组合上三者 + zip.ts |
 | `notifications` | **通用通知接口**（权限/本地调度/push token/渠道/handler） | expo-notifications |
 | `camera` | 相机权限与扫码纯函数（取景拍照走 CameraView 组件） | expo-camera |

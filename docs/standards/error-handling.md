@@ -20,7 +20,8 @@ core 的错误契约：让 features 层**可以编程地判断错误**（凭 cod
 | config-store | `config-store/read`、`config-store/write`、`config-store/corrupt` |
 | crypto | `crypto/weak-params`、`crypto/invalid-envelope`、`crypto/invalid-key`、`crypto/invalid-base64`（加密层自有 `CryptoError`，2026-11-06 登记各 kind 均为确定性输入/参数错误，**retryable 一律 false**；expo-crypto 直用部分仍透传 expo `CodedError`，见 R4） |
 | database | `database/failure`、`database/migration` |
-| file-storage | `file-storage/invalid-key`、`file-storage/not-found`、`file-storage/io` |
+| file-storage | `file-storage/invalid-key`、`file-storage/not-found`、`file-storage/io`（moveFromUri/copyFromUri 的源不存在 → not-found；非 file:// 源回退字节路径后的 IO 失败 → io） |
+| video-thumbnails | `video-thumbnails/unavailable`（web / 原生模块缺失，retryable=false）、`video-thumbnails/generation`（解码/帧提取失败；瞬时编码器繁忙可重试，retryable=true） |
 | migration | `migration/invalid-bundle`、`migration/not-found`、`migration/io`（zip.ts 的包完整性错误同用 `migration/invalid-bundle`） |
 | notifications | `notification/unsupported`、`notification/invalid-token`、`notification/failure` |
 | sharing | `sharing/unsupported`、`sharing/io`（仅 web 下载回退路径；native 透传 expo 错误） |

@@ -44,7 +44,7 @@ import {
 } from './ui/editor';
 import { imagePicker } from '@/core/image-picker';
 import { audio } from '@/core/audio';
-import { useArchiveRevision, useArchiveStore } from './store';
+import { useArchiveRevision, useArchiveStore, aggregateSaveProgress, ensureVideoThumbnail } from './store';
 import {
     canInsertImages,
     countImageBlocks,
@@ -390,6 +390,36 @@ export function JournalEditScreen({
     const sessionOwnerJournalId = useRecordingSessionStore((s) => s.ownerJournalId);
     const mediaById = useMemo(() => new Map(media.map((row) => [row.id, row])), [media]);
     const chars = useMemo(() => wordCount(blocks), [blocks]);
+
+    // 媒体落盘进度（2026-11-08 进度可视化）：注册表是 100ms 节流帧——pending
+    // 占位块百分比与 meta 行会话保存百分比两个消费面共用同一帧，无额外节拍。
+    // pendingProgress 的恒等键技巧：仅当 pending 条目真变化才换引用（capture:
+    // 会话任务进度帧不影响 pendingProgress 恒等 → canvasContent memo 不被
+    // 无关帧击穿，画布零重渲）。
+    const uploadProgress = useArchiveStore((s) => s.mediaUploadProgress);
+    const pendingProgressKey = Object.entries(uploadProgress)
+        .filter(([key]) => !key.startsWith('capture:'))
+        .map(([key, fraction]) => `${key}:${fraction}`)
+        .join('|');
+    const pendingProgress = useMemo<Record<string, number>>(() => {
+        const entries = Object.entries(uploadProgress).filter(
+            ([key]) => !key.startsWith('capture:'),
+        );
+        return Object.fromEntries(entries);
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 恒等键模式：uploadProgress 拆解已由 pendingProgressKey 代表
+    }, [pendingProgressKey]);
+    // 会话落库进度（capture: 前缀聚合，全局录制会话产物保存中显示「保存中 N%」）
+    const captureProgress = aggregateSaveProgress(uploadProgress, 'capture:');
+
+    // 视频缩略图惰性回填（deck 露边层真封面，存量旧视频口径）：本篇媒体行
+    // 载入后逐个 ensure（幂等单飞，已存在直命中零成本）；生成成功 bump
+    // revision → editor 的 useFileUrlState(thumbKey) 复验后切真封面。
+    // fire-and-forget：增强失败仅回退占位卡（ensureVideoThumbnail 内部兜底）。
+    useEffect(() => {
+        for (const row of media) {
+            if (row.kind === 'video') void ensureVideoThumbnail(row.file_key);
+        }
+    }, [media]);
     const { monthDay } = formatDateParts(journal?.local_date ?? todayEntryDate());
     // 名称行（#3 回退）：有标题才渲染；无标题不再给「M月D日 日记」占位名，
     // 回到纯日期口径（标题编辑入口 = 铅笔钮 + 重命名卡，保留）
@@ -470,6 +500,7 @@ export function JournalEditScreen({
                     focusTextId={focusTextId}
                     canvas={canvas}
                     selection={selection}
+                    progressByPendingId={pendingProgress}
                     onChange={(next) => applyBlocks(() => next)}
                     onFocusText={() => setFocusTextId(null)}
                     onBlurText={() => {
@@ -492,7 +523,7 @@ export function JournalEditScreen({
             </View>
         ),
         // eslint-disable-next-line react-hooks/exhaustive-deps -- 闭包读取项已尽数列入（applyBlocks/稳定 setter/editorRef 稳定引用）
-        [blocks, mediaById, editorEditable, focusTextId, canvas, selection, journal, store],
+        [blocks, mediaById, editorEditable, focusTextId, canvas, selection, journal, store, pendingProgress],
     );
 
     /**
@@ -538,12 +569,15 @@ export function JournalEditScreen({
         const pendingId = newBlockId();
         applyBlocks((current) => insertPendingBlock(current, pendingId));
         const label = kind === 'video' ? '视频' : kind === 'audio' ? '录音' : '图片';
-        // 后台任务（不 await——并行模型的核心）：收敛后注册表自摘除
+        // 后台任务（不 await——并行模型的核心）：收敛后注册表自摘除。
+        // taskId = pendingId：落盘进度进 store.mediaUploadProgress（100ms 节流），
+        // 占位块经 progressByPendingId 显示百分比（视频直迁流有逐块进度；图片
+        // /音频字节路径无进度拍，占位块保持 spinner 态）
         const task = (async () => {
             try {
                 const mediaId = await store
                     .getState()
-                    .attachJournalMedia(row.id, kind, uri, width, height);
+                    .attachJournalMedia(row.id, kind, uri, width, height, { taskId: pendingId });
                 // 媒体块 id 在 updater 外预生成（#1.2 纯函数纪律）；落库失败不生成
                 const mediaBlockId = mediaId ? newBlockId() : null;
                 applyBlocks((current) =>
@@ -943,7 +977,13 @@ export function JournalEditScreen({
                             style={{ fontVariant: ['tabular-nums'] }}
                         >
                             {editable
-                                ? `${chars} 字 · ${saving ? '保存中…' : savedLabel}`
+                                ? `${chars} 字 · ${
+                                      captureProgress != null
+                                          ? `保存中 ${Math.round(captureProgress * 100)}%`
+                                          : saving
+                                            ? '保存中…'
+                                            : savedLabel
+                                  }`
                                 : `${chars} 字`}
                         </Text>
                     </View>

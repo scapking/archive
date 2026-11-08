@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef } from 'react';
+import { Text, View } from 'react-native';
 import { useAudioRecorder, useAudioRecorderState, RecordingPresets } from 'expo-audio';
 import { usePathname } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { create } from 'zustand';
 import { imagePicker } from '@/core/image-picker';
-import { useArchiveStore } from './store';
+import { useArchiveStore, aggregateSaveProgress } from './store';
+import { usePalette } from './ui/theme';
 import type { JournalMediaKind } from './db';
 import { RecordingChip, RecordingOverlay } from './ui/recorder-overlay';
 import {
@@ -67,12 +69,13 @@ import {
  * 停止语义两段式（用户口径：点停止 = 关窗即返回，保存后台自动完成）：
  * **硬件停录段**（5s 护栏——拿到产物文件或超时失败；这一步必须同步等，否则
  * 不知道有无产物）完成后**立即终结 UI 会话**（卡片 ~160ms 淡出关闭、chip
- * 消失，无 spinner 停留）；**落库段转后台**（30s 护栏保留，任务注册进会话级
+ * 消失，无 spinner 停留）；**落库段转后台**（无进度增量护栏——连续 30s 无进度
+ *  拍点才判超时，web 大文件流式落盘不再被固定总时长误杀；任务注册进会话级
  * 后台落库注册表，收敛时横幅反馈「已保存到笔记」/保存失败文案）。后台落库
  * 期间允许立即开新会话（落库是 IO+DB、录制是相机/麦克风，零资源冲突；
  * persisting 相位只作收笔等待痕迹，不渲染任何 UI）。「完成收笔」经
  * stopCaptureSession 等待同归属后台任务 allSettled 再收笔（FAB 等待口径
- * 保留——这是收笔动作，不是录制 UI）。双护栏兜底：停录 5s + 落库 30s，任何
+ * 保留——这是收笔动作，不是录制 UI）。双护栏兜底：停录 5s + 落库 30s 无增量，任何
  * 路径不得把会话永久留在 stopping/persisting。护栏超时强制收场（错误上浮
  * 「停止超时」）并为已落盘的迟到产物开 15s 抢救窗口（尽力按原归属入库，
  * 过窗/失败给明确丢弃提示，绝不静默）；sessionToken（startedAt）防串会话，
@@ -312,9 +315,17 @@ const STOP_RESOLVE_TIMEOUT_MS = 5000;
  *  CameraView 强制收尾触发——文件实际已落盘），仍按原归属尽力入库；过窗
  *  给明确丢弃提示，绝不静默。 */
 const SALVAGE_WINDOW_MS = 15000;
-/** 落库护栏（ms）：本地存储/DB 异常挂死时先收场任务并给明确口径（落库链
- *  仍在后台继续，完成后媒体自然出现在笔记中，失败由 store 具体文案上浮）。 */
-const PERSIST_GUARD_TIMEOUT_MS = 30000;
+/**
+ * 落库护栏（2026-11-08 改造：固定总时长 → 「无进度增量」判定）：连续
+ * PERSIST_STALL_TIMEOUT_MS 无任何进度拍（进度回调/任务收敛均刷新活跃时刻）
+ * 才判超时。理由：web 端大视频流式落盘合法耗时可达分钟级（旧 30s 固定护栏
+ * 会对健康的慢任务弹假「保存超时」）；本地存储/DB 真挂死时同样先收场任务
+ * 并给明确口径（落库链仍在后台继续，完成后媒体自然出现在笔记中，失败由
+ * store 具体文案上浮）。
+ */
+const PERSIST_STALL_TIMEOUT_MS = 30000;
+/** 落库活跃度巡检周期（ms）：护栏判定用轮询节拍。 */
+const PERSIST_STALL_POLL_MS = 5000;
 /** UI 收尾淡出缓冲（ms）：硬件停录段完成、产物去向已定后，等卡片淡出
  *  （覆盖层自驱动 ~160ms，见 camera-overlay/recorder-overlay）落地再切换
  *  相位/卸载——杜绝「半透明卡片瞬间消失」穿帮。落库任务注册不等缓冲。 */
@@ -443,6 +454,7 @@ async function stopAudioHardwareWithGuard(
  * 媒体落库核心（不含会话状态写入）：attach 媒体行 → persist 事件（owner 屏
  * 先本地合并）→ DB 级块追加（归属落库）。停录/拍照产物与迟到抢救共用；
  * attach/append 失败文案由 store 上浮（store.error），本层不重复覆盖。
+ * taskId/onProgress 透传（进度注册表 + 护栏活跃度跟踪；抢救路径可缺省）。
  */
 async function persistMediaToJournal(input: {
     ownerJournalId: string;
@@ -452,10 +464,18 @@ async function persistMediaToJournal(input: {
     width: number | null;
     height: number | null;
     durationMs?: number;
+    taskId?: string;
+    onProgress?: () => void;
 }): Promise<CaptureStopOutcome> {
     const mediaId = await useArchiveStore
         .getState()
-        .attachJournalMedia(input.ownerJournalId, input.mediaKind, input.uri, input.width, input.height);
+        .attachJournalMedia(input.ownerJournalId, input.mediaKind, input.uri, input.width, input.height, {
+            // 录像/录音产物 = cache 临时件 → move 直迁（原件移走零残留）；
+            // 拍照/相册兜底产物为 image，不走 move 分支
+            taskId: input.taskId,
+            moveSource: true,
+            onProgress: input.onProgress,
+        });
     if (!mediaId) {
         // attach 失败文案已由 store 上浮（store.error）；素材弃置 cache 由系统清理
         return { ok: false, message: '媒体上传失败，素材未能保存。' };
@@ -529,6 +549,10 @@ interface BackgroundPersistTask {
 const backgroundPersists = new Map<number, BackgroundPersistTask>();
 let backgroundPersistSeq = 0;
 
+/** 会话落库任务在进度注册表里的 key 前缀（store.aggregateSaveProgress 聚合
+ *  「保存中 N%」横幅用）；序号段与编辑器 pending 占位 id 空间隔离。 */
+const CAPTURE_PROGRESS_PREFIX = 'capture:';
+
 /** 落库成功横幅（复用既有 store.error 横幅通道——域内唯一全局反馈位）。 */
 function persistSuccessBanner(mediaKind: JournalMediaKind): string {
     return mediaKind === 'video'
@@ -572,10 +596,12 @@ async function waitForOwnerPersists(
 
 /**
  * 注册后台落库任务（不等待——返回任务 promise 供收笔链按需 await）：落库
- * 核心 + 30s 护栏（挂死兜底：先给「保存超时」口径收场任务，底层链继续跑、
- * 成功后补横幅）+ 结果横幅（成功 = 「已保存到笔记」系文案；失败 = 保存失败
- * 文案，store 侧 attach/append 已给出更具体错误时不覆盖）。任务收敛自摘除
- * 并触发 UI 收尾协调（tryCloseUiSession）。
+ * 核心 + 无进度增量护栏（见 PERSIST_STALL_TIMEOUT_MS 注——挂死兜底：先给
+ * 「保存超时」口径收场任务，底层链继续跑、成功后补横幅）+ 进度注册
+ * （taskId 进 store.mediaUploadProgress，会话保存横幅按 capture: 前缀聚合
+ * 百分比）+ 结果横幅（成功 = 「已保存到笔记」系文案；失败 = 保存失败文案，
+ * store 侧 attach/append 已给出更具体错误时不覆盖）。任务收敛自摘除并触发
+ * UI 收尾协调（tryCloseUiSession）。
  */
 function persistCaptureProduct(
     input: {
@@ -590,36 +616,53 @@ function persistCaptureProduct(
     sessionToken: number | null,
 ): Promise<CaptureStopOutcome> {
     const taskId = ++backgroundPersistSeq;
+    const progressTaskId = `${CAPTURE_PROGRESS_PREFIX}${taskId}`;
     const errorBefore = useArchiveStore.getState().error;
     const promise = (async (): Promise<CaptureStopOutcome> => {
-        // 落库护栏：竞速 30s，超时先收场任务（底层落库链继续）
-        let persistGuardTimer: ReturnType<typeof setTimeout> | null = null;
-        const underlying = persistMediaToJournal(input);
-        const raced = await Promise.race([
-            underlying,
-            new Promise<'timeout'>((resolve) => {
-                persistGuardTimer = setTimeout(() => resolve('timeout'), PERSIST_GUARD_TIMEOUT_MS);
-            }),
-        ]);
-        // 竞速清理：落库先完成时撤掉护栏（迟到触发会弹假「保存超时」横幅）
-        if (persistGuardTimer) clearTimeout(persistGuardTimer);
-        if (raced === 'timeout') {
-            surfaceSessionError('素材保存超时，仍在后台继续保存，请稍后在笔记中确认。');
-            // 护栏后的孤儿链：仍可能成功落库——成功时补成功横幅（与超时口径呼应）
-            void underlying
-                .then((late) => {
-                    if (late.ok) surfaceSessionError(persistSuccessBanner(input.mediaKind));
-                })
-                .catch(() => undefined);
-            return { ok: false, message: '素材保存超时，请稍后在笔记中确认。' };
+        // 无进度增量护栏：活跃时刻 = 任务起点 / 最近一次进度拍；巡检周期轮询，
+        // 连续 PERSIST_STALL_TIMEOUT_MS 无拍点才判超时（web 大文件流式落盘
+        // 合法耗时可达分钟级，固定总时长护栏会误杀健康慢任务）
+        let lastProgressAt = Date.now();
+        let stallPoll: ReturnType<typeof setInterval> | null = null;
+        try {
+            const underlying = persistMediaToJournal({
+                ...input,
+                taskId: progressTaskId,
+                onProgress: () => {
+                    lastProgressAt = Date.now();
+                },
+            });
+            const raced = await Promise.race([
+                underlying,
+                new Promise<'timeout'>((resolve) => {
+                    stallPoll = setInterval(() => {
+                        if (Date.now() - lastProgressAt > PERSIST_STALL_TIMEOUT_MS) {
+                            resolve('timeout');
+                        }
+                    }, PERSIST_STALL_POLL_MS);
+                }),
+            ]);
+            if (raced === 'timeout') {
+                surfaceSessionError('素材保存超时，仍在后台继续保存，请稍后在笔记中确认。');
+                // 护栏后的孤儿链：仍可能成功落库——成功时补成功横幅（与超时口径呼应）
+                void underlying
+                    .then((late) => {
+                        if (late.ok) surfaceSessionError(persistSuccessBanner(input.mediaKind));
+                    })
+                    .catch(() => undefined);
+                return { ok: false, message: '素材保存超时，请稍后在笔记中确认。' };
+            }
+            if (raced.ok) {
+                surfaceSessionError(persistSuccessBanner(input.mediaKind));
+            } else if (useArchiveStore.getState().error === errorBefore) {
+                // 失败横幅：store 侧（attach/append）已给出更具体文案时不覆盖
+                surfaceSessionError(raced.message || '保存失败');
+            }
+            return raced;
+        } finally {
+            // 竞速清理：落库先完成（或失败）时撤掉巡检（迟到触发不再弹假超时）
+            if (stallPoll) clearInterval(stallPoll);
         }
-        if (raced.ok) {
-            surfaceSessionError(persistSuccessBanner(input.mediaKind));
-        } else if (useArchiveStore.getState().error === errorBefore) {
-            // 失败横幅：store 侧（attach/append）已给出更具体文案时不覆盖
-            surfaceSessionError(raced.message || '保存失败');
-        }
-        return raced;
     })()
         .catch((caught) => ({ ok: false as const, message: `保存失败：${toMessage(caught)}` }))
         .finally(() => {
@@ -713,7 +756,7 @@ function failStopSession(message: string, ownerJournalId: string, sessionToken: 
  * 停止会话（两段式：硬件停录 → UI 终结 → 落库后台化）：硬件停录段（会话级
  * 句柄，不依赖覆盖层挂载状态——最小化保活槽态同样可达；5s 护栏）完成即终结
  * UI 会话（卡片淡出关闭、chip 消失，无 spinner 停留）；有产物时落库立即转
- * 后台任务注册表（30s 护栏），收敛时横幅反馈。后台落库期间新会话可立即
+ * 后台任务注册表（30s 无进度增量护栏），收敛时横幅反馈。后台落库期间新会话可立即
  * 发起。返回 promise 在**同归属全部后台落库收敛后**才 resolve（收笔链据此
  * 判定中止并保证不丢块；快门路径 void 调用不受影响）。
  */
@@ -1015,7 +1058,7 @@ export async function requestCaptureLibraryFallback(): Promise<void> {
  * 与 120ms 轮询状态，挂载即 prepare + record；覆盖层展开时渲染
  * RecordingOverlay（纯视图），收起时渲染 null（进度照常上收，chip 由宿主
  * 渲染）。停止/取消经全局编排（stopCaptureSession/cancelCaptureSession）→
- * 硬件句柄 → 落库后台化（编排层带 5s 停录护栏 + 30s 落库护栏——stop 挂死
+ * 硬件句柄 → 落库后台化（编排层带 5s 停录护栏 + 30s 无增量落库护栏——stop 挂死
  * 也不滞留 stopping，迟到产物走抢救入库）：停止 = 卡片淡出关闭 + 落库后台
  * 自动完成（横幅反馈），本控制器在 persisting 相位随宿主卸载、录音机释放。
  *
@@ -1155,11 +1198,47 @@ function chipBottomInset(pathname: string, bottomInset: number): number {
 }
 
 /**
+ * 会话级保存横幅（2026-11-08 进度可视化）：persisting 相位的「保存中 N%」
+ * 非交互胶囊——落库已后台化，横幅是后台任务的唯一可见存在（任意页面可见，
+ * 与悬浮 chip 同位同语言；phase 回 idle（任务收敛）或进度注册表摘除即消失，
+ * 不做退场动画）。百分比 = capture: 前缀任务的平均进度（100ms 节流帧，
+ * store.aggregateSaveProgress）；web 无总量时任务不进注册表 → 横幅不出现
+ * （诚实降级：无可靠总量不伪造百分比，任务结果仍由既有横幅反馈）。
+ */
+function PersistProgressChip({ bottomInset }: { bottomInset: number }) {
+    const palette = usePalette();
+    const progress = useArchiveStore((s) => s.mediaUploadProgress);
+    const fraction = aggregateSaveProgress(progress, CAPTURE_PROGRESS_PREFIX);
+    if (fraction == null) return null;
+    return (
+        <View
+            pointerEvents="none"
+            className="absolute left-6 z-20"
+            style={{ bottom: bottomInset }}
+        >
+            <View
+                className="h-9 flex-row items-center gap-2 rounded-full px-4"
+                style={{ backgroundColor: palette.primaryBtn }}
+                accessibilityLabel={`素材保存中，已完成 ${Math.round(fraction * 100)}%`}
+            >
+                <Text
+                    className="text-[13px] font-medium"
+                    style={{ color: palette.onPrimaryBtn, fontVariant: ['tabular-nums'] }}
+                >
+                    {`保存中 ${Math.round(fraction * 100)}%`}
+                </Text>
+            </View>
+        </View>
+    );
+}
+
+/**
  * 全局录制会话宿主：根层级条件渲染三件套——录音控制器（hook 常驻）、拍摄
  * 会话（CameraView 常驻：展开 = 全屏取景卡 / 最小化 = 隐形保活槽，stop/cancel
- * 后随会话卸载）、收起态悬浮 chip（任意页面重开入口）。空闲（kind null）与
- * persisting（UI 会话已终结、落库在后台——采集 UI 整体不渲染，CameraView/
- * 录音机随卸载释放，产物已到手）时渲染 null/空，零布局挤占、零监听成本。
+ * 后随会话卸载）、收起态悬浮 chip（任意页面重开入口）。空闲（kind null）时
+ * 渲染 null/空，零布局挤占、零监听成本；persisting（UI 会话已终结、落库在
+ * 后台）采集 UI 整体不渲染（CameraView/录音机随卸载释放，产物已到手），仅
+ * 保留「保存中 N%」会话级保存横幅（有 capture 进度在途才出现，见其注）。
  */
 export function RecordingSessionHost() {
     const kind = useRecordingSessionStore((s) => s.kind);
@@ -1211,6 +1290,12 @@ export function RecordingSessionHost() {
                     bottomInset={chipBottomInset(pathname, insets.bottom)}
                     onPress={restoreCaptureOverlay}
                 />
+            ) : null}
+            {/* 会话级保存横幅（persisting 相位 + capture 进度在途）：「保存中 45%」
+                ——后台落库的唯一可见存在，任务收敛即消失（见 PersistProgressChip 注）；
+                与 RecordingChip 不同相位渲染，无同位共存窗口 */}
+            {phase === 'persisting' ? (
+                <PersistProgressChip bottomInset={chipBottomInset(pathname, insets.bottom)} />
             ) : null}
         </>
     );

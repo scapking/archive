@@ -5,7 +5,7 @@ import { BouncyPressable, LucideImage, LucidePlay, LucideVideo } from '@/core/ic
 import { AudioLinesIcon } from './editor-icons';
 import { AudioBlock } from './audio-player';
 import { requestViewer } from '../viewer-request';
-import { useFileUrlState } from './use-file-url';
+import { useFileUrlState, type FileUrlState } from './use-file-url';
 import { useVideoNaturalSize } from './use-video-natural-size';
 import { usePalette } from './theme';
 import type { JournalMediaRow } from '../db';
@@ -62,6 +62,31 @@ const VIDEO_RATIO = 16 / 9;
 
 /** 双击判定窗口（ms，web 桌面端块操作入口）。 */
 const DOUBLE_PRESS_WINDOW = 320;
+
+/* ------------------------------------------------------------------ */
+/* 视频缩略图（deck 露边层真封面，2026-11-08）                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 视频缩略图 key 推导（媒体 key 追加 `.thumb.jpg` 后缀）。
+ * **key 约定镜像**：事实源在 features/archive/store.ts 的 videoThumbKeyFor
+ * （ui 层禁 import store——v5 去环纪律，此处不能反查），两侧的
+ * `${fileKey}.thumb.jpg` 格式串必须锁步修改（store 侧有对向镜像注释）。
+ */
+export function videoThumbKeyFor(fileKey: string): string {
+    return `${fileKey}.thumb.jpg`;
+}
+
+/**
+ * 视频缩略图三态（deck 露边层封面消费口）：thumbKey 复用 useFileUrlState 的
+ * 会话缓存/revision 复验/三态语义——loading（解析中/尚未生成）、ready（真
+ * 封面可渲染）、missing（未生成/生成失败/文件缺失 → 调用方回退占位卡）。
+ * 缩略图由 store 侧在视频 attach 成功后生成（ensureVideoThumbnail），存量旧
+ * 视频由屏层惰性回填；本 hook 只读不触发生成（生成编排不进 ui 层）。
+ */
+export function useVideoThumbState(fileKey: string | null): FileUrlState {
+    return useFileUrlState(fileKey == null ? null : videoThumbKeyFor(fileKey));
+}
 
 /** web 桌面端（精确指针）才启用双击语义；web 触屏与 native 走长按。 */
 export function prefersDoubleClickActions(): boolean {

@@ -1,7 +1,13 @@
 import { create } from 'zustand';
 import { crypto } from '@/core/crypto';
-import { fileStorage, readUriBytes } from '@/core/file-storage';
+import {
+    fileStorage,
+    readUriBytes,
+    type PutProgress,
+    type PutProgressListener,
+} from '@/core/file-storage';
 import { imageManipulator } from '@/core/image-manipulator';
+import { videoThumbnails } from '@/core/video-thumbnails';
 import * as db from './db';
 import { PENDING_MEDIA_ID, TRIP_OPEN_ENDED } from './db';
 import type { JournalBlock, JournalMediaKind, TripMediaKind, TripRow } from './db';
@@ -40,6 +46,104 @@ import { notifyDataRevision } from './data-revision';
 /** 图片长边上限：时间线缩略图与落盘体积的平衡点（超出才缩，不放大）。 */
 const IMAGE_MAX_WIDTH = 2048;
 
+/* ------------------------------------------------------------------ */
+/* 媒体上传进度注册表（2026-11-08 落盘异步化配套）                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 进度回调节流帧间隔（ms）：file-storage 的原始进度拍（web 每写入块一拍）
+ * 直驱 setState 会形成重渲风暴，统一收敛到 100ms 一帧（终值拍不节流——
+ * 占位块收口/横幅消失不延迟）。
+ */
+const PROGRESS_EMIT_INTERVAL_MS = 100;
+
+/**
+ * 附件落盘选项（attach 系列共用）：进度注册键 + 原始监听 + 直迁语义。
+ */
+export interface AttachMediaOptions {
+    /**
+     * 进度注册键（store.mediaUploadProgress 的 key）：编辑器 pending 占位
+     * 场景传占位块 id（占位卡按 key 查百分比）；全局录制会话落库场景传
+     * `capture:<seq>` 前缀任务 id（会话保存横幅按前缀聚合）。缺省 = 不进
+     * 注册表（行程侧等无进度消费面的调用方）。
+     */
+    taskId?: string;
+    /**
+     * 仅 video 生效：true = moveFromUri（录像/录音 cache 产物直迁，原件移走
+     * 零残留）；false/undefined = copyFromUri（相册/外部产物，不动原件）。
+     */
+    moveSource?: boolean;
+    /**
+     * 原始进度监听（**未节流**的原始拍，file-storage 每写入块一拍）：录制会话
+     * 护栏的活跃度跟踪消费（「N 秒无进度增量」判定——任意拍点即活跃），不直接
+     * 驱动 UI；UI 消费面走 mediaUploadProgress 注册表（已节流）。
+     */
+    onProgress?: PutProgressListener;
+}
+
+/**
+ * 进度汇（file-storage 原始拍 → 节流 → store 注册表 + 原始监听转发）：
+ * taskId 缺省且无监听时返回 undefined（零开销，fileStorage 侧不挂回调）。
+ */
+function makeProgressSink(
+    taskId: string | undefined,
+    listener: PutProgressListener | undefined,
+): PutProgressListener | undefined {
+    if (taskId == null && listener == null) return undefined;
+    let lastEmitAt = 0;
+    return (progress: PutProgress) => {
+        listener?.(progress);
+        if (taskId == null) return;
+        const fraction =
+            progress.totalBytes != null && progress.totalBytes > 0
+                ? Math.min(1, progress.bytesWritten / progress.totalBytes)
+                : null;
+        if (fraction == null) return; // 未知总量不进注册表（UI 按「无百分比」降级）
+        const isFinal = fraction >= 1;
+        const now = Date.now();
+        // 首拍（lastEmitAt 0）与终值拍不节流：占位块快速出现百分比、收口不延迟
+        if (!isFinal && lastEmitAt !== 0 && now - lastEmitAt < PROGRESS_EMIT_INTERVAL_MS) return;
+        lastEmitAt = now;
+        useArchiveStore.setState((state) =>
+            state.mediaUploadProgress[taskId] === fraction
+                ? state
+                : {
+                      mediaUploadProgress: { ...state.mediaUploadProgress, [taskId]: fraction },
+                  },
+        );
+    };
+}
+
+/** 任务收敛后摘除进度注册键（成功/失败同口径，占位块随之收口）。 */
+function clearUploadProgress(taskId: string | undefined): void {
+    if (taskId == null) return;
+    useArchiveStore.setState((state) => {
+        if (state.mediaUploadProgress[taskId] === undefined) return state;
+        const next = { ...state.mediaUploadProgress };
+        delete next[taskId];
+        return { mediaUploadProgress: next };
+    });
+}
+
+/**
+ * 会话保存进度聚合（纯函数）：取指定前缀任务的平均进度（0..1）。多任务并行
+ * 时平均比取 max 诚实（一卡 90% 一卡 10% 时 max 会提前报满）；无活跃任务
+ * 返回 null（横幅/百分比位随之消失）。
+ */
+export function aggregateSaveProgress(
+    progress: Record<string, number>,
+    keyPrefix: string,
+): number | null {
+    let sum = 0;
+    let count = 0;
+    for (const [key, fraction] of Object.entries(progress)) {
+        if (!key.startsWith(keyPrefix)) continue;
+        sum += fraction;
+        count += 1;
+    }
+    return count === 0 ? null : sum / count;
+}
+
 export interface TripCard extends Trip {
     journalDays: number;
     plansTotal: number;
@@ -68,6 +172,14 @@ interface ArchiveStore {
     savingJournal: boolean;
     trips: TripCard[];
     metrics: MeMetrics;
+    /**
+     * 媒体落盘进度注册表（2026-11-08 落盘异步化配套，只读订阅面）：key =
+     * AttachMediaOptions.taskId（编辑器 pending 占位块 id / capture:<seq> 会话
+     * 落库任务 id），value = 0..1。任务收敛（成功/失败）即摘除；写入口仅在
+     * store 内部（makeProgressSink 节流 100ms），UI 按 key 查询 + 前缀聚合
+     * （aggregateSaveProgress）。
+     */
+    mediaUploadProgress: Record<string, number>;
 
     loadAll(): Promise<void>;
     /** 路由壳取单条行程（编辑入口预检；只读，不 bump revision）。 */
@@ -138,8 +250,17 @@ interface ArchiveStore {
     updateJournalTitle(journalId: string, title: string): Promise<boolean>;
     /** 删单篇日记：级联删其媒体行 + 文件（同 deleteTrip 的不留孤儿口径）。 */
     deleteJournal(journalId: string): Promise<boolean>;
-    /** 编辑器插图/视频：落 file-storage + 建媒体行，返回 mediaId 供块引用。 */
-    attachJournalMedia(journalId: string, kind: JournalMediaKind, uri: string, width: number | null, height: number | null): Promise<string | null>;
+    /** 编辑器插图/视频：落 file-storage + 建媒体行，返回 mediaId 供块引用。
+     *  opts.taskId 传入时进度进 mediaUploadProgress 注册表（占位卡百分比）；
+     *  视频默认 copyFromUri 直迁，moveSource = true 时录像产物走 move。 */
+    attachJournalMedia(
+        journalId: string,
+        kind: JournalMediaKind,
+        uri: string,
+        width: number | null,
+        height: number | null,
+        opts?: AttachMediaOptions,
+    ): Promise<string | null>;
     /**
      * 【归属铁律】DB 级媒体块追加（全局录制会话停录产物落库专用，见
      * recording-session.tsx）：绕过任何未挂载/在栈下的编辑屏本地态，读该
@@ -157,20 +278,19 @@ function toMessage(error: unknown): string {
     return String(error);
 }
 
-/** 媒体落盘前的统一准备：图片经 manipulator 缩边（超出才缩），视频/音频源字节直落。 */
-async function prepareMediaBytes(
-    kind: JournalMediaKind | TripMediaKind,
+/**
+ * 图片落盘前的统一准备：经 manipulator 缩边（超出 IMAGE_MAX_WIDTH 才缩），
+ * 返回产物字节（已在 JS，直接 fileStorage.put——图片体量 ≤ 数 MB，字节路径
+ * 不构成卡顿面）。视频/音频不再经此函数：视频走 fileStorage 直迁（大文件
+ * 字节路径退役），音频在 attach 内联读字节做容器嗅探（体量小）。
+ */
+async function prepareImageBytes(
     uri: string,
     width: number | null,
-    height: number | null,
 ): Promise<{ bytes: Uint8Array; width: number | null; height: number | null }> {
-    if (kind === 'image') {
-        const actions = width && width > IMAGE_MAX_WIDTH ? [{ resize: { width: IMAGE_MAX_WIDTH } }] : [];
-        const manipulated = await imageManipulator.manipulateAsync(uri, actions);
-        return { bytes: manipulated.bytes, width: manipulated.width, height: manipulated.height };
-    }
-    // 视频/音频不经 manipulator：源文件字节直落
-    return { bytes: await readUriBytes(uri), width, height };
+    const actions = width && width > IMAGE_MAX_WIDTH ? [{ resize: { width: IMAGE_MAX_WIDTH } }] : [];
+    const manipulated = await imageManipulator.manipulateAsync(uri, actions);
+    return { bytes: manipulated.bytes, width: manipulated.width, height: manipulated.height };
 }
 
 /** 媒体文件的存储扩展名（audio 由 audioExtFromBytes 按容器嗅探，不经此函数）。 */
@@ -194,18 +314,101 @@ function audioExtFromBytes(bytes: Uint8Array): 'm4a' | 'webm' {
     return isWebm ? 'webm' : 'm4a';
 }
 
+/* ------------------------------------------------------------------ */
+/* 视频缩略图（deck 露边层真封面，2026-11-08）                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 缩略图 key 约定：媒体 key 直接追加 `.thumb.jpg` 后缀（选型：不用独立
+ * thumbs/ 前缀——同前缀 = 删除级联/GC/列表 prefix 查询零改动地随媒体走，
+ * 报告已注明取舍）。段内字符集 [a-zA-Z0-9._-] 合法（validateKey 通过）。
+ */
+export function videoThumbKeyFor(fileKey: string): string {
+    return `${fileKey}.thumb.jpg`;
+}
+
+/** 缩略图宽上限（px）：deck 卡 420dp 高 + 相纸位形，512px 在 2x 屏足够；
+ *  控制落盘体积（每视频 ~30-80KB）。超出才缩（expo-video-thumbnails 无
+ *  resize 参数，缩边经 image-manipulator，超出才缩不放大）。 */
+const VIDEO_THUMB_MAX_WIDTH = 512;
+
+/**
+ * 缩略图单飞注册表（fileKey → 在途任务）：并发调用（attach 生成 + 屏进入
+ * 惰性生成撞车）共享同一 promise，不重复解码。
+ */
+const videoThumbTasks = new Map<string, Promise<boolean>>();
+
+/**
+ * 已验证存在的缩略图（本 JS 会话内存缓存）：媒体行的 revision 重载会反复
+ * 触发惰性回填入口，存在性已确认的 fileKey 直接短路——免去每次 revision
+ * 变化对每视频的 exists 查询（native = stat + db 查询）。会话级缓存： Thumb
+ * 被外部删除（GC/换设备迁移）的场景下次冷启自愈。
+ */
+const verifiedThumbKeys = new Set<string>();
+
+/**
+ * 生成并缓存某媒体文件的缩略图（幂等：已存在直接命中）。
+ *
+ * **增强语义（任务口径）**：任何失败（web 无实现/解码失败/IO 失败）只
+ * resolve false——不进 error、不抛出、绝不阻塞媒体入库（调用方是增强侧，
+ * 落库主链已在此之前完成）；消费方（editor 的 DeckVideoBackCard）按
+ * useFileUrlState(thumbKey) 三态回退占位卡。生成成功 bump revision：deck/
+ * 媒体列表的 useFileUrlState(thumbKey) 订阅在 revision 漂移时复验拿到图。
+ * 存量旧视频的回填：journal-edit-screen 载入媒体行后对本篇全部视频逐个
+ * 调用（惰性生成，首篇打开一次性补齐，之后命中缓存零成本）。
+ */
+export function ensureVideoThumbnail(fileKey: string): Promise<boolean> {
+    const inFlight = videoThumbTasks.get(fileKey);
+    if (inFlight) return inFlight;
+    const task = (async (): Promise<boolean> => {
+        const thumbKey = videoThumbKeyFor(fileKey);
+        try {
+            if (verifiedThumbKeys.has(fileKey)) return true;
+            if (await fileStorage.exists(thumbKey)) {
+                verifiedThumbKeys.add(fileKey);
+                return true;
+            }
+            if (!videoThumbnails.isSupported()) return false;
+            const sourceUri = await fileStorage.url(fileKey);
+            const frame = await videoThumbnails.generateAsync(sourceUri);
+            const actions =
+                frame.width > VIDEO_THUMB_MAX_WIDTH
+                    ? [{ resize: { width: VIDEO_THUMB_MAX_WIDTH } }]
+                    : [];
+            const prepared = await imageManipulator.manipulateAsync(frame.uri, actions);
+            await fileStorage.put(thumbKey, prepared.bytes);
+            verifiedThumbKeys.add(fileKey);
+            // revision bump 是「图已可用」的广播：deck 露边层/媒体列表据此
+            // 复验 thumbKey 并切真封面（不 reloadAll——缩略图不影响任何行）
+            useArchiveStore.setState((state) => ({ revision: state.revision + 1 }));
+            return true;
+        } catch (error) {
+            // 增强失败文档化降级（error-handling R3 ②）：占位卡回退可自愈
+            // （下次进入重试），console.warn 留痕不静默
+            console.warn(`[archive-thumb] 缩略图生成失败（回退占位卡）: ${fileKey}`, error);
+            return false;
+        } finally {
+            videoThumbTasks.delete(fileKey);
+        }
+    })();
+    videoThumbTasks.set(fileKey, task);
+    return task;
+}
+
 /**
  * 尽力而为的文件清理：单个失败不阻塞其余（DEV.md #1.1「文件删除失败不阻塞行删除」），
  * 返回失败清单交调用方聚合上报——行已删，引用不会复活，失败只影响存储回收。
+ * 缩略图与媒体同生命周期：删媒体连带删 `${key}.thumb.jpg`（无缩略图时 remove
+ * 幂等 no-op），所有删除路径（删行程/删日记/删单媒体/孤儿对账）经此单点收口。
  */
 async function removeFilesBestEffort(keys: string[]): Promise<{ key: string; message: string }[]> {
     const failures: { key: string; message: string }[] = [];
     await Promise.all(
-        keys.map(async (key) => {
+        keys.flatMap((key) => [key, videoThumbKeyFor(key)]).map(async (target) => {
             try {
-                await fileStorage.remove(key);
+                await fileStorage.remove(target);
             } catch (error) {
-                failures.push({ key, message: toMessage(error) });
+                failures.push({ key: target, message: toMessage(error) });
             }
         }),
     );
@@ -259,10 +462,20 @@ export function runStartupOrphanMediaGc(): Promise<void> {
 /** sweep 本体：所有异常自吞（调用方 fire-and-forget，无人接 rejection）。 */
 async function sweepOrphanMediaFiles(): Promise<void> {
     try {
-        const [referencedKeys, ...listings] = await Promise.all([
+        const [referencedMediaKeys, ...listings] = await Promise.all([
             db.listReferencedMediaFileKeys(),
             ...GC_MEDIA_PREFIXES.map((prefix) => fileStorage.list(prefix)),
         ]);
+        // 引用集扩容：缩略图（`${mediaKey}.thumb.jpg`）不是任何行的 file_key，
+        // 但其存亡与宿主媒体一致——宿主被引用则缩略图同样受保护；宿主删除后
+        // （行软删 → file_key 出引用集）缩略图随之进入差集，宽限期后一并回收。
+        // 缩略图 key 与媒体 key 同前缀（见 videoThumbKeyFor 注），GC 前缀清单
+        // 无需扩容。
+        const referencedKeys = new Set<string>();
+        for (const key of referencedMediaKeys) {
+            referencedKeys.add(key);
+            referencedKeys.add(videoThumbKeyFor(key));
+        }
         const now = Date.now();
         const orphans = listings
             .flat()
@@ -311,6 +524,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
     savingJournal: false,
     trips: [],
     metrics: { streak: 0, journalDays: 0, totalWords: 0, curve: [] },
+    mediaUploadProgress: {},
 
     async loadAll() {
         try {
@@ -445,7 +659,11 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
     async attachTripVideo(tripId, uri) {
         try {
             const key = `trip-video/${tripId}.mp4`;
-            await fileStorage.putFromUri(key, uri);
+            // 大文件直迁（copyFromUri）：native 原生 copy 零 JS 字节拷贝、web
+            // 流式分块——行程封面视频几十 MB 不再卡主线程；相册产物 copy 语义
+            // （源归系统管理）。行程侧无进度消费面，不挂 taskId。
+            await fileStorage.copyFromUri(key, uri);
+            void ensureVideoThumbnail(key);
             return await get().updateTrip(tripId, { videoKey: key });
         } catch (error) {
             set({ error: `视频上传失败：${toMessage(error)}` });
@@ -453,7 +671,8 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         }
     },
 
-    async attachTripMedia(tripId, kind, uri, width, height, durationMs = null) {
+    async attachTripMedia(tripId, kind, uri, width, height, durationMs = null, opts?: AttachMediaOptions) {
+        const sink = makeProgressSink(opts?.taskId, opts?.onProgress);
         try {
             // 锁定预检（#7）：已结束的行程不可再增内容（UI 侧入口同样要挡，这里是兜底）
             const trip = await db.getTrip(tripId);
@@ -468,23 +687,38 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             // 直接落盘+落库（行程媒体无块模型，不需要日记那套 pending 占位回填链路）
             const mediaId = crypto.randomUUID();
             const key = `trip-media/${tripId}/${mediaId}.${mediaFileExt(kind)}`;
-            const prepared = await prepareMediaBytes(kind, uri, width, height);
-            await fileStorage.put(key, prepared.bytes);
+            // 落盘分流（与 attachJournalMedia 同口径，见其注）：视频直迁、图片
+            // manipulator 字节路径
+            if (kind === 'video') {
+                if (opts?.moveSource) {
+                    await fileStorage.moveFromUri(key, uri, { onProgress: sink });
+                } else {
+                    await fileStorage.copyFromUri(key, uri, { onProgress: sink });
+                }
+            } else {
+                const prepared = await prepareImageBytes(uri, width);
+                await fileStorage.put(key, prepared.bytes);
+                width = prepared.width;
+                height = prepared.height;
+            }
             await db.insertTripMedia({
                 id: mediaId,
                 trip_id: tripId,
                 file_key: key,
                 kind,
-                width: prepared.width,
-                height: prepared.height,
+                width,
+                height,
                 duration_ms: durationMs,
                 created_at: Date.now(),
             });
+            if (kind === 'video') void ensureVideoThumbnail(key);
             set({ error: null, revision: get().revision + 1 });
             return mediaId;
         } catch (error) {
             set({ error: `媒体上传失败：${toMessage(error)}` });
             return null;
+        } finally {
+            clearUploadProgress(opts?.taskId);
         }
     },
 
@@ -551,7 +785,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             // 背景图 = trip_media 的一行：复用行程媒体上传流（缩边 + 落盘 + 落库）
             mediaId = crypto.randomUUID();
             fileKey = `trip-media/${tripId}/${mediaId}.jpg`;
-            const prepared = await prepareMediaBytes('image', uri, width, height);
+            const prepared = await prepareImageBytes(uri, width);
             await fileStorage.put(fileKey, prepared.bytes);
             await db.insertTripMedia({
                 id: mediaId,
@@ -831,30 +1065,53 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         return true;
     },
 
-    async attachJournalMedia(journalId, kind, uri, width, height) {
+    async attachJournalMedia(journalId, kind, uri, width, height, opts) {
+        const sink = makeProgressSink(opts?.taskId, opts?.onProgress);
         try {
             const mediaId = crypto.randomUUID();
-            const prepared = await prepareMediaBytes(kind, uri, width, height);
             // 音频分支：容器/扩展名按字节头核对（native m4a、web webm，见
             // audioExtFromBytes）；空字节录音（stop-before-record 等坏产物）
-            // 拒绝入库——坏块落库后播放必败，不如在此给明确错误
+            // 拒绝入库——坏块落库后播放必败，不如在此给明确错误。嗅探需要
+            // 字节（体量分钟级 ≤ 数 MB，字节路径保留），先读后写
             let ext = mediaFileExt(kind);
             if (kind === 'audio') {
-                if (prepared.bytes.byteLength === 0) {
+                const bytes = await readUriBytes(uri);
+                if (bytes.byteLength === 0) {
                     throw new Error('录音文件为空，请重试');
                 }
-                ext = audioExtFromBytes(prepared.bytes);
+                ext = audioExtFromBytes(bytes);
             }
             const key = `journal-media/${journalId}/${mediaId}.${ext}`;
-            await fileStorage.put(key, prepared.bytes);
+            // 落盘分流（2026-11-08 落盘异步化）：
+            // - video：大文件直迁——native 原生 move/copy（JS 线程零字节拷贝，
+            //   原生 SHA-256）或 web 流式分块（主线程让步）；录像/录音 cache
+            //   产物 moveSource = true（原件移走零残留，cache 清理天然兼容），
+            //   相册产物 copy（不动原件）。旧「全量字节读进 JS + JS 算哈希 +
+            //   全量回写」路径是保存卡住界面的根因，就此退役；
+            // - audio：字节路径保留（体量小 + 嗅探已需字节）；
+            // - image：manipulator 产物字节路径（≤ 数 MB）。
+            if (kind === 'video') {
+                if (opts?.moveSource) {
+                    await fileStorage.moveFromUri(key, uri, { onProgress: sink });
+                } else {
+                    await fileStorage.copyFromUri(key, uri, { onProgress: sink });
+                }
+            } else if (kind === 'audio') {
+                await fileStorage.put(key, await readUriBytes(uri));
+            } else {
+                const prepared = await prepareImageBytes(uri, width);
+                width = prepared.width;
+                height = prepared.height;
+                await fileStorage.put(key, prepared.bytes);
+            }
             try {
                 await db.insertJournalMedia({
                     id: mediaId,
                     journal_id: journalId,
                     file_key: key,
                     kind,
-                    width: prepared.width,
-                    height: prepared.height,
+                    width,
+                    height,
                     created_at: Date.now(),
                 });
             } catch (dbError) {
@@ -863,11 +1120,17 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 await fileStorage.remove(key).catch(() => undefined);
                 throw dbError;
             }
+            // 缩略图是展示增强（deck 露边层真封面）：生成失败不阻塞入库（fire
+            // -and-forget，失败仅 warn + 占位卡回退，见 ensureVideoThumbnail 注）
+            if (kind === 'video') void ensureVideoThumbnail(key);
             set({ error: null, revision: get().revision + 1 });
             return mediaId;
         } catch (error) {
             set({ error: `媒体上传失败：${toMessage(error)}` });
             return null;
+        } finally {
+            // 任务收敛即摘除进度注册键（占位卡/横幅收口，成功失败同口径）
+            clearUploadProgress(opts?.taskId);
         }
     },
 

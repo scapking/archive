@@ -1,6 +1,6 @@
 import '../global.css';
-import { useEffect } from 'react';
-import { Linking, Platform, Pressable, Text, View } from 'react-native';
+import { useEffect, useRef } from 'react';
+import { AppState, Linking, Platform, Pressable, Text, View } from 'react-native';
 import { Stack, useRouter, useNavigationContainerRef } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
@@ -19,7 +19,7 @@ import {
 import { runStartupOrphanMediaGc } from '@/features/archive/store';
 // 全局录制会话宿主（跨页面后台录制 + 归属铁律）：同 last-route/store 深路径直连
 // 先例——域 barrel index.ts 不在本次允许改动清单内。
-import { RecordingSessionHost } from '@/features/archive/recording-session';
+import { RecordingSessionHost, useRecordingSessionStore } from '@/features/archive/recording-session';
 import { archiveConfig } from '@/config/archive';
 
 /**
@@ -41,12 +41,14 @@ export const unstable_settings = { anchor: '(tabs)' };
 let lastRouteRestoreDone = false;
 
 /** Android edge-to-edge：把窗口背景（= 透明导航栏露出的区域）重设为当前主题
-    的 sceneBg（与 Stack contentStyle 同源）。幂等可重入：主题变化与路由 state
-    变化两条路径都会调用——真机实测，窗口底色只在主题变化时设置的话，路由
+    的 sceneBg（与 Stack contentStyle 同源）。幂等可重入，五条路径都会调用——
+    ①主题翻转、②路由 state 变化、④回前台（AppState active）、⑤录制覆盖层
+    收场（详见各路径注）。真机实测，窗口底色只在主题变化时设置的话，路由
     切换/转场后导航栏条带会停留陈旧底色、直到下一次窗口重绘才恢复（「点击
     一些界面底部导航栏边缘没有刷新，刷新之后又正常」），故每次屏切换也幂等
-    重设一次强制该条带跟手；重复设同色无原生副作用。expo-system-ui 会把该色
-    持久化，下次冷启动 JS 未执行前原生即恢复，消除首帧导航栏底色不确定。 */
+    重设一次强制该条带跟手；重复设同色无原生副作用，各触发点均为低频一次性
+    调用（无风暴面）。expo-system-ui 会把该色持久化，下次冷启动 JS 未执行前
+    原生即恢复，消除首帧导航栏底色不确定。 */
 function applyAndroidSceneBackground(theme: 'light' | 'dark'): void {
     SystemUI.setBackgroundColorAsync(getPalette(theme).sceneBg).catch((e: unknown) => {
         console.warn('[system-ui] setBackgroundColorAsync failed:', e);
@@ -105,6 +107,12 @@ export default function RootLayout() {
             // 3-button 模式生效前提：app.json 中 expo-navigation-bar 插件 enforceContrast=false。
             NavigationBar.setStyle(theme === 'dark' ? 'light' : 'dark');
         }
+        // 路径④回前台保险层（2026-11-08 E2E 底色偶发消失修复）：部分系统路径
+        // 会把窗口背景重置回主题默认（典型：拉起外部 Activity（相册 picker/
+        // 分享面板）返回时的 activity 前景重建、系统栏 flag 重排）——该路径
+        // 既无导航 state 事件（路径②收不到）也无主题变化（路径①收不到），
+        // 底色丢失后一直残留到下次切主题。回前台幂等重设一次即可覆盖这一类；
+        // 重复设同色无原生副作用，回前台是低频一次性调用（无风暴面）。
         // 路径②屏切换兜底（真机「底部导航栏边缘没有刷新」）：订阅根容器 state
         // 变化——含嵌套 tab 切换 / push / pop / modal（嵌套导航状态变化会上抛
         // 到容器 state）——每次变化幂等重设一次窗口底色，强制导航栏条带跟手。
@@ -117,6 +125,15 @@ export default function RootLayout() {
         // 落盘（复用既有订阅，不另挂第二份）；Android 专属调用收进回调内 gate。
         // 仅序列化成功（path 非 null）时写，无效路由不覆盖上次缓存；恢复完成前
         // 不写（见 lastRouteRestoreDone 注——初始播种 state 不得覆盖上次缓存）。
+        const appStateSub =
+            Platform.OS === 'android'
+                ? AppState.addEventListener('change', (state) => {
+                      if (state === 'active') {
+                          applyAndroidSceneBackground(theme);
+                          NavigationBar.setStyle(theme === 'dark' ? 'light' : 'dark');
+                      }
+                  })
+                : null;
         const unsubscribe = navigationRef.addListener('state', (e) => {
             if (Platform.OS === 'android') applyAndroidSceneBackground(theme);
             if (!lastRouteRestoreDone) return;
@@ -124,11 +141,31 @@ export default function RootLayout() {
             if (path) saveLastRoute(path);
         });
         return () => {
+            appStateSub?.remove();
             unsubscribe();
             // 卸载 flush：Fast Refresh / 容器卸载时把节流窗口内未落盘的路径立即写掉
             void flushLastRoute();
         };
     }, [theme, navigationRef]);
+
+    // 路径⑤会话覆盖层收场补设（2026-11-08 E2E 保险层，Android）：全局录制
+    // 覆盖层（全屏取景卡/隐形保活槽/CameraView 原生视图栈）整层挂载/卸载是
+    // 导航 state 之外的原生视图重排点——收场（stopping→persisting / 会话
+    // 终结 kind→null）时幂等补设一次窗口底色，覆盖「覆盖层收掉后底色残留」
+    // 的观察面。订阅经 zustand（零渲染），低频一次性调用无风暴；theme 走
+    // ref 镜像（订阅只挂一次，闭包不随主题 effect 重建）。
+    const themeRef = useRef(theme);
+    themeRef.current = theme;
+    useEffect(() => {
+        if (Platform.OS !== 'android') return;
+        return useRecordingSessionStore.subscribe((state, prev) => {
+            const wasCaptureUiAlive = prev.kind != null && prev.phase !== 'persisting';
+            const isCaptureUiGone = state.kind == null || state.phase === 'persisting';
+            if (wasCaptureUiAlive && isCaptureUiGone) {
+                applyAndroidSceneBackground(themeRef.current);
+            }
+        });
+    }, []);
 
     useEffect(() => {
         // 上一次界面恢复（一次性，根导航 ready 后；在主题初始化 effect 与 anchor

@@ -124,6 +124,235 @@ async function bytesFromUri(uri: string): Promise<Uint8Array> {
     return readUriBytes(uri);
 }
 
+/* ------------------------------------------------------------------ */
+/* 大文件直迁（moveFromUri/copyFromUri，2026-11-08 登记，glossary §3）  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 直迁进度快照：bytesWritten / totalBytes（总大小未知时 totalBytes = null——
+ * web 无 Content-Length 的源没有可靠总量，消费方须按「未知总量」降级展示，
+ * 不得伪造百分比）。
+ */
+export interface PutProgress {
+    bytesWritten: number;
+    totalBytes: number | null;
+}
+
+export type PutProgressListener = (progress: PutProgress) => void;
+
+export interface PutFromUriOptions {
+    /**
+     * native 直迁语义：true = move（源文件移入存储，cache 临时产物零残留），
+     * false/undefined = copy（源保留）。web 无文件系统级 move，两者同为流式
+     * 拷贝（源是 blob:/临时 URL，由浏览器会话生命周期回收）。
+     */
+    move?: boolean;
+    /**
+     * 进度上抛（原始节拍：web 每个写入块一拍、native 仅起点/终点两拍——原生
+     * File.move/copy 无逐字节事件，JS 线程零参与）。**节流由调用方负责**
+     * （100ms 一帧防重渲风暴），本层不缓冲不丢拍。
+     */
+    onProgress?: PutProgressListener;
+}
+
+/** web 流式写入块粒度：2MB（1-4MB 档中值）——单块 write 的 JS→浏览器字节
+    拷贝耗时与「让出主线程」频率的平衡点，几十 MB 视频写盘不卡输入/渲染。 */
+const WEB_STREAM_CHUNK_BYTES = 2 * 1024 * 1024;
+
+/** 拼接字节块（分块读源的合并写入用）。 */
+function concatChunks(chunks: Uint8Array[], totalLength: number): Uint8Array {
+    const merged = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+        merged.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return merged;
+}
+
+/** web 端主线程让步：宏任务级（setTimeout 0）——微任务不足以让浏览器处理
+    输入事件与渲染帧（大文件写入期间保持界面可交互的关键）。 */
+function yieldToMainThread(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/**
+ * web 流式直迁：fetch 源 URI → ReadableStream 分块读 → 累积到 2MB 块 → OPFS
+ * 句柄写入 → 每块间让出主线程。checksum 在块流过时增量计算（sha256 增量
+ * update，与旧「全量字节一次算」三端口径一致，无额外 O(n) 读）。源无流
+ * （response.body 缺失的旧环境）回退一次性 arrayBuffer（原 putFromUri 行为，
+ * 保底不劣化）。
+ */
+async function webRelocateFromUri(
+    key: string,
+    uri: string,
+    options: PutFromUriOptions | undefined,
+    action: 'move' | 'copy',
+): Promise<StoredFileInfo> {
+    requestWebPersistentStorage();
+    const response = await fetch(uri);
+    if (!response.ok && response.status !== 0) {
+        throw new FileStorageError(
+            'file-storage/io',
+            `fileStorage.${action}FromUri(${key}): 源读取失败 HTTP ${response.status}`,
+        );
+    }
+    const totalHeader = Number(response.headers.get('Content-Length'));
+    const totalBytes = Number.isFinite(totalHeader) && totalHeader > 0 ? totalHeader : null;
+    const info: StoredFileInfo = {
+        key,
+        size: 0,
+        checksum: null,
+        modifiedAt: Date.now(),
+    };
+    const body = response.body;
+    if (!body) {
+        // 保底回退（无 ReadableStream 支持的旧浏览器）：一次性读入，语义同旧
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        await opfsBackend.put(key, bytes);
+        info.size = bytes.byteLength;
+        info.checksum = bytesToHex(sha256(bytes));
+        await upsertMeta(info);
+        options?.onProgress?.({ bytesWritten: info.size, totalBytes: info.size });
+        return info;
+    }
+    const hash = sha256.create();
+    const writable = await opfsBackend.openWritable(key);
+    let written = 0;
+    try {
+        const reader = body.getReader();
+        let pending: Uint8Array[] = [];
+        let pendingLength = 0;
+        const flush = async (): Promise<void> => {
+            if (pendingLength === 0) return;
+            const block = concatChunks(pending, pendingLength);
+            pending = [];
+            pendingLength = 0;
+            await writable.write(block);
+            written += block.byteLength;
+            hash.update(block);
+            options?.onProgress?.({ bytesWritten: written, totalBytes });
+            // 让出主线程：块间把控制权交还浏览器（输入/渲染不被大文件写入饿死）
+            await yieldToMainThread();
+        };
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (!value || value.byteLength === 0) continue;
+            pending.push(value);
+            pendingLength += value.byteLength;
+            if (pendingLength >= WEB_STREAM_CHUNK_BYTES) await flush();
+        }
+        await flush();
+        await writable.close();
+    } catch (error) {
+        // 写入段失败：abort 释放 OPFS 句柄锁（漏了会锁死该 key 到页面刷新），
+        // 并尽力摘除半成品文件（半文件无 checksum 无引用，留着只会被 GC 误认
+        // 在途——直接删干净）
+        await writable.abort();
+        await opfsBackend.remove(key).catch(() => undefined);
+        throw error;
+    }
+    // 元数据段在写入段收口之后、且不在半成品清理的 catch 内（对齐 put 口径：
+    // 文件已完整落盘时元数据失败不回滚文件——stat 懒计算可补 checksum，行
+    // 落库失败另有调用方回滚链）
+    info.size = written;
+    info.checksum = bytesToHex(hash.digest());
+    await upsertMeta(info);
+    return info;
+}
+
+/**
+ * native 直迁：源文件 → 目标 key 全程原生层执行（File.move/copy，promise 落
+ * 在原生线程，JS 主线程零字节拷贝——大视频落盘卡界面的根治点）；checksum
+ * 用原生 File.digest('SHA-256')（同样不进 JS 字节面，替代旧「全量字节读进
+ * JS 算哈希」的主线程 O(大小) 卡顿源）。进度：原生 relocation 无逐字节事件，
+ * 只发起点/终点两拍（总大小来自源 stat 元数据，O(1)）。非 file:// 源
+ * （content:// 等）自动回退字节路径（readUriBytes 同源限制，行为不劣化）。
+ */
+async function nativeRelocateFromUri(
+    key: string,
+    uri: string,
+    options: PutFromUriOptions | undefined,
+    action: 'move' | 'copy',
+): Promise<StoredFileInfo> {
+    if (!uri.startsWith('file://')) {
+        // 非 file:// 源（罕见：picker 特殊配置可能给 content://）：字节路径兜底，
+        // 语义/元数据口径与直迁一致，仅进度退化为终点单拍
+        const bytes = await readUriBytes(uri);
+        const info: StoredFileInfo = {
+            key,
+            size: bytes.byteLength,
+            checksum: bytesToHex(sha256(bytes)),
+            modifiedAt: null,
+        };
+        const file = resolve(key);
+        file.parentDirectory.create({ idempotent: true, intermediates: true });
+        await file.write(bytes);
+        info.modifiedAt = file.modificationTime;
+        await upsertMeta(info);
+        options?.onProgress?.({ bytesWritten: info.size, totalBytes: info.size });
+        return info;
+    }
+    const source = new File(uri);
+    if (!source.exists) {
+        throw new FileStorageError(
+            'file-storage/not-found',
+            `fileStorage.${action}FromUri(${key}): 源不存在 "${uri}"`,
+        );
+    }
+    const totalBytes = source.size;
+    options?.onProgress?.({ bytesWritten: 0, totalBytes });
+    const target = resolve(key);
+    target.parentDirectory.create({ idempotent: true, intermediates: true });
+    if (action === 'move') {
+        await source.move(target, { overwrite: true });
+    } else {
+        await source.copy(target, { overwrite: true });
+    }
+    // 原生摘要 + 原生 stat：大小/修改时间不搬运字节（digest 失败不回滚落盘——
+    // 文件已就位，不写元数据行，checksum 缺失由 stat 懒计算兜底——写空串会让
+    // stat 命中元数据行返回空 checksum，破坏「空串 ≠ 有效哈希」的消费口径）
+    let checksum: string | null = null;
+    try {
+        checksum = await target.digest('SHA-256');
+    } catch (digestError) {
+        console.warn(`[file-storage] ${action}FromUri(${key}) 原生 SHA-256 计算失败，stat 懒计算兜底:`, digestError);
+    }
+    const info: StoredFileInfo = {
+        key,
+        size: target.size,
+        checksum,
+        modifiedAt: target.modificationTime,
+    };
+    if (checksum != null) await upsertMeta(info);
+    options?.onProgress?.({ bytesWritten: info.size, totalBytes: info.size });
+    return info;
+}
+
+/**
+ * 直迁共用入口：native 原生 move/copy（O(1) JS）、web 流式分块（让步调度）。
+ * move 语义取舍：录像/录音产物（cache 临时件）用 move——原件移入存储后
+ * cache 零残留（cache 清理兼容：产物本就是会话级临时文件，移走即清理，
+ * 无需额外删除）；相册/外部产物用 copy（源归系统管理，不动原件）。
+ */
+async function relocateFromUri(
+    key: string,
+    uri: string,
+    options: PutFromUriOptions | undefined,
+    action: 'move' | 'copy',
+): Promise<StoredFileInfo> {
+    validateKey(key, `${action}FromUri`);
+    try {
+        return WEB
+            ? await webRelocateFromUri(key, uri, options, action)
+            : await nativeRelocateFromUri(key, uri, options, action);
+    } catch (error) {
+        if (error instanceof FileStorageError) throw error;
+        throw toFileStorageError(error, `fileStorage.${action}FromUri(${key})`);
+    }
+}
+
 let rootDirectory: Directory | null = null;
 
 /** 存储根目录（native 专用，懒初始化；web 走 OPFS 无此概念）。 */
@@ -167,9 +396,32 @@ export const fileStorage = {
         }
     },
 
-    /** 从本地文件 URI 直接入库（picker / 变换产物，免二次中转）。 */
+    /**
+     * 从本地文件 URI 直接入库（picker / 变换产物，免二次中转）。语义 = copy
+     * （源保留）；大文件（视频等）改用 moveFromUri/copyFromUri 直迁——本方法
+     * 保持字节路径（web 全量、native 全量），只服务小文件与无进度诉求的调用方。
+     */
     async putFromUri(key: string, uri: string): Promise<StoredFileInfo> {
         return fileStorage.put(key, await bytesFromUri(uri));
+    },
+
+    /**
+     * 【大文件直迁】从本地文件 URI 移入存储（native 原生 move，cache 录像
+     * 产物落盘专用——JS 线程零字节拷贝、原生 SHA-256；web 流式分块 + 主线程
+     * 让步），进度经 options.onProgress 上抛（节流归调用方）。move 语义：
+     * 源文件被移走（cache 临时产物零残留）；web 无文件级 move，等同流式 copy
+     * （源是浏览器临时/blob URL，会话生命周期回收）。元数据与 put 同口径。
+     */
+    async moveFromUri(key: string, uri: string, options?: PutFromUriOptions): Promise<StoredFileInfo> {
+        return relocateFromUri(key, uri, options, 'move');
+    },
+
+    /**
+     * 【大文件直迁】从本地文件 URI 拷贝入库（相册/外部产物：不动原件）。
+     * 实现与进度口径同 moveFromUri（native 原生 copy / web 流式分块）。
+     */
+    async copyFromUri(key: string, uri: string, options?: PutFromUriOptions): Promise<StoredFileInfo> {
+        return relocateFromUri(key, uri, options, 'copy');
     },
 
     /** 读取二进制内容。不存在时抛 not-found（区别于 stat 的 null）。 */

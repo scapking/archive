@@ -53,6 +53,37 @@ export const opfsBackend = {
     },
 
     /**
+     * 句柄级流式写入口（大文件分块落盘专用，2026-11-08 登记）：打开目标 key 的
+     * OPFS 可写句柄，调用方逐块 write、收口 close——「块间让出主线程」的让步
+     * 调度由调用方编排（本层只管句柄生命周期与锁释放），进度口径同理上收。
+     * 失败/中途放弃必须走返回的 abort()（RAII 收口在调用方 try/catch 内完成），
+     * 否则 OPFS 文件锁泄漏，该 key 后续读写将持续失败直到页面刷新（put 同源
+     * 教训，见其 catch 注）。
+     */
+    async openWritable(key: string): Promise<{
+        write(content: Uint8Array): Promise<void>;
+        close(): Promise<void>;
+        abort(): Promise<void>;
+    }> {
+        const { dirs, name } = splitKey(key);
+        const dir = await dirHandle(dirs, true);
+        const fileHandle = await dir.getFileHandle(name, { create: true });
+        const writable = await fileHandle.createWritable();
+        return {
+            async write(content: Uint8Array): Promise<void> {
+                await writable.write(content as FileSystemWriteChunkType);
+            },
+            async close(): Promise<void> {
+                await writable.close();
+            },
+            async abort(): Promise<void> {
+                // abort 幂等：close 之后的 abort 是无害空操作（句柄已释放）
+                await writable.abort().catch(() => undefined);
+            },
+        };
+    },
+
+    /**
      * 读字节；不存在时抛 NotFoundError（DOMException），由上层转 FileStorageError。
      * O(文件大小)：整文件读入 JS 堆——仅供真正需要字节的调用方（备份导出/
      * 校验和/二次写入）；展示类 URL 一律走 fileStorage.url 的零拷贝路径。

@@ -16,6 +16,7 @@ import {
     type ScrollViewInstance,
 } from 'react-native';
 import { VideoView, useVideoPlayer } from 'expo-video';
+import { Circle, Svg } from 'react-native-svg';
 import {
     BouncyPressable,
     LucideCheck,
@@ -36,6 +37,7 @@ import {
 import {
     MediaBlock,
     useBlockActionGestures,
+    useVideoThumbState,
 } from './media-view';
 import { usePalette } from './theme';
 import { useFileUrlState } from './use-file-url';
@@ -88,8 +90,9 @@ import { PENDING_MEDIA_ID } from '../db';
  *   3 张起左右都有，2 张时只有右侧（左相纸空缺）；视频堆卡体差异（堆叠
  *   机制与图片堆完全同一套，见 MediaDeckStack 注）：前卡 = 封面态（paused
  *   首帧 + 中央播放钮，点前卡 = 全屏播放、长按 = 操作卡），**性能红线：
- *   底层露边层绝不挂载视频播放器**——露边层 = raised 底 + 中央播放 icon
- *   占位卡（schema 无缩略图列，不背逐卡首帧提取开销），只有前卡挂 player；
+ *   底层露边层绝不挂载视频播放器**——露边层 = 缩略图 Image（2026-11-08：
+ *   store.ensureVideoThumbnail 生成的首帧 JPEG，`fileKey.thumb.jpg`；未生成
+ *   /失败回退 raised 底 + 中央播放 icon 占位卡），只有前卡挂 player；
  *   中卡横滑换位（PanResponder 方向锁：|dx|>10
  *   且 |dx|>1.5|dy| 才认领——画布纵滚零仲裁；|dx|>60 提交真转场、否则
  *   spring 回弹；左滑 = 下一张 / 右滑 = 上一张，循环），点底缘楔形带
@@ -798,18 +801,76 @@ function TextBlock({
     );
 }
 
-/** 媒体上传占位（虚线框 + spinner + 文案，与大厂上传态一致；卡片圆角与媒体块对齐）。 */
-function PendingMediaBlock({ style }: { style?: object }) {
+/**
+ * 落盘进度环（2026-11-08 进度可视化）：28px 单圈 ring——底圈 muted 25% +
+ * 进度弧 accent（strokeDashoffset 随 fraction 收口，rotate -90 从 12 点起走）。
+ * svg 矢量三端一致，无 Lottie/无第三方进度库；100ms 节流帧驱动（store
+ * mediaUploadProgress 注册表），无逐拍重渲风暴。
+ */
+function PendingMediaProgressRing({ fraction }: { fraction: number }) {
+    const palette = usePalette();
+    const RING_SIZE = 28;
+    const RING_STROKE = 3;
+    const radius = (RING_SIZE - RING_STROKE) / 2;
+    const circumference = 2 * Math.PI * radius;
+    return (
+        <Svg width={RING_SIZE} height={RING_SIZE}>
+            <Circle
+                cx={RING_SIZE / 2}
+                cy={RING_SIZE / 2}
+                r={radius}
+                stroke={palette.muted}
+                strokeWidth={RING_STROKE}
+                fill="none"
+                opacity={0.25}
+            />
+            <Circle
+                cx={RING_SIZE / 2}
+                cy={RING_SIZE / 2}
+                r={radius}
+                stroke={palette.accent}
+                strokeWidth={RING_STROKE}
+                fill="none"
+                strokeLinecap="round"
+                strokeDasharray={`${circumference}`}
+                strokeDashoffset={circumference * (1 - Math.min(1, Math.max(0, fraction)))}
+                transform={`rotate(-90 ${RING_SIZE / 2} ${RING_SIZE / 2})`}
+            />
+        </Svg>
+    );
+}
+
+/**
+ * 媒体上传占位（虚线框 + spinner/进度环 + 文案，与大厂上传态一致；卡片圆角
+ * 与媒体块对齐）。progress（0..1，store 注册表 100ms 节流帧）非空时以
+ * 「进度环 + 保存中 N%（tabular-nums）」替代 spinner——视频直迁流有逐块
+ * 进度；图片/音频字节路径无进度拍，保持 spinner 态（诚实降级，不伪造进度）。
+ */
+function PendingMediaBlock({ style, progress }: { style?: object; progress?: number }) {
     const palette = usePalette();
     return (
         <View
             style={style}
             className="h-[132px] items-center justify-center gap-2 rounded-card border border-dashed border-ink-accent/40 bg-ink-accent-bg/40 dark:border-inkd-accent/40 dark:bg-inkd-accent-bg/40"
         >
-            <ActivityIndicator color={palette.spinner} />
-            <Text className="text-[12px] text-ink-secondary dark:text-inkd-secondary">
-                正在上传…
-            </Text>
+            {progress != null ? (
+                <>
+                    <PendingMediaProgressRing fraction={progress} />
+                    <Text
+                        className="text-[12px] text-ink-secondary dark:text-inkd-secondary"
+                        style={{ fontVariant: ['tabular-nums'] }}
+                    >
+                        {`保存中 ${Math.round(progress * 100)}%`}
+                    </Text>
+                </>
+            ) : (
+                <>
+                    <ActivityIndicator color={palette.spinner} />
+                    <Text className="text-[12px] text-ink-secondary dark:text-inkd-secondary">
+                        正在上传…
+                    </Text>
+                </>
+            )}
         </View>
     );
 }
@@ -1393,40 +1454,67 @@ function DeckVideoFrontCard({
 }
 
 /**
- * 相纸卡体（视频堆露边层）：**无 player 的轻量占位卡**——性能红线的落地面。
- * 取舍（媒体域约束下三选一）：media-view 不新增「无 player 封面变体」导出
- * （本组只允许改 editor.tsx，media-view.tsx 不可动）；schema 无缩略图列，
- * 逐卡生成首帧图要背异步 IO + 缓存生命周期（#2b 注否决过的方案不回潮）——
- * 故自绘占位：raised 底 + 居中播放钮占位（黑透圆底白三角，尺寸/位置与
- * DeckVideoFrontCard 的中央播放钮同规格）。
- * 对位细节：占位钮与前卡真实封面态的钮**同位同尺寸**——收口换张时占位卡
- * 归中 → 前卡重挂（新 player 首帧就绪前同为 raised 底），钮像素恒位，
- * 「揭开 → 实体化」读感连续，无钮位跳变。
+ * 相纸卡体（视频堆露边层）：**真封面 Image（无 player）**——2026-11-08 用户
+ * 反馈「视频堆叠的底层视频没有加载封面」的修复面。旧实现是 raised 底 + 居中
+ * 播放钮的自绘占位卡（当时 schema 无缩略图列、逐卡首帧提取被否）；现缩略图
+ * 链路已建（store.ensureVideoThumbnail：attach 成功后生成 / 存量惰性回填，
+ * key = `${fileKey}.thumb.jpg`，≤512px JPEG 落 file-storage），露边层按
+ * useVideoThumbState 三态消费：
+ * - ready → 真封面 Image（同 DeckBackCard 的 mat 垫边 + cover 铺满口径，
+ *   楔形露出真实邻卡帧内容——形状语法 + 内容线索双成立）；
+ * - loading / missing（未生成/生成失败/web 无实现）→ 回退既有占位卡
+ *   （raised 底 + 居中播放钮，尺寸/位置与前卡中央钮同位同规格——收口换张
+ *   「揭开 → 实体化」读感连续，钮位不跳）。
+ * **性能红线不变**：露边层零 player（真封面是 Image 解码位图，非 VideoView
+ * ——每堆仍只有前卡挂 1 个 player 实例）。新增的成本 = thumbKey 的 url 三态
+ * 订阅（useFileUrlState：native file:// O(1) / web 会话缓存 blob，零字节
+ * 搬运），是「真封面」的必要代价；楔形带放不下失败文案，媒体缺失态仍由前卡
+ * 在归中后呈现。
  * 圆角不变量与 DeckBackCard 同款（露边层铁律）：rounded-card16 挂卡体本体
  * （className + inline DECK_CARD_RADIUS 同值双保险），transform 后依然保持，
- * 不被容器裁成直角；内层占位 View 同值圆角 + overflow-hidden（Android
- * 双保险与图堆同口径，见 DECK_CARD_RADIUS 注）；mat 垫边同 DECK_MAT（视频
- * 占位面与垫边同 tone——垫边承担「纸缘」语义于图堆，视频堆楔形以形状
- * 语法（倾斜 + 圆角）分层，tone 差由 raised vs 页底承担）。
- * 零交互、零媒体状态订阅（不挂 useFileUrlState——露边层连 url 状态都不背，
- * 楔形带放不下失败文案，媒体缺失态由前卡在归中后呈现）。
+ * 不被容器裁成直角；内层 Image/占位 View 同值圆角（Android 旋转位形双保险，
+ * 见 DECK_CARD_RADIUS 注）；mat 垫边同 DECK_MAT。
+ * 零交互纯视觉：点按命中由宿主底缘楔形带点按体承担。
  */
-function DeckVideoBackCard({ width, height }: { width: number; height: number }) {
+function DeckVideoBackCard({
+    media,
+    width,
+    height,
+}: {
+    media: JournalMediaRow;
+    width: number;
+    height: number;
+}) {
+    const { status, uri } = useVideoThumbState(media.file_key);
+    const ready = status === 'ready' && uri != null;
     return (
         <View
             className="overflow-hidden rounded-card bg-ink-raised dark:bg-inkd-raised"
             style={{ width, height, padding: DECK_MAT, borderRadius: DECK_CARD_RADIUS }}
         >
-            {/* 内层同值圆角 + overflow-hidden 双保险（Android 与图堆同口径，
-                占位面随卡体圆角保持，见 DECK_CARD_RADIUS 注） */}
-            <View
-                className="flex-1 items-center justify-center"
-                style={{ overflow: 'hidden', borderRadius: DECK_CARD_RADIUS }}
-            >
-                <View className="h-12 w-12 items-center justify-center rounded-full bg-black/40">
-                    <LucidePlay size={20} color="#FFFFFF" strokeWidth={2.2} />
+            {ready ? (
+                <Image
+                    source={{ uri }}
+                    style={{
+                        width: width - DECK_MAT * 2,
+                        height: height - DECK_MAT * 2,
+                        // 内层同值圆角双保险（Android 旋转位形下不依赖父裁切）
+                        borderRadius: DECK_CARD_RADIUS,
+                    }}
+                    resizeMode="cover"
+                />
+            ) : (
+                /* 内层同值圆角 + overflow-hidden 双保险（Android 与图堆同口径，
+                    占位面随卡体圆角保持，见 DECK_CARD_RADIUS 注） */
+                <View
+                    className="flex-1 items-center justify-center"
+                    style={{ overflow: 'hidden', borderRadius: DECK_CARD_RADIUS }}
+                >
+                    <View className="h-12 w-12 items-center justify-center rounded-full bg-black/40">
+                        <LucidePlay size={20} color="#FFFFFF" strokeWidth={2.2} />
+                    </View>
                 </View>
-            </View>
+            )}
         </View>
     );
 }
@@ -1541,11 +1629,11 @@ function SelectionCheck({ selected }: { selected: boolean }) {
  *   图片堆：前卡 DeckFrontCard（Image 封面）+ 露边层 DeckBackCard（真实
  *     邻图内容，楔形有内容线索）；
  *   视频堆：前卡 DeckVideoFrontCard（封面态，仅此卡挂 player，点前卡 =
- *     全屏播放）+ 露边层 DeckVideoBackCard（raised 底 + 中央播放 icon
- *     占位卡，**绝不挂载视频播放器**——性能红线，见其注；schema 无缩略
- *     图列，楔形露 tone 不露内容，形状语法承担可读性）；收口换张前卡按
- *     media.id 重挂（player 随内容轮转重建，避免 replaceAsync 异步窗口的
- *     错内容闪帧，见 DeckVideoFrontCard 注）；
+ *     全屏播放）+ 露边层 DeckVideoBackCard（**缩略图 Image 真封面**——
+ *     store.ensureVideoThumbnail 链路，未生成/失败回退 raised 底 + 中央
+ *     播放 icon 占位卡；**绝不挂载视频播放器**——性能红线，见其注）；
+ *     收口换张前卡按 media.id 重挂（player 随内容轮转重建，避免
+ *     replaceAsync 异步窗口的错内容闪帧，见 DeckVideoFrontCard 注）；
  *   音频成员（仅显式组）：前卡 DeckAudioFrontCard（AudioBlock 常驻操作面）
  *     + 露边层 DeckAudioBackCard（raised 底 + 声纹 icon 占位，零订阅）。
  * 多选模式（selection prop，合并堆叠交互流）：非 null 时前卡点按 = 切换
@@ -1616,7 +1704,7 @@ function SelectionCheck({ selected }: { selected: boolean }) {
  *   收敛——「放平在堆上」的落定）；相纸恒在中卡之下，随出卡让位逐步
  *   揭开；330ms deadline 统一收口（finishAdvance：全值 snap 复位 +
  *   advancing 闩释放 + 索引轮转，同批 React 提交零闪帧——图片堆归中相纸
- *   终态与轮转后中卡静止帧像素恒等；视频堆归中面 = 占位卡，重挂后 raised
+ *   终态与轮转后中卡静止帧像素恒等；视频堆归中面 = 缩略图真封面（未生成回退占位卡），重挂后 raised
  *   底 + 播放钮与前卡加载态同语言，内容正确性优先于像素恒等）；
  * - 滑动提交：方向锁认领后 Animated.event 跟手写 frontX（仅中卡跟手——
  *   相纸是「堆叠在场」的静态语义，转场才入场，拖拽视差属锦上添花不做，
@@ -1658,8 +1746,9 @@ function SelectionCheck({ selected }: { selected: boolean }) {
  *
  * 性能口径：图片堆任意 N 最多挂载 3 个图片实例（左/中/右三槽，N=2 恒
  * 2 个），转场不增实例（无第四渲染位——归中相纸复用本槽渲染位，内容零
- * 切换）；视频堆每堆仅前卡挂 1 个 player 实例、露边层零 player（raised +
- * 播放 icon 占位卡，连媒体状态订阅都不挂），收口换张 = 旧 player 卸载
+ * 切换）；视频堆每堆仅前卡挂 1 个 player 实例、露边层零 player（缩略图
+ * Image 真封面，未生成回退占位卡——仅 thumbKey 的 url 三态订阅，零字节
+ * 搬运），收口换张 = 旧 player 卸载
  * 释放 + 新 player 挂载（同批 React 提交），任意时刻每堆 ≤1；两种堆
  * 其余成员都留在 blocks 数据里，换位只是索引轮转（数量无上限）；组内
  * 单删/移动 → buildRenderUnits 重派生（clamp/解散免费获得），deck 实例
@@ -2220,7 +2309,11 @@ function MediaDeckStack({
                             自然组恒同 kind）：图 = 真实邻图 / 视频 = 无 player 占位 /
                             音频 = 声纹占位（露边层零播放器零订阅，性能红线） */}
                         {leftItem.deckKind === 'video' ? (
-                            <DeckVideoBackCard width={cardWidth} height={cardHeight} />
+                            <DeckVideoBackCard
+                                media={leftItem.media}
+                                width={cardWidth}
+                                height={cardHeight}
+                            />
                         ) : leftItem.deckKind === 'audio' ? (
                             <DeckAudioBackCard width={cardWidth} height={cardHeight} />
                         ) : (
@@ -2235,12 +2328,16 @@ function MediaDeckStack({
             ) : null}
             {/* 右相纸槽 = 下一张（zIndex 2 恒定，left 槽位形镜像 +4°）：right
                 通道恒挂，转场时即归中卡卡体（图堆内容零切换本就渲染目标图；
-                视频堆归中面 = 占位卡，前卡实体化在收口帧重挂完成） */}
+                视频堆归中面 = 缩略图真封面/占位卡回退，前卡实体化在收口帧重挂完成） */}
             {cardWidth > 0 && rightItem ? (
                 <View style={[cardSlot, { zIndex: 2 }]} pointerEvents="none">
                     <DeckAnimatedSlot style={[{ flex: 1 }, rightSlotStyle]}>
                         {rightItem.deckKind === 'video' ? (
-                            <DeckVideoBackCard width={cardWidth} height={cardHeight} />
+                            <DeckVideoBackCard
+                                media={rightItem.media}
+                                width={cardWidth}
+                                height={cardHeight}
+                            />
                         ) : rightItem.deckKind === 'audio' ? (
                             <DeckAudioBackCard width={cardWidth} height={cardHeight} />
                         ) : (
@@ -2480,6 +2577,14 @@ type BlockEditorProps = {
      * **有序**清单的 Set 投影（合并保持选择顺序）。
      */
     selection?: { selectedIds: ReadonlySet<string>; onToggle(blockId: string): void } | null;
+    /**
+     * pending 占位块的落盘进度表（2026-11-08 进度可视化）：key = pending 占位
+     * 块 id（store.mediaUploadProgress 注册表的 pending 键投影，屏层负责过滤
+     * capture: 会话任务键），value = 0..1（100ms 节流帧）。有值的占位块以
+     * 「进度环 + 保存中 N%」渲染；缺省/无值的保持 spinner（字节路径无进度拍，
+     * 诚实降级）。引用恒等由屏层恒等键 memo 保证（会话任务进度帧不击穿画布）。
+     */
+    progressByPendingId?: Readonly<Record<string, number>>;
     onChange(blocks: JournalBlock[]): void;
     /** 文本块聚焦（屏层目前只借此清空待聚焦标记）。 */
     onFocusText?(id: string): void;
@@ -2504,6 +2609,7 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(funct
         focusTextId,
         canvas,
         selection,
+        progressByPendingId,
         onChange,
         onFocusText,
         onBlurText,
@@ -2645,7 +2751,13 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(funct
                     marginBottom: mediaMargin(blocks[index + 1]),
                 };
                 if (isPending(block))
-                    return <PendingMediaBlock key={block.id} style={verticalMargin} />;
+                    return (
+                        <PendingMediaBlock
+                            key={block.id}
+                            style={verticalMargin}
+                            progress={progressByPendingId?.[block.id]}
+                        />
+                    );
                 const media = mediaById.get(block.mediaId);
                 if (!media) return null;
                 // 多选模式（合并堆叠）：媒体块点按 = 切换选中，全屏/长按被选中
