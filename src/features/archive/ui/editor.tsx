@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, forwardRef } from 'react';
 import {
     AccessibilityInfo,
     ActivityIndicator,
     Animated,
+    Dimensions,
     Easing,
     Image,
     Keyboard,
@@ -136,7 +137,8 @@ export const EDITOR_RHYTHM = {
     /** 媒体↔媒体：多图节奏与图文一致。 */
     mediaToMedia: 16,
     /** 报头→首段：报头 pb-2(8dp) + 画布 paddingTop(16dp) 叠加（消费点在
-     *  journal-edit-screen 的报头容器与 ScrollView contentContainerStyle）。 */
+     *  journal-edit-screen 的报头容器与画布空白收键层 paddingTop——原
+     *  contentContainerStyle 的画布顶距已下沉到收键层，见其注）。 */
     mastheadToFirstBlock: 24,
 } as const;
 
@@ -171,7 +173,7 @@ const MICRO_BUTTON = 28;
 const MICRO_SLOP = 6;
 
 /* ------------------------------------------------------------------ */
-/* 三端键盘输入适配（#12，一处 helper 收口）                             */
+/* 三端键盘适配与聚焦定位（#12b「最佳位置」，一处 helper 收口）           */
 /* ------------------------------------------------------------------ */
 
 /**
@@ -183,47 +185,286 @@ export type EditorCanvasHandle = {
     readonly offsetRef: React.RefObject<number>;
 };
 
-/** 可视区底缘的呼吸余量（窗口坐标口径；adjustResize 下窗口底 = 键盘上缘）。 */
+/** 键盘/底部遮挡区上方的呼吸余量（「最佳位置」定义②，dp，窗口坐标口径）。 */
 const FOCUS_CLEARANCE = 24;
-/** 键盘弹起后的量测延时：adjustResize 重排在键盘动画开始即生效，160ms 足以
- *  让重排后的布局落稳，再量测/落位一次到位。 */
+/** 可读锚线（「最佳位置」定义③）：可视区顶部下方 1/3——需要滚动入位时段顶
+ *  锚到这条线（可读动线优于贴键盘线）；只在「需要滚动」时消费，已入位零滚动。 */
+const FOCUS_ANCHOR_RATIO = 1 / 3;
+/** 键盘弹起/变化后的量测延时（ms）：Android adjustResize 重排在键盘动画开始
+ *  即生效，160ms 足以让重排后的布局落稳，再量测/落位一次到位；iOS 走键盘
+ *  事件自带 duration 排程（KeyboardAvoidingView padding 与键盘同长），无事件
+ *  时长可用（硬件键盘等）时回落本值。 */
 const FOCUS_MEASURE_DELAY = 160;
+/** iOS 键盘事件 duration 之后的布局落稳垫片（ms）：KAV padding 与系统 insets
+ *  补偿动画的收尾余量，垫在其后量测才能量到终位形。 */
+const KEYBOARD_SETTLE_PADDING = 80;
+/** adjustResize 重排判定容差（dp）：键盘可见时 |当前窗口高 − 收起态基线| 超过
+ *  本值 → 本机型窗口已收缩（量测即真实可视区）；未超 → 问题机型（窗口不随
+ *  resize 收缩，既有 #12 注），用键盘高度换算可视区底缘。 */
+const KEYBOARD_WINDOW_RESIZE_TOLERANCE = 8;
+
+/** 键盘度量快照（窗口坐标口径；Android 未重排机型兜底换算的依据）。 */
+type KeyboardMetrics = {
+    visible: boolean;
+    /** 键盘高度（最近一次键盘事件 endCoordinates.height，dp）。 */
+    height: number;
+    /** 键盘收起态的窗口高基线：判定 adjustResize 是否收缩窗口的参照。 */
+    baseWindowHeight: number;
+    /** 最近一次键盘事件的动画时长（ms；iOS 排程用，Android 恒 0）。 */
+    lastEventDurationMs: number;
+};
 
 /**
- * 聚焦段滚到可见（#12 三端口径唯一实现，Android 专用补偿）：
- * - iOS：画布 ScrollView automaticallyAdjustKeyboardInsets 原生补偿 → 跳过；
- * - Web：浏览器对 focus 目标有原生 scroll-into-view → 跳过；
- * - Android：adjustResize 整体重排但滚动位置不动，聚焦段（尤其「+ → 添加
- *   输入框」追加的末段）会被键盘盖住 → 延时后与画布可视区**同轮**
- *   measureInWindow（同一坐标系；Android 的 Dimensions window 高在部分机型
- *   不随 adjustResize 收缩，不可作基准），聚焦段底缘越过可视区即按越出量
- *   scrollTo。幂等：已可见零滚动，不扰动当前阅读位置。
- *
- * @returns 撤销句柄（卸载/再次聚焦时清理，防延时量测落在已卸载节点上）。
+ * 键盘度量与事件分发单例（编辑器域内共享，引用计数订阅）：聚焦定位器激活
+ * 期间各挂一个回调，首个订阅者安装 Keyboard 监听、末个卸载者拆除——段落
+ * 聚焦切换高频发生，订阅成本由单例摊平；键盘高度变化（#12b 触发②）经此
+ * 分发给所有激活中的定位器。web 不安装（浏览器原生 focus scroll-into-view，
+ * 维持现状）。
  */
-export function scrollFocusedBlockIntoView(
+const keyboardChangeListeners = new Set<() => void>();
+let keyboardTrackingSubs: Array<{ remove(): void }> | null = null;
+let keyboardTrackingRefCount = 0;
+let keyboardMetrics: KeyboardMetrics | null = null;
+/** 跨会话记忆的键盘高度（激活时键盘已可见的罕见时序下基线回推用）。 */
+let lastKnownKeyboardHeight = 0;
+
+const notifyKeyboardChanged = () => {
+    for (const listener of keyboardChangeListeners) listener();
+};
+
+/** 键盘收起态重采窗口高基线（旋转/分屏后基线漂移的自愈点）。 */
+const refreshKeyboardBase = () => {
+    if (keyboardMetrics && !keyboardMetrics.visible) {
+        keyboardMetrics.baseWindowHeight = Dimensions.get('window').height;
+    }
+};
+
+const markKeyboardShown = (event: {
+    endCoordinates: { height: number; duration?: number };
+}) => {
+    if (!keyboardMetrics) return;
+    keyboardMetrics.visible = true;
+    keyboardMetrics.height = event.endCoordinates.height;
+    // Android didShow 事件的 endCoordinates 无 duration 字段（did 系只在动画
+    // 结束后派发），按 0 处理 → 排程回落固定延时档
+    keyboardMetrics.lastEventDurationMs = Math.max(
+        0,
+        (event.endCoordinates.duration || 0) * 1000,
+    );
+    lastKnownKeyboardHeight = event.endCoordinates.height;
+    notifyKeyboardChanged();
+};
+
+const markKeyboardHidden = () => {
+    if (!keyboardMetrics) return;
+    keyboardMetrics.visible = false;
+    keyboardMetrics.lastEventDurationMs = 0;
+    refreshKeyboardBase();
+    notifyKeyboardChanged();
+};
+
+function acquireKeyboardTracking(): void {
+    if (Platform.OS === 'web') return;
+    keyboardTrackingRefCount += 1;
+    if (keyboardTrackingSubs) return;
+    // 首个订阅者：基线采样。激活时键盘已可见的罕见时序（后台切回快速重聚焦）
+    // 按记忆键盘高回推收起态基线；正常时序（聚焦先于键盘弹出）直接采当前
+    // 窗口高。keyboardDidHide 时也会重采（旋转/分屏基线漂移自愈）。
+    const windowH = Dimensions.get('window').height;
+    const visibleInitially = Keyboard.isVisible?.() ?? false;
+    keyboardMetrics = {
+        visible: visibleInitially,
+        height: lastKnownKeyboardHeight,
+        baseWindowHeight: windowH + (visibleInitially ? lastKnownKeyboardHeight : 0),
+        lastEventDurationMs: 0,
+    };
+    const subs: Array<{ remove(): void }> = [];
+    if (Platform.OS === 'ios') {
+        // iOS 全事件系（will 系先于动画，可拿 duration 排程；WillChangeFrame
+        // 覆盖键盘形态变化——quicktype 收展/外接键盘切换的高度变化触发②）
+        subs.push(
+            Keyboard.addListener('keyboardWillShow', markKeyboardShown),
+            Keyboard.addListener('keyboardWillChangeFrame', markKeyboardShown),
+            Keyboard.addListener('keyboardWillHide', markKeyboardHidden),
+        );
+    } else {
+        // Android 只有 did 系（重排已完成或进行中，160ms 延时后量测落稳）；
+        // 高度变化（候选词栏展开等）会再次 didShow → 自然覆盖触发②
+        subs.push(
+            Keyboard.addListener('keyboardDidShow', markKeyboardShown),
+            Keyboard.addListener('keyboardDidHide', markKeyboardHidden),
+        );
+    }
+    keyboardTrackingSubs = subs;
+}
+
+function releaseKeyboardTracking(): void {
+    if (keyboardTrackingRefCount > 0) keyboardTrackingRefCount -= 1;
+    if (keyboardTrackingRefCount > 0 || !keyboardTrackingSubs) return;
+    for (const sub of keyboardTrackingSubs) sub.remove();
+    keyboardTrackingSubs = null;
+    keyboardMetrics = null; // 归零重采：不跨编辑器实例残留陈旧基线
+}
+
+/** 聚焦段入位的门档：`partial` = 段越出可视带即修（Android 全量补偿口径）；
+ *  `fullyHidden` = 整段完全不可见才修（iOS automaticallyAdjustKeyboardInsets
+ *  模式防双写打架——理由见 createFocusedBlockPositioner 注）。 */
+export type FocusedBlockGate = 'partial' | 'fullyHidden';
+
+export type FocusedBlockPositioner = {
+    /** 聚焦激活：订阅键盘事件 + 立即排程一次落位（幂等，重复激活只补排程）。 */
+    activate(): void;
+    /** 失焦去激活：撤销在途排程 + 摘除键盘订阅（blur 后零落位扰动）。 */
+    deactivate(): void;
+    /** 追加一拍落位排程（内容增高/键盘变化复用；未激活时空操作）。 */
+    schedule(): void;
+    /** 卸载清理（= deactivate）。 */
+    dispose(): void;
+};
+
+/**
+ * 聚焦段「最佳位置」定位器（#12b 三端口径唯一实现）。「最佳」定义：
+ * ① 聚焦段完整可见（顶不越可视区顶、底不越键盘上缘）；
+ * ② 键盘/底部遮挡区上方留 ≥FOCUS_CLEARANCE 24dp 呼吸；
+ * ③ 需要滚动入位时段顶锚到可视区顶下 1/3 线（可读动线，优于贴键盘线）。
+ *
+ * 触发时机（全部收口到 schedule 的 cancel→重排程，同窗口触发合并为一拍）：
+ * ① 聚焦时（activate；含「+ → 添加输入框」切段聚焦的 autoFocus 通道）；
+ * ② 键盘高度变化（singleton 分发：Android keyboardDidShow/DidHide、iOS
+ *    keyboardWillShow/WillChangeFrame/WillHide——Keyboard.addListener 引用
+ *    计数订阅，随激活/去激活进出）；
+ * ③ 聚焦段内容增高（TextBlock onContentSizeChange → schedule，激活闸内）；
+ * ④ 切段聚焦（同①）。
+ *
+ * 计算口径（ScrollView 与聚焦段同轮 measureInWindow，同一窗口坐标系）：
+ * - 可视区 = [ScrollView 顶缘, min(ScrollView 底缘, 键盘上缘)]；Android 问题
+ *   机型（adjustResize 不收缩窗口）用键盘度量换算上缘兜底——窗口高与收起态
+ *   基线差超容差视为「已收缩」（量测即真实可视区），否则按 窗口高 − 键盘高
+ *   换算（对重排时序鲁棒：160ms 处重排未落地也会被换算分支校正）；
+ * - 目标滚动量：段高放得下「锚线→安全线」带 → 段顶锚 1/3 线（三条全满足）；
+ *   高段放不下 → 底缘贴安全线优先（光标通常在增长中的段尾，完整可见优先于
+ *   1/3 锚）；高段只切顶 → 段顶拉回可视区顶（贴顶是高段下的物理最优）；
+ * - 幂等/去重：整段已在可视带内零滚动；目标与当前滚动位置差 <1dp 零滚动
+ *   （量测亚像素抖动/同位重复触发不产生第二跳）；
+ * - 平滑接管：每拍执行都重新量测（滚动动画中量到的是中间位形），新目标从
+ *   当前位置续算——滚动动画被新一轮触发平滑接管，不回跳不叠加。
+ *
+ * 平台差异（gate 参数，唯一分叉点）：
+ * - Android / `partial`：段越出可视带即修。adjustResize 只保证重排、不保证
+ *   滚动位，全量补偿是既有 #12 口径的延续（叠加 1/3 锚线升级）；
+ * - iOS / `fullyHidden`：automaticallyAdjustKeyboardInsets 是主补偿（与键盘
+ *   动画同源同帧、与 keyboardDismissMode="interactive" 兼容），手动 scrollTo
+ *   是第二个 offset 写入者，并发写入会「先跳后拉」打架——故只在整段完全
+ *   不可见（系统补偿失效/来不及的罕见时序）时补一次，且执行延时 = 键盘事件
+ *   duration + 垫片（系统补偿动画收尾后量测：系统已修好则幂等闸短路，
+ *   无双写）；iOS 上「1/3 锚线」让位给系统同步动画（收益边际小，代价是
+ *   放弃同帧动画，不划算）；
+ * - Web：定位器不创建（浏览器对 focus 目标有原生 scroll-into-view，维持现状）。
+ */
+export function createFocusedBlockPositioner(
     canvas: EditorCanvasHandle,
-    input: React.ComponentRef<typeof TextInput> | null,
-): () => void {
-    if (Platform.OS !== 'android' || !input) return () => undefined;
-    const timer = setTimeout(() => {
+    inputRef: React.RefObject<React.ComponentRef<typeof TextInput> | null>,
+    gate: FocusedBlockGate,
+): FocusedBlockPositioner {
+    let active = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const cancel = () => {
+        if (timer != null) {
+            clearTimeout(timer);
+            timer = null;
+        }
+    };
+
+    const execute = () => {
+        timer = null;
         const scroller = canvas.ref.current;
-        if (!scroller) return;
+        const node = inputRef.current;
+        if (!scroller || !node) return;
         scroller.measureInWindow((_sx, sy, _sw, sh) => {
             // 0/NaN 防线：量测失败或重排未落地时不动滚动位置
             if (!Number.isFinite(sy) || !Number.isFinite(sh) || sh <= 0) return;
-            const safeBottom = sy + sh - FOCUS_CLEARANCE;
-            input.measureInWindow((_x, y, _width, height) => {
-                if (!Number.isFinite(y) || !Number.isFinite(height)) return;
-                if (y + height <= safeBottom) return;
-                scroller.scrollTo({
-                    y: Math.max(0, canvas.offsetRef.current + (y + height - safeBottom)),
-                    animated: true,
-                });
+            let visibleTop = sy;
+            let visibleBottom = sy + sh;
+            // Android 未重排机型兜底（见注计算口径）：窗口高不随 adjustResize
+            // 收缩时 ScrollView 底缘仍含键盘区，按键盘度量换算上缘取 min
+            if (Platform.OS === 'android' && keyboardMetrics?.visible) {
+                const windowH = Dimensions.get('window').height;
+                const resized =
+                    Math.abs(windowH - keyboardMetrics.baseWindowHeight) >
+                    KEYBOARD_WINDOW_RESIZE_TOLERANCE;
+                if (!resized) {
+                    visibleBottom = Math.min(visibleBottom, windowH - keyboardMetrics.height);
+                }
+            }
+            const safeBottom = visibleBottom - FOCUS_CLEARANCE;
+            const anchorY = visibleTop + (visibleBottom - visibleTop) * FOCUS_ANCHOR_RATIO;
+            node.measureInWindow((_x, y, _width, height) => {
+                if (!Number.isFinite(y) || !Number.isFinite(height) || height <= 0) return;
+                const bottomOverflow = y + height - safeBottom;
+                const topOverflow = visibleTop - y;
+                if (gate === 'fullyHidden') {
+                    // iOS insets 模式门：整段完全不可见才补位（防双写打架，见注）
+                    if (y + height > visibleTop && y < visibleBottom) return;
+                } else if (bottomOverflow <= 0 && topOverflow <= 0) {
+                    return; // 幂等：整段已在可视带内零滚动
+                }
+                // 目标滚动量（见注计算口径）：可读锚优先，高段底缘可见优先
+                const anchorDelta = y - anchorY;
+                let delta: number;
+                if (height <= safeBottom - anchorY) {
+                    delta = anchorDelta; // 段顶锚 1/3 线（三条全满足）
+                } else if (bottomOverflow > 0) {
+                    delta = bottomOverflow; // 高段：底缘贴安全线（含 24dp 呼吸）
+                } else {
+                    delta = y - visibleTop; // 高段只切顶：顶缘拉回可视区
+                }
+                const target = Math.max(0, canvas.offsetRef.current + delta);
+                // 去重：目标与当前位置一致不重复滚（亚像素抖动/同位重复触发）
+                if (Math.abs(target - canvas.offsetRef.current) < 1) return;
+                // RN 核心 scrollTo 无 duration 参数（web 专有），native 用平台
+                // 默认短滚动动画（iOS ~300ms / Android 固定档），符合短程口径
+                scroller.scrollTo({ y: target, animated: true });
             });
         });
-    }, FOCUS_MEASURE_DELAY);
-    return () => clearTimeout(timer);
+    };
+
+    const schedule = () => {
+        if (!active) return;
+        if (timer != null) clearTimeout(timer); // 新一轮触发平滑接管（同窗口合并）
+        // iOS：键盘动画时长 + 垫片后量测（KAV padding 与系统补偿都收尾，量到
+        // 终位形）；Android：固定延时（adjustResize 重排即生效口径）
+        const kbDuration = keyboardMetrics?.lastEventDurationMs ?? 0;
+        const delay =
+            Platform.OS === 'android' || kbDuration <= 0
+                ? FOCUS_MEASURE_DELAY
+                : kbDuration + KEYBOARD_SETTLE_PADDING;
+        timer = setTimeout(execute, delay);
+    };
+
+    // 键盘事件回调（触发②）：定位器激活期间才排程（闸在 schedule 内）
+    const notify = () => schedule();
+
+    const activate = () => {
+        if (active) {
+            schedule(); // 幂等：重复激活只补一拍
+            return;
+        }
+        active = true;
+        acquireKeyboardTracking();
+        keyboardChangeListeners.add(notify);
+        schedule();
+    };
+
+    const deactivate = () => {
+        if (!active) return;
+        active = false;
+        keyboardChangeListeners.delete(notify);
+        releaseKeyboardTracking();
+        cancel(); // 失焦撤销在途落位（blur 后不再扰动）
+    };
+
+    return { activate, deactivate, schedule, dispose: deactivate };
 }
 
 /** 占位文案（#3 内聚在统一组件，调用处不再各自传）：空白页引导 vs 续写。 */
@@ -251,6 +492,8 @@ function TextBlock({
     onChange,
     onFocus,
     onBlur,
+    onInputFocus,
+    onInputBlur,
 }: {
     value: string;
     editable: boolean;
@@ -259,11 +502,15 @@ function TextBlock({
     autoFocus?: boolean;
     /** 落笔区位：整篇唯一段（空笔记）为 true——只切换占位文案档位。 */
     firstBlock?: boolean;
-    /** 画布协作句柄：聚焦时请求滚动补偿（helper 内部带三端平台判定）。 */
+    /** 画布协作句柄：聚焦时创建「最佳位置」定位器（三端平台判定内聚）。 */
     canvas?: EditorCanvasHandle;
     onChange(text: string): void;
     onFocus?(): void;
     onBlur?(): void;
+    /** TextInput 实例焦点上报（聚焦/失焦均传实例）：画布空白收键层的 blur
+     *  收口通道，BlockEditor 汇总当前聚焦段引用（屏层经 handle 消费）。 */
+    onInputFocus?(input: React.ComponentRef<typeof TextInput> | null): void;
+    onInputBlur?(input: React.ComponentRef<typeof TextInput> | null): void;
 }) {
     const palette = usePalette();
     const inputRef = useRef<React.ComponentRef<typeof TextInput>>(null);
@@ -300,28 +547,40 @@ function TextBlock({
         }
         prevWrittenRef.current = written;
     }, [written]);
-    // 滚动补偿任务句柄：卸载时撤销，防延时量测落在已卸载节点上
-    const cancelScrollRef = useRef<(() => void) | null>(null);
-    useEffect(() => () => cancelScrollRef.current?.(), []);
-    /** 聚焦段滚到可见（Android；scrollFocusedBlockIntoView 内部做平台判定）。 */
-    const scrollIntoView = () => {
-        if (!canvas) return;
-        cancelScrollRef.current?.();
-        cancelScrollRef.current = scrollFocusedBlockIntoView(canvas, inputRef.current);
-    };
+    // 「最佳位置」定位器（#12b，触发①②③④的载体，见
+    // createFocusedBlockPositioner 注）：native 每段一个实例；web 不创建
+    // （浏览器原生 focus scroll-into-view 维持现状）。iOS 走 fullyHidden 门
+    // （系统 insets 主补偿防双写打架），Android 走 partial 门（全量补偿）。
+    // 键盘事件订阅在定位器内聚（引用计数 singleton），activate/deactivate
+    // 随焦点进出，卸载 dispose 兜底。
+    const positioner = useMemo(
+        () =>
+            canvas && Platform.OS !== 'web'
+                ? createFocusedBlockPositioner(
+                      canvas,
+                      inputRef,
+                      Platform.OS === 'ios' ? 'fullyHidden' : 'partial',
+                  )
+                : null,
+        [canvas],
+    );
+    // 卸载清理：撤销在途落位 + 摘键盘订阅（防延时量测落在已卸载节点上）
+    useEffect(() => () => positioner?.dispose(), [positioner]);
     // 聚焦时序（#1.2 修复项）：追加段（「+ 添加输入框」）的布局提交后再
     // focus，避免焦点/键盘与布局 churn 竞态——挂载即聚焦会在 measure 完成
     // 前抢焦点，Android 上键盘位置与光标位错乱。autoFocus 由 false→true
     // 驱动（重排不换实例，同值重渲染不重复触发）。
-    // canvas 为屏层 useMemo 固定对象，闭包捕获安全。
+    // canvas 为屏层 useMemo 固定对象，闭包捕获安全。切段聚焦（触发④）：
+    // focus 派发的 onFocus 会激活定位器，这里补一拍兜底（onFocus 未派发的
+    // 异常时序也落位；activate 幂等，重复只合并排程）。
     useEffect(() => {
         if (!autoFocus) return;
         const raf = requestAnimationFrame(() => {
             inputRef.current?.focus();
-            scrollIntoView();
+            positioner?.activate();
         });
         return () => cancelAnimationFrame(raf);
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- scrollIntoView 依赖 canvas（稳定句柄）
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- positioner 依赖 canvas（稳定句柄）
     }, [autoFocus]);
     return (
         <TextInput
@@ -336,10 +595,17 @@ function TextBlock({
                 onChange(text);
             }}
             onFocus={() => {
+                // 聚焦激活（触发①）：订阅键盘事件 + 立即排程「最佳位置」落位
+                positioner?.activate();
+                onInputFocus?.(inputRef.current);
                 onFocus?.();
-                scrollIntoView();
             }}
-            onBlur={onBlur}
+            onBlur={() => {
+                // 失焦去激活：撤销在途落位 + 摘键盘订阅（blur 后零落位扰动）
+                positioner?.deactivate();
+                onInputBlur?.(inputRef.current);
+                onBlur?.();
+            }}
             onContentSizeChange={(event) => {
                 // 自动增高：有效性（0/NaN 拒收）与取整在 readContentHeight 收口；
                 // 同值守卫丢弃逐键同值触发，防无谓 re-render / layout 抖动
@@ -348,6 +614,10 @@ function TextBlock({
                 setContentHeight((current) =>
                     current !== null && Math.abs(next - current) < 1 ? current : next,
                 );
+                // 内容增高（触发③，#12b）：聚焦中段落变高（多行回车/粘贴）后
+                // 光标行重新入位——定位器激活闸内排程（未聚焦空操作），延时正好
+                // 覆盖新高度提交与重排落稳
+                positioner?.schedule();
             }}
             placeholder={firstBlock ? LEAD_PLACEHOLDER : CONTINUE_PLACEHOLDER}
             placeholderTextColor={palette.muted}
@@ -1814,29 +2084,20 @@ function BlockMicroButton({ onPress }: { onPress: () => void }) {
 }
 
 /**
- * 块操作卡（上移/下移/删除，浮层居中弹出）由**屏层**条件渲染（禁 RN Modal），
- * 不放编辑器内——编辑器深埋 ScrollView，内联遮罩只盖内容区且随滚动跑位；
- * 屏根 inset-0 才是真全屏 scrim（范式同 InsertMenu/拍摄/录音覆盖层）。
- * 手势入口在本组件（媒体长按/双击经 onBlockAction、文本聚焦 ⋯ 钮）。
+ * 画布空白收键层的 blur 收口句柄（#K2）：屏层 Pressable（空白区 tap）经 ref
+ * 调 dismissKeyboard——收键盘 + blur 当前聚焦段，防误触闸见其注。
  */
+export type BlockEditorHandle = {
+    dismissKeyboard(): void;
+};
 
-export function BlockEditor({
-    blocks,
-    mediaById,
-    editable,
-    focusTextId,
-    canvas,
-    onChange,
-    onFocusText,
-    onBlurText,
-    onRequestActionBlock,
-}: {
+type BlockEditorProps = {
     blocks: JournalBlock[];
     mediaById: Map<string, JournalMediaRow>;
     editable: boolean;
     /** 需要聚焦的文本块 id（「+ 添加输入框」后自动续写；稳定 id 下标会漂移）。 */
     focusTextId?: string | null;
-    /** 画布滚动协作句柄（#12 键盘补偿；屏层 useMemo 固定传入）。 */
+    /** 画布滚动协作句柄（#12/#12b 聚焦定位；屏层 useMemo 固定传入）。 */
     canvas?: EditorCanvasHandle;
     onChange(blocks: JournalBlock[]): void;
     /** 文本块聚焦（屏层目前只借此清空待聚焦标记）。 */
@@ -1845,10 +2106,53 @@ export function BlockEditor({
     onBlurText?(): void;
     /** 请求弹出块操作卡（媒体长按/双击、文本聚焦 ⋯ 统一入口；屏层渲染浮层）。 */
     onRequestActionBlock?(blockId: string | null): void;
-}) {
+};
+
+/**
+ * 块操作卡（上移/下移/删除，浮层居中弹出）由**屏层**条件渲染（禁 RN Modal），
+ * 不放编辑器内——编辑器深埋 ScrollView，内联遮罩只盖内容区且随滚动跑位；
+ * 屏根 inset-0 才是真全屏 scrim（范式同 InsertMenu/拍摄/录音覆盖层）。
+ * 手势入口在本组件（媒体长按/双击经 onBlockAction、文本聚焦 ⋯ 钮）。
+ * 另 forwardRef 暴露 BlockEditorHandle（画布空白收键层的 blur 收口，#K2）。
+ */
+export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(function BlockEditor(
+    {
+        blocks,
+        mediaById,
+        editable,
+        focusTextId,
+        canvas,
+        onChange,
+        onFocusText,
+        onBlurText,
+        onRequestActionBlock,
+    },
+    ref,
+) {
     const palette = usePalette();
     // 聚焦中的文本块 id（驱动微型 ⋯ 钮显隐；媒体块手势由组件内长按/双击承担）
     const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
+    // 当前聚焦段的 TextInput 实例（#K2 空白收键的 blur 收口依据）：聚焦上报
+    // 登记实例、失焦上报按实例身份清除——快速换焦点时旧 blur 后到不清新聚焦
+    // 段的引用（与 activeBlockId 的 #4 守卫同口径）
+    const activeInputRef = useRef<React.ComponentRef<typeof TextInput> | null>(null);
+    useImperativeHandle(
+        ref,
+        () => ({
+            dismissKeyboard: () => {
+                const input = activeInputRef.current;
+                if (!input) return; // 防误触闸：无聚焦段时空点零动作
+                // 同步清引用再 blur：双击第二击必然命中空闸（防连点抖动）
+                activeInputRef.current = null;
+                // Android 的 InputMethodManager 隐藏路径不派发 blur，先 dismiss
+                // 兜底收键盘；再显式 blur 清聚焦态（⋯ 钮随 onBlur 卸载、占位符
+                // 回归、失焦即存双通道照常）
+                Keyboard.dismiss();
+                input.blur();
+            },
+        }),
+        [], // 闭包只引用稳定 ref，句柄终生不变
+    );
 
     const updateText = (id: string, text: string) => {
         const next = blocks.map((block) =>
@@ -1921,6 +2225,16 @@ export function BlockEditor({
                                     firstBlock={isFreshNote}
                                     canvas={canvas}
                                     onChange={(text) => updateText(block.id, text)}
+                                    onInputFocus={(input) => {
+                                        activeInputRef.current = input;
+                                    }}
+                                    onInputBlur={(input) => {
+                                        // 实例身份守卫：快速换焦点时旧 blur 后到，
+                                        // 不清新聚焦段的引用（#4 同口径）
+                                        if (activeInputRef.current === input) {
+                                            activeInputRef.current = null;
+                                        }
+                                    }}
                                     onFocus={() => {
                                         setActiveBlockId(block.id);
                                         onFocusText?.(block.id);
@@ -1986,7 +2300,7 @@ export function BlockEditor({
             ) : null}
         </View>
     );
-}
+});
 
 /**
  * 编辑器底部工具坞：[+] 圆钮 · 保存状态 · 字数 · 主行动。

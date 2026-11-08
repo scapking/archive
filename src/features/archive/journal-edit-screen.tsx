@@ -21,7 +21,7 @@ import {
 // 深路径注记：ChevronUp/Down 与 editor 的节奏表/画布句柄未在 ui/index.ts 出口，
 // 域内深取（CloseButton 已收口进 barrel，不再深取）。
 import { ChevronDownIcon, ChevronUpIcon } from './ui/editor-icons';
-import { EDITOR_RHYTHM, type EditorCanvasHandle } from './ui/editor';
+import { EDITOR_RHYTHM, type BlockEditorHandle, type EditorCanvasHandle } from './ui/editor';
 import { imagePicker } from '@/core/image-picker';
 import { audio } from '@/core/audio';
 import { useArchiveRevision, useArchiveStore } from './store';
@@ -136,6 +136,9 @@ export function JournalEditScreen({
         () => ({ ref: canvasRef, offsetRef: canvasOffsetRef }),
         [],
     );
+    // 空白收键层的 blur 收口句柄（#K2）：画布空白 Pressable onPress →
+    // dismissKeyboard（无聚焦段空点零动作的防误触闸在 BlockEditor 句柄内）
+    const editorRef = useRef<BlockEditorHandle | null>(null);
 
     // 载入日记 + 行程上下文（失败落明确失败态可重试，不永久 spinner）：
     // getJournal/getTrip 是裸 db 调用可 reject；ensureJournal 失败也返回 null——
@@ -691,59 +694,79 @@ export function JournalEditScreen({
                 <ScrollView
                     ref={canvasRef}
                     onScroll={(event) => {
-                        // 最近滚动位置落 ref（#12 键盘补偿的落位基准，不触发渲染）
+                        // 最近滚动位置落 ref（#12/#12b 聚焦定位的落位基准，不触发渲染）
                         canvasOffsetRef.current = event.nativeEvent.contentOffset.y;
                     }}
                     scrollEventThrottle={16}
-                    contentContainerStyle={{
-                        // 画布顶部留白 16dp：叠加报头 pb-2(8dp) 后，报头→首段净间距
-                        // 24dp（EDITOR_RHYTHM.mastheadToFirstBlock；旧口径 pb+pt=32
-                        // 已按新屏头结构收紧；360dp 小屏到平板同值，间距体系不随屏宽变化）
-                        paddingTop: 16,
-                        paddingHorizontal: 24,
-                        paddingBottom: insets.bottom + 96,
-                    }}
                     keyboardShouldPersistTaps="handled"
-                    // iOS：键盘弹出时滚动位置自动补偿，深处的聚焦段不被键盘盖住
-                    //（Android 走 adjustResize 整体重排 + editor.scrollFocusedBlockIntoView
-                    // 延时量测补偿；Web 走浏览器原生 focus scroll-into-view）
+                    // iOS：键盘弹出时滚动位置由系统 insets 自动补偿（主补偿，与键盘
+                    // 动画同源同帧），编辑器定位器只在聚焦段完全不可见时补一次
+                    // （防双写打架，见 editor.createFocusedBlockPositioner 注）；
+                    // Android 走 adjustResize 整体重排 + 定位器「最佳位置」落位；
+                    // Web 走浏览器原生 focus scroll-into-view
                     automaticallyAdjustKeyboardInsets
                     // 滚动即拖拽收键盘（journal 手感；Android interactive 回落 on-drag 语义）
                     keyboardDismissMode="interactive"
                 >
-                    {/* 阅读列：桌面端行长 ≤80 字符（可读性口径）；媒体块与正文同列宽对齐。
-                        onRequestActionBlock 恒挂接（条件置空显式化 #3）：只读关断在编辑器
-                        源头把门（微钮只按 editable 渲染、媒体块 onBlockAction 同口径），
-                        本回调仅被可编辑路径触达；undefined↔fn 翻转没有可观察收益，只增加
-                        状态翻转时的重配置窗口 */}
-                    <View className="mx-auto w-full max-w-[620px]">
-                        <BlockEditor
-                            blocks={blocks}
-
-                            mediaById={mediaById}
-                            editable={editable}
-                            focusTextId={focusTextId}
-                            canvas={canvas}
-                            onChange={setBlocks}
-                            onFocusText={() => setFocusTextId(null)}
-                            onBlurText={() => {
-                                if (journal && isEditable(journal.status)) {
-                                    void store
-                                        .getState()
-                                        .saveJournalBlocks(journal.id, blocks)
-                                        .then((saved: unknown) => {
-                                            // 新契约 Promise<boolean>：失败（false）不更新已保存时间，
-                                            // 「已保存 HH:MM」只反映真实落库；失败文案由 error 横幅展示
-                                            if (saved !== false) setSavedAt(Date.now());
-                                        })
-                                        .catch(() => {
-                                            // store 内部已落 error 文案；这里防 unhandled rejection
-                                        });
-                                }
-                            }}
-                            onRequestActionBlock={setActionBlockId}
-                        />
-                    </View>
+                    {/* 画布空白收键层（#K2）：块间 gap、内容区 padding、报头下方留白
+                        ——未被子元素认领的区域点按 → 收键盘 + blur 聚焦段。原
+                        contentContainerStyle 三向 padding 全数下沉到本层（几何不变，
+                        padding 区变成可点面）。防误触机制：
+                        - Pressable tap 语义：滚动接管的手势不触发 onPress（滚动手感
+                          中不误收键盘），长按/横滑等被子元素认领的手势同样到不了本层；
+                        - dismissKeyboard 空引用闸（BlockEditorHandle）：无聚焦段空点
+                          零动作；引用同步清空，双击第二击短路（防连点抖动）；
+                        - 子元素认领优先：输入框本体/媒体块/音频卡/⋯微钮/deck 点按带
+                          各自消费，零影响；块操作卡/重命名卡/选择器/录音/拍摄等浮层
+                          在屏根后渲染、层级恒在本层之上（不抢）；+ 浮钮 z-10 悬浮于
+                          本层之上；报头在 ScrollView 之外（报头点击无动作，保持）。
+                        触摸面零 className（房规：css-interop 按压 observable 不进
+                        手势窗口）；无障碍不挂 role（背景装饰层，非交互语义）。 */}
+                    <Pressable
+                        onPress={() => editorRef.current?.dismissKeyboard()}
+                        style={{
+                            // 画布顶部留白 16dp：叠加报头 pb-2(8dp) 后，报头→首段净间距
+                            // 24dp（EDITOR_RHYTHM.mastheadToFirstBlock；360dp 小屏到平板
+                            // 同值，间距体系不随屏宽变化）
+                            paddingTop: 16,
+                            paddingHorizontal: 24,
+                            paddingBottom: insets.bottom + 96,
+                        }}
+                    >
+                        {/* 阅读列：桌面端行长 ≤80 字符（可读性口径）；媒体块与正文同列宽对齐。
+                            onRequestActionBlock 恒挂接（条件置空显式化 #3）：只读关断在编辑器
+                            源头把门（微钮只按 editable 渲染、媒体块 onBlockAction 同口径），
+                            本回调仅被可编辑路径触达；undefined↔fn 翻转没有可观察收益，只增加
+                            状态翻转时的重配置窗口 */}
+                        <View className="mx-auto w-full max-w-[620px]">
+                            <BlockEditor
+                                ref={editorRef}
+                                blocks={blocks}
+                                mediaById={mediaById}
+                                editable={editable}
+                                focusTextId={focusTextId}
+                                canvas={canvas}
+                                onChange={setBlocks}
+                                onFocusText={() => setFocusTextId(null)}
+                                onBlurText={() => {
+                                    if (journal && isEditable(journal.status)) {
+                                        void store
+                                            .getState()
+                                            .saveJournalBlocks(journal.id, blocks)
+                                            .then((saved: unknown) => {
+                                                // 新契约 Promise<boolean>：失败（false）不更新已保存时间，
+                                                // 「已保存 HH:MM」只反映真实落库；失败文案由 error 横幅展示
+                                                if (saved !== false) setSavedAt(Date.now());
+                                            })
+                                            .catch(() => {
+                                                // store 内部已落 error 文案；这里防 unhandled rejection
+                                            });
+                                    }
+                                }}
+                                onRequestActionBlock={setActionBlockId}
+                            />
+                        </View>
+                    </Pressable>
                 </ScrollView>
 
                 {/* 罗盘 + 号（#1：底部工具坞清空，只留一枚 + 浮钮）：右手拇指区，
