@@ -11,14 +11,38 @@ import {
     View,
 } from 'react-native';
 import { CameraView } from 'expo-camera';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BouncyPressable, LucideCamera, LucideImage, LucideTrash } from '@/core/icons';
 import { SwitchCameraIcon } from './editor-icons';
 import { CloseButton } from './close-button';
-import { useReduceMotionRef } from './recorder-overlay';
+import { RecordingDot, useOverlayEntrance, useReduceMotionRef } from './recorder-overlay';
+import { usePalette } from './theme';
 import { camera } from '@/core/camera';
 
 /**
  * 拍摄域（全局会话化控制器，跨页面后台录制 + 隐形保活槽）：
+ *
+ * ══ 设计决策书（与录音卡同一套「采集仪器卡」语言，决策全文见
+ * recorder-overlay 头注）══ 本卡落地要点：
+ * - **全窗沉浸 + 中央仪器卡**：ink-scrim 全窗压暗（token）→ max-w 400 取景
+ *   仪器台（rounded-card16 取景框 + 模式行/控制行集中其下）；上下安全区
+ *   insets 收口（全窗层观感=独立页面，报头/工具坞在其下）。
+ * - **色彩只上数据**（app-screens 首条）：唯一彩色 = negative 红（REC 呼吸
+ *   点 / 录制态快门停录块，palette.negative token 收口）；chrome 全灰阶
+ *   （白 alpha 阶 / 反白 active 模式 chip——onDark 恒定，与主题无关）。
+ * - **动效（RN Animated transform/opacity + native driver，铁律）**：
+ *   ① 进场 = 层淡入 + 仪器台上浮微缩（translateY 16→0 / scale 0.97→1，
+ *   240ms ease-out；全窗层禁 scale 防边缘露缝，动效挂在取景台容器）；
+ *   ② 退场 = 进场逆放（停止 stopPending 相位驱动 160ms）；
+ *   ③ **最小化收起 = 整机淡出下沉 180ms 后再切隐形保活槽几何**（chromeGone
+ *   视图内相位：退场期间 host 仍保持全屏几何、触摸已整体释放，动效落地才
+ *   收进 1×1 保活槽——CameraView 节点恒不重挂，只换宿主 style）；重开 =
+ *   几何回全屏 + 进场重放（无缝恢复的承接）。录音卡因控制器挂载契约
+ *   （!overlayOpen → null）即时卸载，收起语义由 chip 进场承接（见其注）；
+ *   拍摄卡视图可自持相位，故这里做完整的退场动效。
+ *   ④ REC 红点呼吸（RecordingDot，reduceMotion → 静态常亮）；
+ *   ⑤ 快门白闪反馈（拍照态，opacity 0→0.9→0，60+220ms——capture 完成的
+ *   状态指示，偶发档标准动画）。
  *
  * **CameraView 卸载即停是原生约束**——因此拍摄会话的 CameraView 常驻根层级
  * （由 recording-session.RecordingSessionHost 挂载本组件），「关闭覆盖层」
@@ -156,21 +180,71 @@ export function CameraCaptureOverlay({
     // stopping 相位窗口内拒绝重录/重停/再拍，护栏兜底下窗口有界
     const stopPendingRef = useRef(stopPending);
     stopPendingRef.current = stopPending;
-    // 关闭淡出（停止/取消驱动，stopPending 相位投影）：整卡 ~160ms 淡出后随
-    // 会话卸载——无 spinner 停留（关窗即反馈，落库后台自动完成）；「减弱动
-    // 态」降级为瞬时关闭（时长 0）。CameraView 存活到产物回流，卸载时机由
-    // 会话层收尾协调（淡出只是视觉，不提前卸载）
+    const palette = usePalette();
+    const insets = useSafeAreaInsets();
+    // 进场/退场共用单一驱动值（useOverlayEntrance 头注，与录音卡同款）：
+    // 挂载即进场（层淡入 + 仪器台上浮微缩 240ms）；停止/取消（stopPending
+    // 相位投影）与最小化收起都走「进场逆放」（淡出+下沉）。CameraView 存活
+    // 到产物回流，卸载时机由会话层收尾协调（淡出只是视觉，不提前卸载）；
+    // 「减弱动态」降级为时长 0（单帧瞬时）
     const reduceMotionRef = useReduceMotionRef();
-    const fade = useRef(new Animated.Value(1)).current;
+    const { appear, run } = useOverlayEntrance(reduceMotionRef);
+    // 进场只由下方 minimized effect 统一驱动（挂载即 minimized=false 分支 →
+    // 进场重放；与重开同一条路径，避免两 effect 同帧对同值各起一个 timing）
     useEffect(() => {
         if (!stopPending) return;
-        Animated.timing(fade, {
-            toValue: 0,
-            duration: reduceMotionRef.current ? 0 : 160,
-            easing: Easing.out(Easing.cubic),
-            useNativeDriver: true,
-        }).start();
-    }, [stopPending, fade, reduceMotionRef]);
+        run(0, 160);
+    }, [stopPending, run]);
+    // 最小化收起的视图内相位（chromeGone）：minimized 翻真 → 整机淡出下沉
+    // （appear 1→0，180ms）→ 动效落地才置 chromeGone（宿主几何切 1×1 保活
+    // 槽 + 全屏态 chrome 整段卸载）——退场期间宿主保持全屏几何、触摸经宿主
+    // pointerEvents none 整体释放（退场窗口内控制行按钮全死，无幽灵点按）；
+    // 重开（minimized 翻假）→ 先回全屏几何再重放进场（几何切换与动效同帧，
+    // 无「先见 1×1 闪跳」）。CameraView 节点恒不重挂（同一 React 节点只换
+    // 宿主/帧 style），录制管线与退场动效完全解耦
+    const [chromeGone, setChromeGone] = useState(minimized);
+    useEffect(() => {
+        if (minimized) {
+            // 动画自然完成才收几何（被打断=用户快速重开，finished=false 不收）
+            run(0, 180, (finished) => {
+                if (finished) setChromeGone(true);
+            });
+            return;
+        }
+        // 挂载与重开共用本分支：先回全屏几何，再重放进场（层淡入 + 仪器台
+        // 上浮微缩 240ms，与录音卡同拍）
+        setChromeGone(false);
+        run(1, 240);
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- appear/run/reduceMotionRef 均为稳定引用
+    }, [minimized]);
+    // 快门白闪（拍照态 capture 完成的状态指示）：capturing 翻真时 opacity
+    // 0→0.9→0（60+220ms），transform/opacity 白名单键；视频录制启动不走
+    // 此反馈（mode==='photo' 门控）；层恒挂载（opacity 0 常驻）保帧内节点
+    // 身份稳定
+    const flash = useRef(new Animated.Value(0)).current;
+    const flashAnimRef = useRef<Animated.CompositeAnimation | null>(null);
+    useEffect(() => {
+        if (!capturing || mode !== 'photo') return;
+        // 上一次白闪在途（极速连拍窗口）先停再重置，避免旧 sequence 与新
+        // 起点逐帧打架；capturing 归零不打断——白闪自然淡出完成视觉闭环
+        flashAnimRef.current?.stop();
+        flash.setValue(0);
+        flashAnimRef.current = Animated.sequence([
+            Animated.timing(flash, {
+                toValue: 0.9,
+                duration: 60,
+                easing: Easing.out(Easing.quad),
+                useNativeDriver: true,
+            }),
+            Animated.timing(flash, {
+                toValue: 0,
+                duration: 220,
+                easing: Easing.out(Easing.quad),
+                useNativeDriver: true,
+            }),
+        ]);
+        flashAnimRef.current.start();
+    }, [capturing, mode, flash]);
     // 回调 ref 镜像（异步链跨渲染存活时读最新闭包）
     const onProductRef = useRef(onProduct);
     onProductRef.current = onProduct;
@@ -396,7 +470,9 @@ export function CameraCaptureOverlay({
     }, [minimized, permission, onMinimize, onClosed]);
 
     // 隐形保活槽宿主（1×1dp + opacity 0 + pointerEvents none）：不挤占布局、
-    // 不可见、零命中——原生录制管线继续采集（耗电代价见文件头注/报告）
+    // 不可见、零命中——原生录制管线继续采集（耗电代价见文件头注/报告）。
+    // 宿主几何按 chromeGone（退场动效落地）切换，不直接挂 minimized——退场
+    // 期间保持全屏几何让整机淡出下沉可见（设计决策书③）
     const keepAliveHostStyle = useMemo(
         () => ({
             position: 'absolute' as const,
@@ -409,18 +485,33 @@ export function CameraCaptureOverlay({
         }),
         [],
     );
+    // 全屏宿主（居中列 + 上下安全区 insets：取景仪器台在刘海/手势条机型不贴
+    // 边）；居中职责下沉到仪器台容器（console），宿主只管留白
     const fullHostStyle = useMemo(
+        () => ({
+            flex: 1 as const,
+            paddingHorizontal: 24,
+            paddingTop: insets.top + 16,
+            paddingBottom: insets.bottom + 24,
+        }),
+        [insets.top, insets.bottom],
+    );
+    // 取景仪器台容器（动效挂它，不挂全窗层——全窗层 scale 会露边缘缝）：
+    // 全屏 = 居中列；保活槽 = 撑满 1×1 宿主（几何无意义，仅保活）
+    const consoleFullStyle = useMemo(
         () => ({
             flex: 1 as const,
             justifyContent: 'center' as const,
             alignItems: 'center' as const,
-            paddingHorizontal: 24,
         }),
         [],
     );
-    // 相机帧样式（同一节点换布局，见文件头注）：全屏 = max-w 400 + 3:4；
-    // 保活槽 = 撑满 1×1 宿主（几何无意义，仅保活）
-    const frameStyle = minimized
+    const consoleKeepStyle = useMemo(() => ({ flex: 1 as const }), []);
+    // 相机帧样式（同一节点换布局，见文件头注）：全屏 = max-w 400 + 3:4（
+    // borderRadius 16 = rounded-card16 token 值，取景框即卡片语言的主角）；
+    // 保活槽 = 撑满 1×1 宿主（几何无意义，仅保活）。按 chromeGone 切换
+    // （与宿主几何同帧），退场期间帧保持全屏尺寸参与整机淡出
+    const frameStyle = chromeGone
         ? { flex: 1 as const }
         : {
               width: '100%' as const,
@@ -436,163 +527,216 @@ export function CameraCaptureOverlay({
     return (
         <Animated.View
             pointerEvents={stopPending ? 'none' : 'box-none'}
-            style={[StyleSheet.absoluteFill, { opacity: fade }]}
+            style={[StyleSheet.absoluteFill, { opacity: appear }]}
         >
             {/* 全屏 scrim（仅全屏态）：压暗日记画布，不接管点击（拍摄误触关闭
-                代价高），出口只有关闭钮；收起态整层卸载，画布/导航零阻塞 */}
-            {!minimized ? (
+                代价高），出口只有关闭钮；保活槽态（chromeGone）整层卸载，
+                画布/导航零阻塞；最小化退场期间随整机淡出（层 opacity 驱动） */}
+            {!chromeGone ? (
                 <View className="absolute inset-0 bg-ink-scrim dark:bg-inkd-scrim" />
             ) : null}
 
             {/* 相机宿主（恒挂载）：CameraView 卸载即停是原生约束——全屏取景卡 ↔
                 隐形保活槽只切宿主 style（同一 React 节点换布局），CameraView
-                不重挂不重开。全屏态 host = 居中列（flex-1）+ box-none（卡外
-                触摸落 scrim）；保活槽态 host = 1×1 绝对定位 + none（不可见、
-                零命中、零布局挤占），画布与其余页面交互完全自由 */}
+                不重挂不重开。几何切换挂 chromeGone（退场动效落地，见头注③）：
+                退场期间 host 保持全屏几何但 pointerEvents none（控制行整体
+                死区，无幽灵点按）；保活槽态 host = 1×1 绝对定位 + none（不可
+                见、零命中、零布局挤占），画布与其余页面交互完全自由 */}
             {permission === 'granted' ? (
                 <View
-                    style={minimized ? keepAliveHostStyle : fullHostStyle}
-                    pointerEvents={minimized ? 'none' : 'box-none'}
+                    style={chromeGone ? keepAliveHostStyle : fullHostStyle}
+                    pointerEvents={minimized || chromeGone ? 'none' : 'box-none'}
                 >
-                    <View className="relative overflow-hidden bg-black" style={frameStyle}>
-                        {/* CameraView 只作取景层：零 children，铺满帧（P0：CameraView
-                            不支持 children——WARN 见旧注；指示层 = 兄弟节点绝对覆盖） */}
-                        <CameraView
-                            ref={cameraRef}
-                            style={{ flex: 1 }}
-                            facing={facing}
-                            // expo-camera CameraMode 词表为 'picture' | 'video'；覆盖层内部
-                            // 语义叫 photo，传参处映射
-                            mode={mode === 'photo' ? 'picture' : 'video'}
-                            flash="off"
-                        />
-                        {/* 录制指示：红点 + 计时（tabular-nums 房规）；帧内左上，
-                            仅全屏态渲染（保活槽态不可见，无需指示） */}
-                        {recording && !minimized ? (
-                            <View
-                                className="absolute left-3 top-3 z-10 flex-row items-center gap-2 rounded-full bg-black/45 px-3 py-1.5"
+                    {/* 取景仪器台（动效容器，设计决策书①③）：进场 = 上浮微缩
+                        （appear 0→1），最小化/停止退场 = 进场逆放（下沉微缩）+
+                        层淡入淡出；box-none 不认领空域触摸 */}
+                    <Animated.View
+                        style={[
+                            chromeGone ? consoleKeepStyle : consoleFullStyle,
+                            {
+                                transform: [
+                                    {
+                                        translateY: appear.interpolate({
+                                            inputRange: [0, 1],
+                                            outputRange: [16, 0],
+                                        }),
+                                    },
+                                    {
+                                        scale: appear.interpolate({
+                                            inputRange: [0, 1],
+                                            outputRange: [0.97, 1],
+                                        }),
+                                    },
+                                ],
+                            },
+                        ]}
+                        pointerEvents="box-none"
+                    >
+                        <View className="relative overflow-hidden bg-black" style={frameStyle}>
+                            {/* CameraView 只作取景层：零 children，铺满帧（P0：CameraView
+                                不支持 children——WARN 见旧注；指示层 = 兄弟节点绝对覆盖） */}
+                            <CameraView
+                                ref={cameraRef}
+                                style={{ flex: 1 }}
+                                facing={facing}
+                                // expo-camera CameraMode 词表为 'picture' | 'video'；覆盖层内部
+                                // 语义叫 photo，传参处映射
+                                mode={mode === 'photo' ? 'picture' : 'video'}
+                                flash="off"
+                            />
+                            {/* 快门白闪（拍照反馈，恒挂载 opacity 0 保帧内节点身份；
+                                帧内 overflow-hidden 负责圆角裁剪） */}
+                            <Animated.View
+                                className="absolute inset-0 z-20 bg-white"
                                 pointerEvents="none"
-                            >
-                                <View className="h-2 w-2 rounded-full bg-[#DC4A5E]" />
-                                <Text
-                                    className="text-[12px] font-medium text-white"
-                                    style={{ fontVariant: ['tabular-nums'] }}
-                                >
-                                    {recordClock}
-                                </Text>
-                            </View>
-                        ) : null}
-                        {micDenied || shutterError ? (
-                            // 提示槽单例（同一位置不叠两层）：麦克风引导优先，其次快门失败
-                            <View
-                                className="absolute inset-x-3 bottom-3 z-10 items-center"
-                                pointerEvents="none"
-                            >
-                                <Text className="rounded-full bg-black/45 px-3 py-1.5 text-[12px] text-white/80">
-                                    {micDenied ? '需要麦克风权限才能录视频' : shutterError}
-                                </Text>
-                            </View>
-                        ) : null}
-                    </View>
-
-                    {/* 全屏态独有 chrome（收起态整段卸载，不影响相机帧节点身份）。
-                        模式切换命中核算（hitSlop 4 硬约束，间距 ≥ 2×hitSlop=8px）：
-                        两 chip 间距 = 容器 gap-2（8px）= 2×hitSlop，命中盒在间隙中线
-                        相接、不重叠（重叠带按绘制序右侧获胜会造成「点 A 触发 B」，
-                        见 bouncy-pressable 文件头核算规则） */}
-                    {!minimized && isVideoCaptureSupported() ? (
-                        <View className="mt-4 flex-row items-center justify-center gap-2" pointerEvents="box-none">
-                            <ModeChip
-                                label="拍照"
-                                active={mode === 'photo'}
-                                disabled={recording || stopPending}
-                                onPress={() => setMode('photo')}
+                                style={{ opacity: flash }}
                             />
-                            <ModeChip
-                                label="视频"
-                                active={mode === 'video'}
-                                disabled={recording || stopPending}
-                                onPress={() => setMode('video')}
-                            />
-                        </View>
-                    ) : null}
-
-                    {/* 归属提示（录制中，#归属铁律可视化）：停止产物固定落回发起笔记 */}
-                    {!minimized && recording && ownerHint ? (
-                        <Text className="mt-2 text-center text-[12px] text-white/60">
-                            {`停止后保存到「${ownerHint}」`}
-                        </Text>
-                    ) : null}
-
-                    {/* 控制行（全屏态）：关闭/收起 / 快门 / 翻转或取消。快门视觉 64px
-                        圆 ≥44；关闭与右钮 44px 盒（CloseButton 统一组件），三者中心距
-                        均远超 2×hitSlop(0)，核算通过。录制中语义切换：X = 收起（后台
-                        继续录制）、右钮 = 取消并丢弃（翻转在录制态本就禁用，让位给
-                        取消出口） */}
-                    {!minimized ? (
-                        <View className="mt-5 w-full max-w-[400px] flex-row items-center justify-between px-8">
-                            <CloseButton
-                                onDark
-                                onPress={recording ? onMinimize : onClosed}
-                                label={recording ? '收起并继续录制' : '关闭相机'}
-                            />
-
-                            {/* 快门大圆钮：拍照=白圆点；视频录制态=红方块停止 + 外环转红
-                                （录制态一眼可辨，不靠文字）；停止在途无 spinner——整卡
-                                淡出关闭即反馈（spinner 无宿主，关窗即返回）。#6 修复：
-                                onShutterPress 恒非空，录制态失效根因在 capturing 守卫
-                                顺序（见其注） */}
-                            <BouncyPressable onPress={onShutterPress} scaleTo={0.92} disabled={stopPending}>
+                            {/* 录制指示：呼吸红点（三卡同款唯一数据色）+ 计时
+                                （tabular-nums 房规）；帧内左上，仅全屏态渲染
+                                （保活槽态不可见，无需指示）；随整机退场淡出 */}
+                            {recording && !chromeGone ? (
                                 <View
-                                    className="h-16 w-16 items-center justify-center rounded-full"
-                                    style={{ borderWidth: 3, borderColor: recording ? '#DC4A5E80' : '#FFFFFF66' }}
-                                    accessibilityRole="button"
-                                    accessibilityLabel={
-                                        mode === 'photo' ? '拍照' : recording ? '停止录制' : '开始录制'
-                                    }
-                                    accessibilityState={{ disabled: stopPending }}
+                                    className="absolute left-3 top-3 z-10 flex-row items-center gap-2 rounded-full bg-black/45 px-3 py-1.5"
+                                    pointerEvents="none"
                                 >
-                                    {recording ? (
-                                        <View className="h-5 w-5 rounded-[3px] bg-[#DC4A5E]" />
-                                    ) : (
-                                        <View
-                                            className="h-[48px] w-[48px] rounded-full"
-                                            style={{ backgroundColor: mode === 'photo' ? '#FFFFFF' : '#DC4A5E' }}
-                                        />
-                                    )}
+                                    <RecordingDot color={palette.negative} size={8} />
+                                    <Text
+                                        className="text-[12px] font-medium text-white"
+                                        style={{ fontVariant: ['tabular-nums'] }}
+                                    >
+                                        {recordClock}
+                                    </Text>
                                 </View>
-                            </BouncyPressable>
+                            ) : null}
+                            {!chromeGone && (micDenied || shutterError) ? (
+                                // 提示槽单例（同一位置不叠两层）：麦克风引导优先，其次快门失败
+                                <View
+                                    className="absolute inset-x-3 bottom-3 z-10 items-center"
+                                    pointerEvents="none"
+                                >
+                                    <Text className="rounded-full bg-black/45 px-3 py-1.5 text-[12px] text-white/80">
+                                        {micDenied ? '需要麦克风权限才能录视频' : shutterError}
+                                    </Text>
+                                </View>
+                            ) : null}
+                        </View>
 
-                            {recording ? (
-                                <BouncyPressable onPress={cancelRecording} scaleTo={0.9} disabled={stopPending}>
+                        {/* 全屏态独有 chrome（保活槽态整段卸载，不影响相机帧节点身份；
+                            最小化退场期间保持挂载、随整机淡出下沉）。模式切换命中核算
+                            （hitSlop 4 硬约束，间距 ≥ 2×hitSlop=8px）：两 chip 间距 =
+                            容器 gap-2（8px）= 2×hitSlop，命中盒在间隙中线相接、不重叠
+                            （重叠带按绘制序右侧获胜会造成「点 A 触发 B」，见
+                            bouncy-pressable 文件头核算规则） */}
+                        {!chromeGone && isVideoCaptureSupported() ? (
+                            <View
+                                className="mt-4 flex-row items-center justify-center gap-2"
+                                pointerEvents="box-none"
+                            >
+                                <ModeChip
+                                    label="拍照"
+                                    active={mode === 'photo'}
+                                    disabled={recording || stopPending}
+                                    onPress={() => setMode('photo')}
+                                />
+                                <ModeChip
+                                    label="视频"
+                                    active={mode === 'video'}
+                                    disabled={recording || stopPending}
+                                    onPress={() => setMode('video')}
+                                />
+                            </View>
+                        ) : null}
+
+                        {/* 归属提示（录制中，#归属铁律可视化）：停止产物固定落回发起笔记 */}
+                        {!chromeGone && recording && ownerHint ? (
+                            <Text className="mt-2 text-center text-[12px] text-white/60">
+                                {`停止后保存到「${ownerHint}」`}
+                            </Text>
+                        ) : null}
+
+                        {/* 控制行（全屏态）：关闭/收起 / 快门 / 翻转或取消。快门视觉 64px
+                            圆 ≥44；关闭与右钮 44px 盒（CloseButton 统一组件），三者中心距
+                            均远超 2×hitSlop(0)，核算通过。录制中语义切换：X = 收起（后台
+                            继续录制）、右钮 = 取消并丢弃（翻转在录制态本就禁用，让位给
+                            取消出口）。快门红块/红外环用 palette.negative（状态色 token
+                            收口，替代散写 hex） */}
+                        {!chromeGone ? (
+                            <View className="mt-5 w-full max-w-[400px] flex-row items-center justify-between px-8">
+                                <CloseButton
+                                    onDark
+                                    onPress={recording ? onMinimize : onClosed}
+                                    label={recording ? '收起并继续录制' : '关闭相机'}
+                                />
+
+                                {/* 快门大圆钮：拍照=白圆点；视频录制态=红方块停止 + 外环转红
+                                    （录制态一眼可辨，不靠文字）；停止在途无 spinner——整卡
+                                    淡出关闭即反馈（spinner 无宿主，关窗即返回）。#6 修复：
+                                    onShutterPress 恒非空，录制态失效根因在 capturing 守卫
+                                    顺序（见其注） */}
+                                <BouncyPressable onPress={onShutterPress} scaleTo={0.92} disabled={stopPending}>
                                     <View
-                                        className="h-11 w-11 items-center justify-center rounded-full bg-white/10"
+                                        className="h-16 w-16 items-center justify-center rounded-full"
+                                        style={{
+                                            borderWidth: 3,
+                                            borderColor: recording ? `${palette.negative}80` : '#FFFFFF66',
+                                        }}
                                         accessibilityRole="button"
-                                        accessibilityLabel="取消录制并丢弃"
+                                        accessibilityLabel={
+                                            mode === 'photo' ? '拍照' : recording ? '停止录制' : '开始录制'
+                                        }
                                         accessibilityState={{ disabled: stopPending }}
                                     >
-                                        <LucideTrash size={20} color="#FFFFFF" strokeWidth={1.9} />
+                                        {recording ? (
+                                            <View
+                                                className="h-5 w-5 rounded-[3px]"
+                                                style={{ backgroundColor: palette.negative }}
+                                            />
+                                        ) : (
+                                            <View
+                                                className="h-[48px] w-[48px] rounded-full"
+                                                style={{
+                                                    backgroundColor:
+                                                        mode === 'photo' ? '#FFFFFF' : palette.negative,
+                                                }}
+                                            />
+                                        )}
                                     </View>
                                 </BouncyPressable>
-                            ) : (
-                                <BouncyPressable
-                                    onPress={() => {
-                                        setFacing((f) => (f === 'back' ? 'front' : 'back'));
-                                    }}
-                                    scaleTo={0.9}
-                                >
-                                    <View className="h-11 w-11 items-center justify-center rounded-full bg-white/10">
-                                        <SwitchCameraIcon size={20} color="#FFFFFF" strokeWidth={1.9} />
-                                    </View>
-                                </BouncyPressable>
-                            )}
-                        </View>
-                    ) : null}
+
+                                {recording ? (
+                                    <BouncyPressable onPress={cancelRecording} scaleTo={0.9} disabled={stopPending}>
+                                        <View
+                                            className="h-11 w-11 items-center justify-center rounded-full bg-white/10"
+                                            accessibilityRole="button"
+                                            accessibilityLabel="取消录制并丢弃"
+                                            accessibilityState={{ disabled: stopPending }}
+                                        >
+                                            <LucideTrash size={20} color="#FFFFFF" strokeWidth={1.9} />
+                                        </View>
+                                    </BouncyPressable>
+                                ) : (
+                                    <BouncyPressable
+                                        onPress={() => {
+                                            setFacing((f) => (f === 'back' ? 'front' : 'back'));
+                                        }}
+                                        scaleTo={0.9}
+                                    >
+                                        <View className="h-11 w-11 items-center justify-center rounded-full bg-white/10">
+                                            <SwitchCameraIcon size={20} color="#FFFFFF" strokeWidth={1.9} />
+                                        </View>
+                                    </BouncyPressable>
+                                )}
+                            </View>
+                        ) : null}
+                    </Animated.View>
                 </View>
-            ) : !minimized ? (
+            ) : !chromeGone ? (
                 // 权限/失败态卡（收起态不可达：minimize 仅发生在已授权录制中）
                 permission === 'checking' ? (
-                    <View className="absolute inset-0 z-50 items-center justify-center bg-ink-scrim px-6 dark:bg-inkd-scrim">
+                    <View
+                        className="absolute inset-0 z-50 items-center justify-center bg-ink-scrim px-6 dark:bg-inkd-scrim"
+                        style={{ paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }}
+                    >
                         {/* 状态卡（与取景卡同容器语言） */}
                         <View className="w-full max-w-[400px] items-center justify-center gap-3 rounded-card bg-black py-16">
                             <ActivityIndicator color="#FFFFFF" />
@@ -600,7 +744,10 @@ export function CameraCaptureOverlay({
                         </View>
                     </View>
                 ) : permission === 'unavailable' ? (
-                    <View className="absolute inset-0 z-50 items-center justify-center bg-ink-scrim px-6 dark:bg-inkd-scrim">
+                    <View
+                        className="absolute inset-0 z-50 items-center justify-center bg-ink-scrim px-6 dark:bg-inkd-scrim"
+                        style={{ paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }}
+                    >
                         {/* 失败态卡（与权限卡同容器语言）：可重试自愈，不是死黑屏 */}
                         <View className="w-full max-w-[400px] rounded-card bg-black p-5">
                             <View className="flex-row items-center justify-between">
@@ -639,7 +786,10 @@ export function CameraCaptureOverlay({
                         </View>
                     </View>
                 ) : (
-                    <View className="absolute inset-0 z-50 items-center justify-center bg-ink-scrim px-6 dark:bg-inkd-scrim">
+                    <View
+                        className="absolute inset-0 z-50 items-center justify-center bg-ink-scrim px-6 dark:bg-inkd-scrim"
+                        style={{ paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }}
+                    >
                         {/* 权限引导卡（#8 打磨轮：与拍摄/录音卡同一卡头语言——标题行 +
                             右上关闭钮；底部设置跳转 + 相册兜底双出口沿用旧口径） */}
                         <View className="w-full max-w-[400px] rounded-card bg-black p-5">

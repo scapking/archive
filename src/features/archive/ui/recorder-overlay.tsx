@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     AccessibilityInfo,
     Animated,
@@ -8,25 +8,50 @@ import {
     Text,
     View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BouncyPressable } from '@/core/icons';
-import { AudioLinesIcon } from './editor-icons';
 import { CloseButton } from './close-button';
 import { formatAudioTime } from './audio-player';
 import { usePalette } from './theme';
 
 /**
- * 录音域视图层（纯视图，控制器已上收全局会话）：
+ * 录音域视图层（纯视图，控制器已上收全局会话）——「采集仪器卡」设计语言：
  *
- * - 控制器（recorder 实例 / 计时轮询 / 声纹电平 / 会话生命周期）在
- *   features/archive/recording-session.tsx（根层级挂载，跨页面后台录制 +
- *   归属铁律的宿主）——本文件只保留两个纯 props 驱动的视图：
- * - **RecordingOverlay（展开态视图）**：卡片式浮层（#8，与拍摄卡同一套容器
- *   语言），自身零录音状态——停止 = 卡片 ~160ms 淡出关闭 + 落库转后台自动
- *   完成（横幅反馈，无 spinner 停留）；取消 = 丢弃（仅覆盖层内提供，同样
- *   淡出关闭）；X / 返回键 = 收起并继续后台录音。
+ * ══ 设计决策书（三采集统一语言：录音卡 / 拍摄卡 / 拍照卡同容器异内容）══
+ * 依据 docs/design-skills（frontend-design + design-taste-frontend/app-screens
+ * + design-linear + animate-expo；冲突时仓库规范优先）：
+ *
+ * 1. **范式：全窗沉浸 + 中央仪器卡**（卡片式新 UI 的观感=独立页面）：
+ *    ink-scrim 全窗压暗（token，onDark 恒定）→ max-w 400 仪器卡（rounded-card16
+ *    + 白 10% 细边在深场上定义卡缘）→ 卡内白 10% raised 控件。三层 tone step
+ *    分层，零阴影零渐变（app-screens「surfaces are flat」× 房规双保险）。
+ * 2. **色彩只上数据**（app-screens 首条）：全场唯一彩色 = negative 红点
+ *    （录制状态），chrome 一律灰阶（白 alpha 阶 / palette.primaryBtn 反白）。
+ * 3. **每卡只有一个主角**（frontend-design「spend boldness in one place」）：
+ *    录音卡主角 = 声纹场（真 metering 数据），拍摄卡主角 = 取景器；其余安静。
+ * 4. **动效全部 RN Animated transform/opacity + native driver**（animate-expo：
+ *    偶发交互=标准动画、按压反馈 <150ms、reduceMotion 随动画一起交付）：
+ *    - 进场 = 防跳变（preventing a jarring change）：层淡入 + 卡上浮微缩
+ *      （translateY 16→0 / scale 0.97→1，240ms ease-out cubic）；
+ *    - 退场 = 进场逆放（淡出+下沉+微缩）：停止/取消由 stopping 相位驱动
+ *      （160ms）；录音卡「最小化收起」由控制器挂载契约（!overlayOpen → null）
+ *      即时卸载——收起语义由 RecordingChip 的淡入上浮进场承接（跨卡连续性）；
+ *    - 红点呼吸 = 状态指示（state indication）：opacity 1↔0.35 @1.6s 循环，
+ *      reduceMotion 降级为静态常亮；
+ *    - 计时 30px tabular-nums（字号阶房规：数字位一律 tabular-nums）。
+ * 5. **copy 主动词、状态诚实**（frontend-design「writing」）：停止/取消/收起
+ *    并继续录音；prepare 未完成时状态标注「准备中…」（不把准备态谎报成录音中）。
+ *
+ * 控制器（recorder 实例 / 计时轮询 / 声纹电平 / 会话生命周期）在
+ * features/archive/recording-session.tsx（根层级挂载，跨页面后台录制 + 归属
+ * 铁律的宿主）——本文件只保留纯 props 驱动的视图，props 契约不变：
+ * - **RecordingOverlay（展开态视图）**：全窗沉浸仪器卡；自身零录音状态——
+ *   停止 = 卡片 ~160ms 淡出下沉关闭 + 落库转后台自动完成（横幅反馈，无
+ *   spinner 停留）；取消 = 丢弃（仅覆盖层内提供，同样淡出下沉关闭）；
+ *   X / 返回键 = 收起并继续后台录音。
  * - **RecordingChip（收起态视图）**：根层级悬浮计时胶囊（h-9 36dp 圆角胶囊，
- *   hitSlop 4 凑 44 命中），「● 录音中 0:32」，点按重开覆盖层（计时/声纹/
- *   录制态无缝恢复——状态一直在全局会话层）。
+ *   hitSlop 4 凑 44 命中），「● 录音中 0:32」（呼吸红点），点按重开覆盖层
+ *   （计时/声纹/录制态无缝恢复——状态一直在全局会话层）。
  *
  * 声纹条：RN Animated 弹簧条列（铁律：交互动画只用 RN Animated，transform
  * /opacity + native driver）。SDK58 的 recorder.getStatus().metering 在
@@ -58,10 +83,132 @@ export function useReduceMotionRef() {
     return reduceMotionRef;
 }
 
+/**
+ * 系统「减弱动态」探测（state 形态，循环动画的启停门控用）：循环动画（红点
+ * 呼吸）在探测结果就绪后才能决定启/停——ref 形态（useReduceMotionRef）只在
+ * 调用时刻读一次，管不住 effect 已启动的 loop，故循环类动画一律用本 hook。
+ * reduceMotion 语义 =「更少更轻」而非归零（animate-expo）：静态常亮保留状态
+ * 表达（颜色仍承载「录制中」），只去掉呼吸位移感。
+ */
+export function useReduceMotionState(): boolean {
+    const [reduced, setReduced] = useState(false);
+    useEffect(() => {
+        let cancelled = false;
+        AccessibilityInfo.isReduceMotionEnabled
+            ?.()
+            .then((enabled) => {
+                if (!cancelled) setReduced(!!enabled);
+            })
+            .catch(() => undefined);
+        const subscription = AccessibilityInfo.addEventListener?.('reduceMotionChanged', (enabled) => {
+            setReduced(!!enabled);
+        });
+        return () => {
+            cancelled = true;
+            subscription?.remove();
+        };
+    }, []);
+    return reduced;
+}
+
+/**
+ * 覆盖层进场/退场驱动（三卡共享）：单一 Animated.Value（0=下沉隐藏位，
+ * 1=就位）同时承担两个相位——进场 0→1（淡入+上浮+微缩），退场 1→0（进场
+ * 逆放=淡出+下沉）。同值复用天然解决「进场未完即退场」的竞争（run 内先
+ * stop 前一动画，后到者接管）。transform/opacity + native driver（铁律）；
+ * reduceMotion 降级为时长 0（单帧瞬时到位，不产生可见动画）。
+ */
+export function useOverlayEntrance(reduceMotionRef: {
+    readonly current: boolean;
+}): {
+    appear: Animated.Value;
+    run: (toValue: number, duration: number, onComplete?: (finished: boolean) => void) => void;
+} {
+    const appear = useRef(new Animated.Value(0)).current;
+    const animRef = useRef<Animated.CompositeAnimation | null>(null);
+    const run = useCallback(
+        (toValue: number, duration: number, onComplete?: (finished: boolean) => void) => {
+            // 同值竞争收口：新动画启动前停掉在途动画（后到者接管，无逐帧打架；
+            // 被停动画的 onComplete 收 finished=false，调用方据此丢弃收尾动作）
+            animRef.current?.stop();
+            animRef.current = Animated.timing(appear, {
+                toValue,
+                duration: reduceMotionRef.current ? 0 : duration,
+                easing: Easing.out(Easing.cubic),
+                useNativeDriver: true,
+            });
+            animRef.current.start(({ finished }) => onComplete?.(finished));
+        },
+        [appear, reduceMotionRef],
+    );
+    // 卸载卫生：在途动画随卸载停止（Animated 值不随组件卸载自动停）
+    useEffect(
+        () => () => {
+            animRef.current?.stop();
+        },
+        [],
+    );
+    return { appear, run };
+}
+
+/**
+ * 录制状态红点（三卡共享的「唯一数据色」）：active = 呼吸（opacity 1↔0.35，
+ * 1.6s ease-in-out 循环，state indication）；!active = 静态半亮（prepare 等
+ * 非录制态不谎报心跳——data states honest）。reduceMotion 降级为静态常亮。
+ */
+export function RecordingDot({
+    color,
+    active = true,
+    size = 8,
+}: {
+    /** 点色（调用点传 palette.negative——状态色只上数据，token 收口）。 */
+    color: string;
+    /** 是否处于录制态（false = 静态半亮，如 prepare 阶段）。 */
+    active?: boolean;
+    /** 直径 dp（默认 8 = h-2 w-2 口径）。 */
+    size?: number;
+}) {
+    const reduced = useReduceMotionState();
+    const breathe = useRef(new Animated.Value(1)).current;
+    useEffect(() => {
+        if (!active || reduced) return;
+        const loop = Animated.loop(
+            Animated.sequence([
+                Animated.timing(breathe, {
+                    toValue: 0.35,
+                    duration: 800,
+                    easing: Easing.inOut(Easing.quad),
+                    useNativeDriver: true,
+                }),
+                Animated.timing(breathe, {
+                    toValue: 1,
+                    duration: 800,
+                    easing: Easing.inOut(Easing.quad),
+                    useNativeDriver: true,
+                }),
+            ]),
+        );
+        loop.start();
+        return () => loop.stop();
+    }, [active, reduced, breathe]);
+    return (
+        <Animated.View style={{ opacity: active ? breathe : 0.45 }}>
+            <View
+                style={{
+                    width: size,
+                    height: size,
+                    borderRadius: size / 2,
+                    backgroundColor: color,
+                }}
+            />
+        </Animated.View>
+    );
+}
+
 /** 声纹条列数与几何（奇数条中轴对称，视觉重心居中）。 */
 const BAR_COUNT = 25;
 const BAR_WIDTH = 3;
-const BAR_MAX_HEIGHT = 56;
+const BAR_MAX_HEIGHT = 64;
 const BAR_GAP = 5;
 
 /** metering（dB，通常 -50..0）→ 0..1 电平；缺失/异常回 0.12（可见呼吸但不夸张）。 */
@@ -116,7 +263,7 @@ function VoiceBars({
         });
     }, [bars, elapsedSec, metering]);
     return (
-        <View className="mt-6 h-16 items-center justify-end">
+        <View className="mt-6 h-20 items-center justify-end">
             <View className="flex-row items-end" style={{ gap: BAR_GAP }}>
                 {bars.map((bar, i) => (
                     <Animated.View key={i} style={{ transform: [{ scaleY: bar }] }}>
@@ -136,10 +283,10 @@ function VoiceBars({
 }
 
 /**
- * 录音覆盖层（纯视图，条件渲染，禁 RN Modal）：深色 scrim + 居中录音卡。
- * 关闭语言语义（后台继续模型）：卡头 X 与 Android 返回键 = **收起并继续
- * 后台录音**；真停止 = 停止钮（卡片 ~160ms 淡出关闭，落库后台自动完成），
- * 丢弃 = 取消钮（仅覆盖层内，同样淡出关闭）。
+ * 录音仪器卡（纯视图，条件渲染，禁 RN Modal）：全窗沉浸（ink-scrim + 安全区
+ * padding）+ 中央卡片。关闭语言语义（后台继续模型）：卡头 X 与 Android 返回
+ * 键 = **收起并继续后台录音**；真停止 = 停止钮（卡片 ~160ms 淡出下沉关闭，
+ * 落库后台自动完成），丢弃 = 取消钮（仅覆盖层内，同样淡出下沉关闭）。
  */
 export function RecordingOverlay({
     elapsedSec,
@@ -158,37 +305,37 @@ export function RecordingOverlay({
     /** 是否已真正开录（停止钮门控：prepare 未完成禁用——Android 未 start 即
      *  stop 会产出无效文件，不可落库）。 */
     isRecording: boolean;
-    /** 停止/取消在途（全局会话 stopping 相位投影）：整卡 ~160ms 淡出关闭
-     *  （RN Animated opacity）+ 交互整体释放——不做 spinner/在途文案停留
-     *  （用户口径：关窗即返回，保存后台自动完成），落库结果由横幅反馈。 */
+    /** 停止/取消在途（全局会话 stopping 相位投影）：整卡 ~160ms 淡出下沉关闭
+     *  （RN Animated opacity/transform）+ 交互整体释放——不做 spinner/在途文
+     *  案停留（用户口径：关窗即返回，保存后台自动完成），落库结果由横幅反馈。 */
     stopping?: boolean;
     /** 归属提示（owner 笔记展示名；归属铁律的可视化——跨页面停止时用户能
      *  看到产物去向）。null = 不展示。 */
     ownerHint?: string | null;
     /** 收起覆盖层（录音继续后台执行，chip 承接）。 */
     onClose: () => void;
-    /** 真停止（全局编排 → 卡片淡出关闭 + 落库后台化 → 归属 ownerJournalId）。 */
+    /** 真停止（全局编排 → 卡片淡出下沉关闭 + 落库后台化 → 归属 ownerJournalId）。 */
     onStop: () => void;
     /** 停止并丢弃（仅覆盖层内入口）。 */
     onCancel: () => void;
 }) {
     const palette = usePalette();
-    // 关闭淡出（停止/取消驱动，stopping 相位）：整卡 ~160ms 淡出后随会话
-    // 卸载——无 spinner 停留；「减弱动态」降级为瞬时关闭（时长 0）
+    const insets = useSafeAreaInsets();
+    // 进场/退场共用单一驱动值（useOverlayEntrance 头注）：挂载即进场（层淡入
+    // + 卡上浮微缩 240ms）；stopping 相位 → 进场逆放（淡出+下沉 160ms）。
+    // 「减弱动态」两档均退化为时长 0（单帧瞬时，不产生可见动画）
     const reduceMotionRef = useReduceMotionRef();
-    const fade = useRef(new Animated.Value(1)).current;
+    const { appear, run } = useOverlayEntrance(reduceMotionRef);
+    useEffect(() => {
+        run(1, 240);
+    }, [run]);
     useEffect(() => {
         if (!stopping) return;
-        Animated.timing(fade, {
-            toValue: 0,
-            duration: reduceMotionRef.current ? 0 : 160,
-            easing: Easing.out(Easing.cubic),
-            useNativeDriver: true,
-        }).start();
-    }, [stopping, fade, reduceMotionRef]);
+        run(0, 160);
+    }, [stopping, run]);
     // Android 返回键 = 收起（后台继续模型：返回不再等于丢弃——丢弃代价高，
     // 出口收敛到覆盖层内的取消钮）；收尾期（stopping）返回被编排层闸掉，
-    // 160ms 窗口内吞掉即可
+    // 淡出窗口内吞掉即可
     useEffect(() => {
         const sub = BackHandler.addEventListener('hardwareBackPress', () => {
             onClose();
@@ -201,25 +348,52 @@ export function RecordingOverlay({
         <Animated.View
             className="absolute inset-0 z-50 bg-ink-scrim dark:bg-inkd-scrim"
             pointerEvents={stopping ? 'none' : 'auto'}
-            style={{ opacity: fade }}
+            style={{ opacity: appear }}
         >
-            {/* scrim 不接管点击（录音误触丢弃代价高），出口 = 收起钮/取消钮/返回键 */}
-            <View className="flex-1 items-center justify-center px-6">
-                {/* 录音卡（深底卡，与拍摄卡同容器语言：rounded-card + 集中控制行）。
-                    卡头（#8 打磨轮）：录音标识 + 右上收起钮（关闭语言统一，
-                    CloseButton onDark 变体——深底卡恒近黑，与主题无关） */}
-                <View className="w-full max-w-[400px] rounded-card bg-[#0B0D0F] p-5">
+            {/* scrim 不接管点击（录音误触丢弃代价高），出口 = 收起钮/取消钮/返回键；
+                上下安全区 padding：仪器卡在刘海/手势条机型上不贴边（insets 收口） */}
+            <View
+                className="flex-1 items-center justify-center px-6"
+                style={{ paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }}
+            >
+                {/* 仪器卡（深底卡，与拍摄卡同容器语言：rounded-card16 + 白 10% 细边
+                    定义卡缘 + 集中控制行）。进场动效挂卡体（层只管淡入，卡体上浮
+                    微缩——全窗层禁 scale，避免边缘露缝） */}
+                <Animated.View
+                    className="w-full max-w-[400px] rounded-card border border-white/10 bg-[#0B0D0F] p-5"
+                    style={{
+                        transform: [
+                            {
+                                translateY: appear.interpolate({
+                                    inputRange: [0, 1],
+                                    outputRange: [16, 0],
+                                }),
+                            },
+                            {
+                                scale: appear.interpolate({
+                                    inputRange: [0, 1],
+                                    outputRange: [0.97, 1],
+                                }),
+                            },
+                        ],
+                    }}
+                >
+                    {/* 卡头：状态红点（唯一数据色）+ 状态文案 + 右上收起钮。
+                        prepare 未完成（isRecording false）= 静态半亮点 + 「准备中…」
+                        （状态诚实：不把准备期谎报成录音中/心跳） */}
                     <View className="flex-row items-center justify-between">
                         <View className="flex-row items-center gap-2">
-                            <AudioLinesIcon size={16} strokeWidth={1.9} color="#FFFFFFB3" />
-                            <Text className="text-[12px] text-white/70">录音中</Text>
+                            <RecordingDot color={palette.negative} active={isRecording} />
+                            <Text className="text-[12px] text-white/70">
+                                {isRecording ? '录音中' : '准备中…'}
+                            </Text>
                         </View>
-                        {/* 44 视觉盒（组件内不传 hitSlop）：左邻标识组为非按压体，
+                        {/* 44 视觉盒（组件内不传 hitSlop）：左邻状态组为非按压体，
                             卡头右缘即卡内边距，无相邻命中元素，无重叠核算项 */}
                         <CloseButton onDark onPress={onClose} label="收起并继续录音" />
                     </View>
 
-                    {/* 大计时器（30px 阶，tabular-nums 房规） */}
+                    {/* 大计时器（30px 阶，tabular-nums 房规）——卡内 hero 数据 */}
                     <Text
                         className="mt-6 text-center text-[30px] font-semibold text-white"
                         style={{ fontVariant: ['tabular-nums'] }}
@@ -234,16 +408,17 @@ export function RecordingOverlay({
                         </Text>
                     ) : null}
 
-                    {/* 声纹条列（静态 key 收口口径见 VoiceBars：Animated 壳 style 只留
-                        transform，静态布局键下沉壳内非动画 View） */}
+                    {/* 声纹条列（卡的主角：真 metering 场；静态 key 收口口径见
+                        VoiceBars：Animated 壳 style 只留 transform，静态布局键
+                        下沉壳内非动画 View） */}
                     <VoiceBars elapsedSec={elapsedSec} metering={metering} />
 
                     {/* 操作区：取消 / 停止。两钮视觉盒均 ≥44 且相距 24dp ≥ 2×0（不传 hitSlop），
                         命中区不重叠。停止钮以 isRecording 门控（准备阶段禁用——prepare 完成
                         前「停止」会得到一个无效录音文件（Android MediaRecorder 未 start 即
                         stop 抛错）；停止/取消钮保留 stopping 触摸闸（护栏兜底下窗口有界，
-                        防淡出窗口内重入），在途反馈 = 整卡淡出关闭本身，无 spinner/文案切换
-                        ——禁用期触摸穿透到不接管点击的 scrim，无副作用 */}
+                        防淡出窗口内重入），在途反馈 = 整卡淡出下沉关闭本身，无 spinner/
+                        文案切换——禁用期触摸穿透到不接管点击的 scrim，无副作用 */}
                     <View className="mt-8 flex-row items-center justify-center" style={{ gap: 24 }}>
                         <BouncyPressable onPress={onCancel} scaleTo={0.9} disabled={stopping}>
                             <View
@@ -274,7 +449,7 @@ export function RecordingOverlay({
                             </View>
                         </BouncyPressable>
                     </View>
-                </View>
+                </Animated.View>
             </View>
         </Animated.View>
     );
@@ -282,10 +457,12 @@ export function RecordingOverlay({
 
 /**
  * 后台录音/录像悬浮计时 chip（收起态承接面，根层级渲染）：h-9（36dp）圆角
- * 胶囊「● 录音中 0:32」，挂载 180ms 淡入 + 8dp 上浮（opacity/translateY，
- * native driver 白名单键）；点按重开覆盖层（计时/声纹/录制态无缝恢复——
- * 状态一直在全局会话层）。视觉 36 + hitSlop 4 = 44 命中口径；左隅悬挂
- * （right 隅归 + FAB 与拍摄小窗）。
+ * 胶囊「● 录音中 0:32」（呼吸红点 = 三卡同款唯一数据色），挂载 180ms 淡入 +
+ * 8dp 上浮（opacity/translateY，native driver 白名单键）——录音卡收起时本
+ * chip 的进场承接「收起」语义（控制器挂载契约下覆盖层即时卸载，跨卡动效
+ * 连续性由这里补全）。点按重开覆盖层（计时/声纹/录制态无缝恢复——状态一直
+ * 在全局会话层）。视觉 36 + hitSlop 4 = 44 命中口径；左隅悬挂（right 隅归
+ * + FAB 与拍摄小窗）。
  */
 export function RecordingChip({
     label = '录音中',
@@ -314,7 +491,7 @@ export function RecordingChip({
             easing: Easing.out(Easing.cubic),
             useNativeDriver: true,
         }).start();
-    }, [appear]);
+    }, [appear, reduceMotionRef]);
     return (
         <Animated.View
             className="absolute left-6 z-20"
@@ -334,10 +511,9 @@ export function RecordingChip({
                     accessibilityRole="button"
                     accessibilityLabel={`${label}进行中，点按回到录制界面`}
                 >
-                    <View
-                        className="h-2 w-2 rounded-full"
-                        style={{ backgroundColor: palette.negative }}
-                    />
+                    {/* 呼吸红点（三卡同款）：chip 阶段无 prepare 态（recording 相位
+                        才渲染），恒 active */}
+                    <RecordingDot color={palette.negative} size={8} />
                     <Text
                         className="text-[13px] font-medium"
                         style={{ color: palette.onPrimaryBtn, fontVariant: ['tabular-nums'] }}
