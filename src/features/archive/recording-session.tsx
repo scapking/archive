@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef } from 'react';
-import { Text, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Platform, Text, View } from 'react-native';
 import { useAudioRecorder, useAudioRecorderState, RecordingPresets } from 'expo-audio';
 import { usePathname } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -1189,6 +1189,14 @@ function PersistProgressChip({ bottomInset }: { bottomInset: number }) {
 }
 
 /**
+ * 相机覆盖层挂载门控超时（ms）：insets 长时间未就绪的强制放行兜底——防极端
+ * ROM/形态（insets 全零是合法上报值，如异形全屏设备）把相机永久锁死。该分支
+ * 下挂载用的全零就是设备的真实口径而非陈旧值，挂载即正确。正常路径
+ * （safe-area 指标随首个原生事件送达）下门控先于任何用户交互放行，兜底不触发。
+ */
+const INSETS_GATE_TIMEOUT_MS = 300;
+
+/**
  * 全局录制会话宿主：根层级条件渲染三件套——录音控制器（hook 常驻）、拍摄
  * 会话（CameraView 常驻：展开 = 全屏取景卡 / 最小化 = 隐形保活槽，stop/cancel
  * 后随会话卸载）、收起态悬浮 chip（任意页面重开入口）。空闲（kind null）时
@@ -1209,6 +1217,47 @@ export function RecordingSessionHost() {
     const insets = useSafeAreaInsets();
     const pathname = usePathname();
 
+    /* 相机覆盖层门控挂载（首帧陈旧修复）：insets 未就绪（native 全零）时不
+     * 挂载覆盖层/保活槽（渲染 null，会话状态零触碰），真 insets 经 context
+     * 送达（宿主随 context 重渲）后才以正确几何一次性挂载——挂载即正确。
+     *
+     * 取证基础（2026-11-09 首帧陈旧排查）：
+     * - 真机表现「相机 UI 首开不正确，切主题才正确」的机制 = 仓库已登记的
+     *   Android 链路：colorScheme.set → AppCompatDelegate.setDefaultNightMode
+     *   → Activity 重建 → React 树整体重挂（见 audio-player.tsx v3 主题注，
+     *   RN 0.88 源码核实）——切主题是「重挂级修复」，等价冷重启；故修复姿态
+     *   必须保证**首挂即正确**，而非指望后续重渲重算原生首帧结构。
+     * - insets 传导链本身干净（本次逐点核实）：safe-area-context 5.11.1 的
+     *   SafeAreaProvider 在 insets==null 时不渲染 children（SafeAreaContext
+     *   .tsx:131），native 下 expo-router 不传 initialMetrics（ExpoRoot.js
+     *   AppWrapper）——App 树不可能以全零挂载；宿主→覆盖层无 memo/ref 冻结，
+     *   context 变化自动全链重渲。故本门控在正常路径零触发，属 belt-and-
+     *   suspenders 防线：覆盖「首次 insets 上报即为全零、真值后到」的设备态，
+     *   杜绝覆盖层以 0 几何挂进原生首帧。
+     * - 门控窗口语义：窗口内覆盖层未挂载 → registerHardware 未执行（硬件
+     *   句柄空缺），此窗口内外部 stop 会落「控制器不可用」收场；窗口有界
+     *   （INSETS_GATE_TIMEOUT_MS 兜底 + 正常路径先于任何用户交互就绪），
+     *   会话状态不受影响（begin 已落库，覆盖层只是延后一拍出现）。
+     * - RecordingChip / PersistProgressChip 不参与门控：它们只在 phase
+     *   recording/persisting（远晚于 insets 就绪）出现，bottomInset 仅作
+     *   悬挂偏移，无首帧几何风险。 */
+    const insetsReady =
+        Platform.OS === 'web' ||
+        insets.top > 0 ||
+        insets.bottom > 0 ||
+        insets.left > 0 ||
+        insets.right > 0;
+    // 强制放行闩（一次性）：门控窗口超时即放行并保持，后续会话直接以当前
+    // 真实口径挂载（全零设备上全零就是正确值；不重置避免每会话重复等待）
+    const [gateTimedOut, setGateTimedOut] = useState(false);
+    useEffect(() => {
+        if (insetsReady || kind !== 'video' || phase === 'persisting') return;
+        const timer = setTimeout(() => setGateTimedOut(true), INSETS_GATE_TIMEOUT_MS);
+        return () => clearTimeout(timer);
+    }, [insetsReady, kind, phase]);
+    // 门控窗口内不渲染相机覆盖层（含隐形保活槽——同一组件承载两种几何）
+    const captureOverlayMountOpen = insetsReady || gateTimedOut;
+
     if (!kind) return null;
     // persisting = UI 会话已终结（后台落库中）：采集 UI 全部不渲染（零 UI、
     // 允许立即开新会话）；stopping = 淡出关闭中，覆盖层仍挂载（自驱动淡出）
@@ -1219,7 +1268,7 @@ export function RecordingSessionHost() {
             {kind === 'audio' && captureUiAlive ? (
                 <AudioCaptureController ownerHint={ownerLabel} />
             ) : null}
-            {kind === 'video' && captureUiAlive ? (
+            {kind === 'video' && captureUiAlive && captureOverlayMountOpen ? (
                 <CameraCaptureOverlay
                     initialMode={cameraMode}
                     minimized={!overlayOpen}

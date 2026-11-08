@@ -6,7 +6,6 @@ import {
     Easing,
     Linking,
     Platform,
-    StyleSheet,
     Text,
     View,
 } from 'react-native';
@@ -536,10 +535,18 @@ export function CameraCaptureOverlay({
         recordSeconds % 60,
     ).padStart(2, '0')}`;
 
+    // 覆盖层根：几何走 className（absolute inset-0），动画值走 inline style——
+    // 与录音卡（recorder-overlay RecordingOverlay 根）和本文件白闪层同一
+    // 「className 几何 + inline native-driven 动画值」的已验证范式。此前
+    // StyleSheet.absoluteFill 与 appear 同数组是全文件唯一偏离该范式的几何
+    // 挂点（首帧陈旧排查 2026-11-09：真机「首开布局不正确、切主题重挂才
+    // 正确」，见 recording-session 宿主门控注）——收口到同范式，消除
+    // Animated 首提交上 inline 注册样式与动画值混排的几何差异面
     return (
         <Animated.View
             pointerEvents={stopPending ? 'none' : 'box-none'}
-            style={[StyleSheet.absoluteFill, { opacity: appear }]}
+            className="absolute inset-0"
+            style={{ opacity: appear }}
         >
             {/* 相机宿主（恒挂载）：CameraView 卸载即停是原生约束——全屏取景页 ↔
                 隐形保活槽只切宿主 style（同一 React 节点换布局），CameraView
