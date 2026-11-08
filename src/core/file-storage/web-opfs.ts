@@ -52,13 +52,35 @@ export const opfsBackend = {
         }
     },
 
-    /** 读字节；不存在时抛 NotFoundError（DOMException），由上层转 FileStorageError。 */
+    /**
+     * 读字节；不存在时抛 NotFoundError（DOMException），由上层转 FileStorageError。
+     * O(文件大小)：整文件读入 JS 堆——仅供真正需要字节的调用方（备份导出/
+     * 校验和/二次写入）；展示类 URL 一律走 fileStorage.url 的零拷贝路径。
+     */
     async get(key: string): Promise<Uint8Array> {
+        const file = await opfsBackend.getFile(key);
+        return new Uint8Array(await file.arrayBuffer());
+    },
+
+    /**
+     * 零拷贝取文件快照（File 是 Blob 子类型，可直接 createObjectURL）：
+     * `getFileHandle().getFile()` 只拿文件句柄快照、不搬运字节，复杂度
+     * O(1)（元数据级），对比 get() 的 O(文件大小) 字节读入——大视频（几十
+     * MB）从「秒级读 + 全量内存峰值」降为毫秒级句柄获取。返回的 File 是
+     * 快照：后续同 key 重写不影响既有快照/blob URL 的有效性（浏览器保证
+     * 快照内容稳定）。
+     *
+     * OPFS 目录约定核实（重要）：本应用的媒体文件存放在
+     * `navigator.storage.getDirectory()` 的 **origin 根目录**（put 由本
+     * backend 全权管理）；expo-sqlite web 的 AccessHandlePoolVFS 管理的是
+     * 它自己的 pool 块文件子树（core/database 独立通道），二者互不相交——
+     * getFileHandle 直取本应用 key 无需经任何 VFS 封装，浏览器原生支持。
+     */
+    async getFile(key: string): Promise<File> {
         const { dirs, name } = splitKey(key);
         const dir = await dirHandle(dirs, false);
         const fileHandle = await dir.getFileHandle(name);
-        const file = await fileHandle.getFile();
-        return new Uint8Array(await file.arrayBuffer());
+        return fileHandle.getFile();
     },
 
     async exists(key: string): Promise<boolean> {

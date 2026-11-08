@@ -282,12 +282,28 @@ export const fileStorage = {
             .sort((a, b) => (a.key < b.key ? -1 : 1));
     },
 
-    /** 可用于预览/分享的本地 URL：native 为 file://，web 为本会话有效的 blob: URL。 */
+    /**
+     * 可用于预览/分享的本地 URL：native 为 file://，web 为本会话有效的 blob: URL。
+     *
+     * web 路径零拷贝口径（大文件加载慢的核心修复点）：直接
+     * `getFileHandle().getFile()` 取文件快照（File 是 Blob 子类型）并对其
+     * createObjectURL——句柄级元数据操作，复杂度 O(1)，无字节搬运；旧实现
+     * `arrayBuffer() → new Blob([bytes])` 是 O(文件大小) 的「JS 堆全量读 +
+     * Blob 二次拷贝 + 内存峰值翻倍」，几十 MB 视频表现为秒级卡顿。需要真
+     * 字节的调用方（备份导出/校验和）继续走 get()，语义不变。
+     */
     async url(key: string): Promise<string> {
         validateKey(key, 'url');
         if (WEB) {
-            const bytes = await fileStorage.get(key);
-            return globalThis.URL.createObjectURL(new Blob([bytes as BlobPart]));
+            try {
+                const file = await opfsBackend.getFile(key);
+                return globalThis.URL.createObjectURL(file);
+            } catch (error) {
+                if (error instanceof DOMException && error.name === 'NotFoundError') {
+                    throw new FileStorageError('file-storage/not-found', `fileStorage: 不存在 "${key}"`);
+                }
+                throw toFileStorageError(error, `fileStorage(${key})`);
+            }
         }
         return withExisting(key, (file) => file.uri);
     },
