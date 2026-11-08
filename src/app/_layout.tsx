@@ -6,6 +6,11 @@ import { StatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
 import * as NavigationBar from 'expo-navigation-bar';
 import { applyThemePref, getPalette, useEffectiveTheme, useArchiveStore, type ThemePref } from '@/features/archive';
+// 冷启三拍补刷的「即时主题读取」：非渲染期定时器回调需要的是触发瞬间的最新
+// 解析值（'system' 档冷启早期 Appearance 可能先报 light 后报 dark，渲染闭包
+// 只反映上一次 commit）——深路径直连（同下方 last-route/store/recording-session
+// 先例，域 barrel index.ts 不在本次允许改动清单内）。
+import { getEffectiveTheme } from '@/features/archive/ui/theme';
 // 上一次界面缓存（R8 深路径直连：域 barrel index.ts 不在本次允许改动清单内）
 import {
     consumeLastRoute,
@@ -41,18 +46,38 @@ export const unstable_settings = { anchor: '(tabs)' };
 let lastRouteRestoreDone = false;
 
 /** Android edge-to-edge：把窗口背景（= 透明导航栏露出的区域）重设为当前主题
-    的 sceneBg（与 Stack contentStyle 同源）。幂等可重入，五条路径都会调用——
+    的 sceneBg（与 Stack contentStyle 同源）。幂等可重入，以下路径都会调用——
     ①主题翻转、②路由 state 变化、④回前台（AppState active）、⑤录制覆盖层
-    收场（详见各路径注）。真机实测，窗口底色只在主题变化时设置的话，路由
-    切换/转场后导航栏条带会停留陈旧底色、直到下一次窗口重绘才恢复（「点击
-    一些界面底部导航栏边缘没有刷新，刷新之后又正常」），故每次屏切换也幂等
-    重设一次强制该条带跟手；重复设同色无原生副作用，各触发点均为低频一次性
-    调用（无风暴面）。expo-system-ui 会把该色持久化，下次冷启动 JS 未执行前
-    原生即恢复，消除首帧导航栏底色不确定。 */
+    收场、⑥冷启三拍补刷（经 applyAndroidSystemBars，详见各路径注）。真机实测，
+    窗口底色只在主题变化时设置的话，路由切换/转场后导航栏条带会停留陈旧底色、
+    直到下一次窗口重绘才恢复（「点击一些界面底部导航栏边缘没有刷新，刷新之后
+    又正常」），故每次屏切换也幂等重设一次强制该条带跟手；重复设同色无原生
+    副作用，各触发点均为低频一次性调用（无风暴面）。expo-system-ui 会把该色
+    持久化，下次冷启动 JS 未执行前原生即恢复，消除首帧导航栏底色不确定。 */
 function applyAndroidSceneBackground(theme: 'light' | 'dark'): void {
     SystemUI.setBackgroundColorAsync(getPalette(theme).sceneBg).catch((e: unknown) => {
         console.warn('[system-ui] setBackgroundColorAsync failed:', e);
     });
+}
+
+/** 冷启补刷三拍时机表（挂载后 300ms / 800ms / 1600ms）：路径①的首设在挂载
+    effect 里执行过一次，但真机实测冷启期后续原生流程（splash 移除 / 内容
+    视图变化 / edge-to-edge 插件初始化）仍可能在其后数百毫秒内把窗口底色冲回
+    系统默认——用户看到「底部导航条区域是系统自带底色，手动切主题后才生效」；
+    而路径④的 AppState 'active' 在冷启时可能早于监听注册而收不到，冷启后
+    无人补刷。三拍幂等补设兜住这段真空：同值重复调用无原生副作用（与既有
+    触发点同性质，无风暴面），每拍触发瞬间重读当前生效主题，拍间天然覆盖
+    'system' 档的 Appearance 初始化漂移（先报 light 后报 dark）。 */
+const COLD_START_REBRUSH_DELAYS_MS = [300, 800, 1600] as const;
+
+/** 冷启补刷一拍的执行体：主题经 getEffectiveTheme() 在触发瞬间即时读取
+    （最新解析值快照，非渲染闭包/ref 可能滞后一帧的值），窗口底色与按钮深浅
+    一并幂等重设；NavigationBar.setStyle 同步调用无返回值，与既有触发点同
+    写法（sync 失败会以 JS 异常暴露，不静默吞）。 */
+function applyAndroidSystemBars(): void {
+    const theme = getEffectiveTheme();
+    applyAndroidSceneBackground(theme);
+    NavigationBar.setStyle(theme === 'dark' ? 'light' : 'dark');
 }
 
 export default function RootLayout() {
@@ -165,6 +190,28 @@ export default function RootLayout() {
                 applyAndroidSceneBackground(themeRef.current);
             }
         });
+    }, []);
+
+    useEffect(() => {
+        // 路径⑥冷启三拍补刷（2026-11-09 真机「冷启底部导航条是系统自带底色，
+        // 手动切主题后才生效」修复，Android）：挂载后按 COLD_START_REBRUSH_DELAYS_MS
+        // 定三拍，每拍经 applyAndroidSystemBars 在触发瞬间重读当前生效主题，
+        // 幂等补设窗口底色 + 按钮深浅，覆盖首设（路径①）被启动期后续原生流程
+        // 冲掉、而路径④的 AppState 'active' 早于监听注册收不到的冷启真空期。
+        // deps 为 []：三拍时机表锚定挂载时刻；主题翻转走 Activity 重建 = 整树
+        // 重挂载，新挂载天然重新调度三拍，无需随 theme 重跑（避免把防御窗口
+        // 重置成从切换时刻起算）；'system' 档冷启早期 Appearance 先报 light 后
+        // 报 dark 的漂移由每拍即时重读自然覆盖（不用渲染闭包/ref 冻结值）。
+        // 卸载清空全部定时器（Fast Refresh 重挂载安全，不留孤儿补刷）；补刷
+        // 只是冷启窗口的防御，用户手动切主题仍走既有的 Activity 重建重锤链，
+        // 语义不变。
+        if (Platform.OS !== 'android') return;
+        const timers = COLD_START_REBRUSH_DELAYS_MS.map((delay) =>
+            setTimeout(() => applyAndroidSystemBars(), delay),
+        );
+        return () => {
+            for (const t of timers) clearTimeout(t);
+        };
     }, []);
 
     useEffect(() => {
