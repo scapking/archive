@@ -25,6 +25,7 @@ core 的错误契约：让 features 层**可以编程地判断错误**（凭 cod
 | migration | `migration/invalid-bundle`、`migration/not-found`、`migration/io`（zip.ts 的包完整性错误同用 `migration/invalid-bundle`） |
 | notifications | `notification/unsupported`、`notification/invalid-token`、`notification/failure` |
 | sharing | `sharing/unsupported`、`sharing/io`（仅 web 下载回退路径；native 透传 expo 错误） |
+| media-library | `media-library/permission-denied`（native 相册写入权限被拒；引导系统设置授权后重试可成功，**retryable=true**）、`media-library/save-failed`（取回字节/写入相册/触发下载的 IO 或编码失败，瞬时故障重试可成功，**retryable=true**）、`media-library/unsupported`（当前平台/环境无该保存路径，如 web 缺下载 API，**retryable=false**；native 相册保存透传的 expo 错误统一包装进 save-failed，cause 保原始错误） |
 | post（service） | `post/network`（retryable）、`post/http` |
 | socket（service） | `socket/closed`、`socket/full` |
 | 薄封装模块（camera/location/audio/video/image-picker/image-manipulator/clipboard/linking） | 不自定义错误：透传 expo `CodedError`（code 如 `ERR_UNAVAILABLE`），见 R4（crypto 加密层已移出本行，codes 见上行） |

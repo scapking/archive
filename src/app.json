@@ -91,7 +91,14 @@
       "expo-web-browser",
       "expo-image",
       "expo-video",
-      "expo-sharing"
+      "expo-sharing",
+      [
+        "expo-media-library",
+        {
+          "savePhotosPermission": "Allow $(PRODUCT_NAME) to save photos and videos to your photo library",
+          "isAccessMediaLocationEnabled": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

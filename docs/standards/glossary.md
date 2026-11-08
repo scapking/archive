@@ -64,6 +64,7 @@ core 是**通用能力接口层**：把 Expo 提供的三端（iOS/Android/Web�
 | `clipboard` | 剪贴板文本/URL/图片 | expo-clipboard |
 | `crypto` | UUID、随机字节、摘要、**AES-256-GCM 加解密**（encrypt/decrypt/encryptText）、**PBKDF2 密钥派生**（deriveKey）——三端同实现（@noble/ciphers + @noble/hashes，因 Hermes 无完整 WebCrypto） | expo-crypto + @noble/* |
 | `sharing` | 系统分享（web 用 isAvailableAsync 判定） | expo-sharing |
+| `media-library` | **媒体保存到手机统一入口**（2026-11-08 登记）：native 图/视频写系统相册（权限预检+请求收口在能力内，拒绝抛 `media-library/permission-denied`）、native 音频经 `sharing` 能力拉系统分享面板；web 无系统相册（官方 web 构建为 stub，运行时按平台分流），图/视频/音频一律走浏览器下载（fetch 取字节 → blob → anchor，参照 core/sharing 下载回退）。saveAsync 返回落点（library/shared/downloaded）供调用方给差异化反馈 | expo-media-library（native）+ sharing/浏览器下载（web） |
 | `web-browser` | 应用内浏览器/授权会话 | expo-web-browser |
 | `linking` | 深链构造/解析/监听、系统打开 URL | expo-linking + RN Linking |
 | `icons` | **自绘 SVG 图标/logo 基础设施**：三层来源——内置手绘（icons.tsx）+ lucide 现成集（per-icon 深路径导入，**禁止桶导入**，实测 +5MB）+ createIcon 自定义；动效（reanimated 弹跳/呼吸）、morphicons 形变（MorphIcon spring）、循环变色渐变 GradientCycle（宿主分层，全 UI 线程） | react-native-svg + lucide + morphicons + reanimated |

@@ -44,6 +44,8 @@ import {
 } from './ui/editor';
 import { imagePicker } from '@/core/image-picker';
 import { audio } from '@/core/audio';
+import { fileStorage } from '@/core/file-storage';
+import { mediaLibrary, MediaLibraryError } from '@/core/media-library';
 import { useArchiveRevision, useArchiveStore, aggregateSaveProgress, ensureVideoThumbnail } from './store';
 import {
     canInsertImages,
@@ -116,6 +118,15 @@ const UngroupIcon = createIcon(
     <>
         <Rect x={11} y={14} width={10} height={7} rx={2} />
         <Rect x={3} y={3} width={10} height={7} rx={2} />
+    </>,
+);
+
+/** 保存到手机（块操作卡行；download）。 */
+const DownloadIcon = createIcon(
+    <>
+        <Path d="M12 15V3" />
+        <Path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+        <Path d="m7 10 5 5 5-5" />
     </>,
 );
 
@@ -449,6 +460,23 @@ export function JournalEditScreen({
         }
         return false;
     }, [blocks, mediaById]);
+    /**
+     * 「保存到手机」行数据（媒体块操作卡，2026-11-08）：图/视频/音频就绪媒体
+     * 都出现；pending 占位（mediaId === PENDING_MEDIA_ID）与媒体行缺失（已删）
+     * 不出现。hint 按落点给（平台 × 类型矩阵的文案面；保存本体在能力内收口）。
+     */
+    const saveToPhone = (() => {
+        if (actionBlock?.t !== 'media' || actionBlock.mediaId === PENDING_MEDIA_ID) return null;
+        const row = mediaById.get(actionBlock.mediaId);
+        if (!row) return null;
+        const hint =
+            Platform.OS === 'web'
+                ? '下载到本机'
+                : row.kind === 'audio'
+                    ? '经分享面板保存'
+                    : '存入手机相册';
+        return { kind: row.kind, hint };
+    })();
     /** 多选切换（选择顺序保持追加序，合并重排按此顺序落位）。 */
     const toggleSelect = useCallback((blockId: string) => {
         setSelectMode((current) => {
@@ -909,6 +937,65 @@ export function JournalEditScreen({
         applyBlocks((current) => removeBlock(current, id));
     };
 
+    // 「保存到手机」在途镜像（ref 守卫防双击双跑——state 在异步链里读旧值）
+    const savingToPhoneRef = useRef(false);
+    const [savingToPhone, setSavingToPhone] = useState(false);
+
+    /**
+     * 块操作卡「保存到手机」（2026-11-08 媒体保存能力接线）：解析 file-storage
+     * 本地 URI → media-library.saveAsync 统一保存（native 图/视频入系统相册、
+     * 音频经分享面板；web 全部浏览器下载——平台 × 类型矩阵收口在能力内，屏层
+     * 零分支）。suggestedName 取 file-storage key 末段（入库段命名自带真实容器
+     * 扩展名，web 下载文件名由此保真）。
+     *
+     * 反馈口径（沿用 store.error 通道现状，报告注明）：成功关闭卡片并上浮结果
+     * 文案（error 通道是当前唯一横幅位，成功文案会以警示样式展示——属已登记
+     * 的通道局限，不新增通道）；失败保持卡片打开（同卡可重试），文案面向用户
+     * （MediaLibraryError 携带引导性 message，如权限拒绝 → 引导系统设置）。
+     * in-flight 期间保存行转 spinner + 全行禁用（见 BlockActionCard）。
+     */
+    const saveActionBlockToPhone = async () => {
+        const block = actionBlock;
+        const row = block && block.t === 'media' ? mediaById.get(block.mediaId) : null;
+        // pending 占位与缺失媒体行不出现该行（canSaveToPhone 已门控），双保险
+        if (!row || row.id === PENDING_MEDIA_ID) return;
+        if (savingToPhoneRef.current) return;
+        savingToPhoneRef.current = true;
+        setSavingToPhone(true);
+        try {
+            // web blob: URL 引用即用即还（native 为 file:// 直路径，revoke 幂等 no-op）
+            const uri = await fileStorage.url(row.file_key);
+            try {
+                const destination = await mediaLibrary.saveAsync(uri, row.kind, {
+                    suggestedName: row.file_key.split('/').pop() ?? '',
+                });
+                store.setState({
+                    error:
+                        destination === 'library'
+                            ? '已保存到手机相册。'
+                            : destination === 'shared'
+                                ? '已打开分享面板，选择「存储/保存」完成保存。'
+                                : '已开始下载。',
+                });
+                setActionBlockId(null);
+            } finally {
+                fileStorage.revokeUrl(uri);
+            }
+        } catch (caught) {
+            // 失败保持卡片打开（可重试）；权限拒绝的引导文案在错误内
+            const detail =
+                caught instanceof MediaLibraryError
+                    ? caught.message
+                    : caught instanceof Error
+                        ? caught.message
+                        : String(caught);
+            store.setState({ error: `保存失败：${detail}` });
+        } finally {
+            savingToPhoneRef.current = false;
+            setSavingToPhone(false);
+        }
+    };
+
     // + 菜单状态行数据（全局会话进行中且本屏可编辑时展示）：「● 录音中 0:32 ·
     // 继续」点按重开全局覆盖层（无缝恢复）；副标按 owner 身份分流——归属
     // 铁律可视化：非 owner 屏明示「素材将保存到发起的笔记」
@@ -1178,10 +1265,13 @@ export function JournalEditScreen({
                     total={blocks.length}
                     canMergeStack={canMergeStack}
                     groupId={actionBlock?.t === 'media' ? actionBlock.groupId ?? null : null}
+                    saveToPhone={saveToPhone}
+                    savingToPhone={savingToPhone}
                     onMove={moveActionBlock}
                     onDelete={removeActionBlock}
                     onMergeStack={openMergeSelect}
                     onDissolveStack={dissolveActionStack}
+                    onSaveToPhone={() => void saveActionBlockToPhone()}
                     onClose={() => setActionBlockId(null)}
                 />
             ) : null}
@@ -1272,9 +1362,10 @@ const CanvasDismissLayer = memo(function CanvasDismissLayer({
 });
 
 /**
- * 块操作卡（上移/下移/合并堆叠/解散堆叠/删除，浮层居中弹出）：屏根条件渲染
- * （禁 RN Modal），深色 scrim + 居中卡片；Android 返回键关闭。媒体块经长按/
- * 双击（组件内 useBlockActionGestures 平台分派）、文本块经聚焦态 ⋯ 钮进入。
+ * 块操作卡（上移/下移/合并堆叠/解散堆叠/保存到手机/删除，浮层居中弹出）：屏根
+ * 条件渲染（禁 RN Modal），深色 scrim + 居中卡片；Android 返回键关闭。媒体块
+ * 经长按/双击（组件内 useBlockActionGestures 平台分派）、文本块经聚焦态 ⋯ 钮
+ * 进入。
  *
  * 自定义合并堆叠入口（本轮新增）：
  * - 「合并堆叠」：canMergeStack（屏内可选图/视频 ≥2）时出现——以当前块为
@@ -1282,16 +1373,23 @@ const CanvasDismissLayer = memo(function CanvasDismissLayer({
  * - 「解散堆叠」：当前块带 groupId（显式组成员，含被移散的孤员）时出现——
  *   清 groupId（journal-logic.dissolveStackBlocks）；解散后同 kind 相邻成员
  *   按渲染层自然相邻规则**立即重新成组**（默认分组语义的既定口径，报告注明）。
+ *
+ * 「保存到手机」行（2026-11-08）：就绪图/视频/音频媒体块出现（pending 占位/
+ * 文本块/媒体行缺失不出现，见屏层 saveToPhone 推导）；保存编排在屏层（本组件
+ * 只展示），in-flight 时该行 hint 槽转 spinner + 行禁用，其余行不受影响。
  */
 function BlockActionCard({
     index,
     total,
     canMergeStack,
     groupId,
+    saveToPhone,
+    savingToPhone,
     onMove,
     onDelete,
     onMergeStack,
     onDissolveStack,
+    onSaveToPhone,
     onClose,
 }: {
     /** 当前块下标（决定上移/下移禁用态）。 */
@@ -1302,10 +1400,15 @@ function BlockActionCard({
     canMergeStack: boolean;
     /** 当前块所属显式组 id（null = 不在显式组 → 无「解散堆叠」行）。 */
     groupId: string | null;
+    /** 「保存到手机」行数据（null = 不出现；hint 按落点预格式化）。 */
+    saveToPhone: { kind: 'image' | 'video' | 'audio'; hint: string } | null;
+    /** 保存到手机在途（保存行 spinner + 禁用）。 */
+    savingToPhone: boolean;
     onMove(direction: -1 | 1): void;
     onDelete(): void;
     onMergeStack(): void;
     onDissolveStack(): void;
+    onSaveToPhone(): void;
     onClose(): void;
 }) {
     const palette = usePalette();
@@ -1324,7 +1427,9 @@ function BlockActionCard({
         key: string;
         icon: React.ReactNode;
         label: string;
-        hint?: string;
+        hint?: string | null;
+        /** hint 槽转 spinner（in-flight 反馈；与 hint 互斥）。 */
+        spinner?: boolean;
         danger?: boolean;
         disabled: boolean;
         onPress(): void;
@@ -1364,6 +1469,20 @@ function BlockActionCard({
                       hint: '移出堆叠，恢复独立排列',
                       disabled: false,
                       onPress: onDissolveStack,
+                  },
+              ]
+            : []),
+        ...(saveToPhone
+            ? [
+                  {
+                      key: 'save-to-phone',
+                      icon: <DownloadIcon size={18} strokeWidth={1.9} color={palette.secondary} />,
+                      label: '保存到手机',
+                      // in-flight：hint 槽转 spinner（保存中可见反馈，行禁用防重复触发）
+                      hint: savingToPhone ? null : saveToPhone.hint,
+                      spinner: savingToPhone,
+                      disabled: savingToPhone,
+                      onPress: onSaveToPhone,
                   },
               ]
             : []),
@@ -1430,6 +1549,9 @@ function BlockActionCard({
                                         >
                                             {row.hint}
                                         </Text>
+                                    ) : row.spinner ? (
+                                        // in-flight 反馈（保存到手机）：hint 槽位原位转 spinner
+                                        <ActivityIndicator size="small" color={palette.secondary} />
                                     ) : null}
                                 </View>
                             </BouncyPressable>
