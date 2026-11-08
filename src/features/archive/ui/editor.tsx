@@ -16,8 +16,16 @@ import {
     type ScrollViewInstance,
 } from 'react-native';
 import { VideoView, useVideoPlayer } from 'expo-video';
-import { BouncyPressable, LucideImage, LucidePlay, LucidePlus, LucideVideo } from '@/core/icons';
-import { MoreIcon } from './editor-icons';
+import {
+    BouncyPressable,
+    LucideCheck,
+    LucideImage,
+    LucidePlay,
+    LucidePlus,
+    LucideVideo,
+} from '@/core/icons';
+import { AudioLinesIcon, MoreIcon } from './editor-icons';
+import { AudioBlock } from './audio-player';
 import {
     FIELD_TONE_TEXT,
     INPUT_PLATFORM_PROPS,
@@ -56,7 +64,12 @@ import { PENDING_MEDIA_ID } from '../db';
  *   就绪媒体块 ≥2 合并为媒体堆（MediaDeckStack v11，Apple Photos Stacks 式印刷
  *   相纸隐喻）——连续图片 ≥2 = 图片堆，连续视频 ≥2 = 视频堆（新增）；图片视频
  *   混排按 kind 分段（视频打断图片串、图片打断视频串，各自成段成组）；音频不进
- *   堆叠。中卡 = **固定画幅**（v11 用户裁决「直接固定长度宽度以及最低宽度长度，
+ *   自然成组。**自定义合并堆叠（显式 groupId 组）**：媒体块可携带 groupId
+ *   （schema.ts 纯 JSON 字段），连续同 groupId 成员（混合 kind 允许，含音频）
+ *   渲染为同一堆叠单元，成员由「合并堆叠」多选操作物理重排成连续段（见
+ *   journal-logic.mergeStackBlocks）；三槽卡体按成员 kind 分支（图/视频既有
+ *   Deck 卡复用口径、音频 = AudioBlock/声纹占位变体），点前卡按 kind 全屏。
+ *   中卡 = **固定画幅**（v11 用户裁决「直接固定长度宽度以及最低宽度长度，
  *   固定长度」）：宽 = clamp(列宽 × 66%, 240dp 下限, 列宽 − 2×花瓣外露余量)，高
  *   = DECK_CARD_HEIGHT 420 固定常量（最小高下限概念并入固定值，前卡自然比例
  *   派生整轨撤销），三槽同固定 frame；媒体一律 cover 铺满（精确填满固定盒，
@@ -804,6 +817,20 @@ function PendingMediaBlock({ style }: { style?: object }) {
 /** 媒体邻接判定（pending 占位同为 t:'media'，天然计入多图节奏）。 */
 const isMediaLike = (block: JournalBlock | undefined): boolean => block?.t === 'media';
 
+/**
+ * 多选覆盖层命中面（deck 域内复用）：触摸面零 className（deck 铁律——按压体
+ * 不落 className，防 css-interop 按压 observable 注入手势窗口）→ inline
+ * style 模块级常量（引用恒等，任意重渲不重建样式）。
+ */
+const SELECTION_OVERLAY_STYLE = {
+    position: 'absolute' as const,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 10,
+};
+
 /* ------------------------------------------------------------------ */
 /* 连续同 kind 媒体堆叠（deck 式：渲染层合并，数据仍是独立块，分组是纯派生） */
 /* ------------------------------------------------------------------ */
@@ -811,41 +838,54 @@ const isMediaLike = (block: JournalBlock | undefined): boolean => block?.t === '
 /** 媒体块变体（分组条目类型）。 */
 type JournalMediaBlock = Extract<JournalBlock, { t: 'media' }>;
 
-/** 可堆叠媒体种类：图片堆 / 视频堆（音频不进堆叠——音频卡是常驻操作面，
- *  无「换张」语义，堆叠只会破坏播放连续性）。 */
-type DeckMediaKind = 'image' | 'video';
+/**
+ * 堆叠成员种类：图片/视频（自然相邻自动成组的既有口径）+ 音频（仅显式
+ * groupId 组收编——音频卡是常驻操作面、无「换张」语义，永不参与自然成组，
+ * 但自定义合并堆叠允许混合 kind，音频成员进 deck 渲染分支时按音频卡体
+ * 呈现，其余成员不变）。
+ */
+type DeckMediaKind = 'image' | 'video' | 'audio';
 
-/** deck 组条目（块 + 媒体行 + 全局 index）。 */
-type DeckItem = { block: JournalMediaBlock; media: JournalMediaRow; index: number };
+/** deck 组条目（块 + 媒体行 + 成员种类 + 全局 index）。 */
+type DeckItem = {
+    block: JournalMediaBlock;
+    media: JournalMediaRow;
+    deckKind: DeckMediaKind;
+    index: number;
+};
 
 /**
- * 堆叠成员资格：已就绪的图片/视频媒体块 → 返回媒体行与种类（供层渲染直接
- * 复用，免二次查表）；其余（文本/pending 占位/音频/媒体行缺失）返回 null。
- * pending 占位**不进堆叠也不被堆叠跨越**（占位是插入中瞬态，保持现有
- * 独立占位渲染；上传回填后自然并入/成组）。
+ * 堆叠成员资格：已就绪的图片/视频/音频媒体块 → 返回媒体行与种类（供槽位
+ * 渲染直接复用，免二次查表）；其余（文本/pending 占位/媒体行缺失）返回 null。
+ * pending 占位**不进堆叠也不被堆叠跨越**（占位是插入中瞬态，保持现有独立
+ * 占位渲染；上传回填后自然并入/成组）。
  */
-const asDeckMedia = (
+const asDeckMember = (
     block: JournalBlock,
     mediaById: Map<string, JournalMediaRow>,
-): { media: JournalMediaRow; kind: DeckMediaKind } | null => {
+): { media: JournalMediaRow; deckKind: DeckMediaKind } | null => {
     if (block.t !== 'media' || block.mediaId === PENDING_MEDIA_ID) return null;
     const media = mediaById.get(block.mediaId);
     if (media == null) return null;
-    return media.kind === 'image' || media.kind === 'video'
-        ? { media, kind: media.kind }
+    return media.kind === 'image' || media.kind === 'video' || media.kind === 'audio'
+        ? { media, deckKind: media.kind }
         : null;
 };
 
 /**
- * 渲染单元：单块（现有独立渲染路径）或连续同 kind 媒体堆叠组（≥2 才成组）。
- * 分组规则：**连续相邻且同 kind** 的就绪媒体块（index 相邻、中间无文本/
- * 异 kind 媒体/音频/pending 打断）合并——连续图片 ≥2 = 图片堆，连续视频
- * ≥2 = 视频堆；图片视频混排按 kind 分段（视频打断图片串、图片打断视频串，
- * 各自成段）；单张（同段只 1 块）维持独立渲染（单元回退为 single）。
+ * 渲染单元：单块（现有独立渲染路径）或媒体堆叠组（≥2 才成组）。分组规则：
+ * - **显式组**（自定义合并堆叠）：连续相邻且同 groupId 的就绪媒体块（混合
+ *   kind 允许）合并为一个堆叠单元——成员已被合并操作物理重排成连续段
+ *   （journal-logic.mergeStackBlocks）；段被用户移块拆散后，各连续子段独立
+ *   成组、孤员回退 single 渲染（groupId 仍在数据里，解散操作仍可用）；
+ * - **自然组**（既有口径）：无 groupId 的**连续相邻且同 kind** 图片/视频
+ *   ≥2 合并（中间无文本/异 kind/音频/pending 打断）；图片视频混排按 kind
+ *   分段；音频永不自然成组；单张回退独立渲染。
+ * 两类互不跨越：显式组成员不进自然组，反之亦然。
  */
 type RenderUnit =
     | { kind: 'single'; block: JournalBlock; index: number }
-    | { kind: 'deck'; mediaKind: DeckMediaKind; items: DeckItem[] };
+    | { kind: 'deck'; items: DeckItem[]; groupId?: string };
 
 /**
  * 块列表 → 渲染单元（纯函数，每次渲染重算——组随块增删/移动自动重算/解散，
@@ -856,45 +896,76 @@ function buildRenderUnits(
     mediaById: Map<string, JournalMediaRow>,
 ): RenderUnit[] {
     const units: RenderUnit[] = [];
-    let group: DeckItem[] | null = null;
-    // 当前组的 kind（组内同 kind 铁律；异 kind 媒体/非成员块到达即 flush 换段）
-    let groupKind: DeckMediaKind | null = null;
-    const flushGroup = () => {
-        if (!group || groupKind == null) return;
-        if (group.length >= 2) {
-            units.push({ kind: 'deck', mediaKind: groupKind, items: group });
+    // 自然组进行段（无 groupId、同 kind 连续）
+    let auto: { deckKind: DeckMediaKind; items: DeckItem[] } | null = null;
+    // 显式组进行段（同 groupId 连续，混合 kind）
+    let explicit: { groupId: string; items: DeckItem[] } | null = null;
+    const flushAuto = () => {
+        if (!auto) return;
+        if (auto.items.length >= 2) {
+            units.push({ kind: 'deck', items: auto.items });
         } else {
             // 成组未满 2 块：回退现有独立渲染路径（单张 = 单元）
-            for (const item of group) {
+            for (const item of auto.items) {
                 units.push({ kind: 'single', block: item.block, index: item.index });
             }
         }
-        group = null;
-        groupKind = null;
+        auto = null;
+    };
+    const flushExplicit = () => {
+        if (!explicit) return;
+        if (explicit.items.length >= 2) {
+            units.push({ kind: 'deck', items: explicit.items, groupId: explicit.groupId });
+        } else {
+            for (const item of explicit.items) {
+                units.push({ kind: 'single', block: item.block, index: item.index });
+            }
+        }
+        explicit = null;
     };
     blocks.forEach((block, index) => {
-        const member = asDeckMedia(block, mediaById);
-        // block.t 判定收窄块类型（asDeckMedia 内部同口径，此处显式写出
-        // 供 TS 收窄进组条目）；行缺失/音频/pending 落 single 路径
-        if (block.t === 'media' && member != null) {
-            if (group && groupKind === member.kind) {
-                // 不变量：group 非空 ⟹ 上一块同为就绪同 kind 媒体块（非成员
-                // 块与异 kind 块在上一轮已 flush），「相邻 index」天然成立，
-                // 无需再查邻居
-                group.push({ block, media: member.media, index });
+        const groupId = block.t === 'media' && block.groupId ? block.groupId : null;
+        const member = asDeckMember(block, mediaById);
+        if (groupId != null) {
+            if (
+                block.t === 'media' &&
+                member != null &&
+                explicit != null &&
+                explicit.groupId === groupId
+            ) {
+                // 不变量：explicit 非空 ⟹ 上一块是同组就绪媒体块（异组/非成员
+                // 在上一轮已 flush），「相邻 index」天然成立
+                explicit.items.push({ block, media: member.media, deckKind: member.deckKind, index });
+                return;
+            }
+            flushAuto();
+            flushExplicit();
+            if (block.t === 'media' && member != null) {
+                explicit = { groupId, items: [{ block, media: member.media, deckKind: member.deckKind, index }] };
+                return;
+            }
+            // 同 groupId 但成员资格失效（行缺失等）：断段独立渲染，组数据保留
+            units.push({ kind: 'single', block, index });
+            return;
+        }
+        // 无组块：显式段收口（显式成员不参与自然成组）
+        flushExplicit();
+        if (block.t === 'media' && member != null && member.deckKind !== 'audio') {
+            if (auto != null && auto.deckKind === member.deckKind) {
+                auto.items.push({ block, media: member.media, deckKind: member.deckKind, index });
             } else {
                 // 首块入组 / kind 切换（视频打断图片串、图片打断视频串）：
                 // 旧段收口，新段起组
-                flushGroup();
-                group = [{ block, media: member.media, index }];
-                groupKind = member.kind;
+                flushAuto();
+                auto = { deckKind: member.deckKind, items: [{ block, media: member.media, deckKind: member.deckKind, index }] };
             }
             return;
         }
-        flushGroup();
+        flushAuto();
         units.push({ kind: 'single', block, index });
     });
-    flushGroup();
+    flushExplicit();
+    flushAuto();
     return units;
 }
 
@@ -1361,6 +1432,101 @@ function DeckVideoBackCard({ width, height }: { width: number; height: number })
 }
 
 /**
+ * 堆叠中卡（音频成员变体，显式混合组专用）：把 AudioBlock 卡（media-view
+ * 同源口径，media-view.tsx 收口）居中放进 deck 固定 frame——音频卡是常驻
+ * 操作面（点按播放/暂停），deck 内音频成员保持完整交互，横滑换位仍由宿主
+ * PanResponder 方向锁承担（拖拽认领后仲裁终止点按）。interactive 关闭
+ * （转场期间/多选态）时整卡 pointerEvents none（转场吞点按与旧口径一致）；
+ * dimmed = 多选模式下的「音频不可选」置灰（inline opacity，不落条件类）。
+ * onBlockAction 透传长按/桌面双击操作卡链路。
+ */
+function DeckAudioFrontCard({
+    item,
+    width,
+    height,
+    interactive = true,
+    dimmed = false,
+    onBlockAction,
+}: {
+    item: DeckItem;
+    width: number;
+    height: number;
+    /** 交互闸：转场期间/多选态吞掉卡内全部点按（pointerEvents none）。 */
+    interactive?: boolean;
+    /** 多选模式置灰（音频不可参与合并）。 */
+    dimmed?: boolean;
+    onBlockAction?: () => void;
+}) {
+    return (
+        <View
+            pointerEvents={interactive ? 'auto' : 'none'}
+            style={{
+                width,
+                height,
+                alignItems: 'center',
+                justifyContent: 'center',
+                opacity: dimmed ? 0.55 : 1,
+            }}
+        >
+            <View style={{ width: '100%' }}>
+                <AudioBlock
+                    media={item.media}
+                    durationMs={item.block.durationMs}
+                    onBlockAction={interactive ? onBlockAction : undefined}
+                />
+            </View>
+        </View>
+    );
+}
+
+/**
+ * 相纸卡体（音频成员露边层，显式混合组专用）：**零播放器零状态订阅**的
+ * 轻量占位卡（性能红线与视频露边层同源——音频卡连 url 状态都不背）：
+ * raised 底 + 声纹 icon 占位（mat 垫边/圆角双保险与 DeckBackCard 同款，
+ * 见 DECK_CARD_RADIUS 注）。
+ */
+function DeckAudioBackCard({ width, height }: { width: number; height: number }) {
+    const palette = usePalette();
+    return (
+        <View
+            className="overflow-hidden rounded-card bg-ink-raised dark:bg-inkd-raised"
+            style={{ width, height, padding: DECK_MAT, borderRadius: DECK_CARD_RADIUS }}
+        >
+            <View
+                className="flex-1 items-center justify-center"
+                style={{ overflow: 'hidden', borderRadius: DECK_CARD_RADIUS }}
+            >
+                <AudioLinesIcon size={20} strokeWidth={1.9} color={palette.muted} />
+            </View>
+        </View>
+    );
+}
+
+/**
+ * 多选勾选角标（合并堆叠多选模式）：媒体块/堆叠前卡右上角 28dp 圆，
+ * 选中 = accent 实底 + 白勾，未选 = 黑透底 + 白环；pointerEvents none
+ * （命中全部归属下方覆盖层）。固定 hex 白 = 角标在任意媒体内容上的可辨
+ * 描边（与堆卡 hairline 同源的「内容不可知」描边口径）。
+ */
+function SelectionCheck({ selected }: { selected: boolean }) {
+    const palette = usePalette();
+    return (
+        <View pointerEvents="none" className="absolute right-2 top-2 z-10">
+            <View
+                className="h-7 w-7 items-center justify-center rounded-full"
+                style={{
+                    backgroundColor: selected ? palette.accent : 'rgba(0,0,0,0.4)',
+                    borderWidth: 2,
+                    borderColor: '#FFFFFFE6',
+                }}
+            >
+                {selected ? <LucideCheck size={15} color="#FFFFFF" strokeWidth={2.6} /> : null}
+            </View>
+        </View>
+    );
+}
+
+/**
  * 连续同 kind 媒体堆（v11 相纸堆：固定画幅中卡（宽 clamp(列宽 66%, 240,
  * 列宽 − 2×花瓣余量) / 高 420 固定，见「几何」段）+ 底缘倾斜相纸 + 归中真
  * 转场）。设计语言由 design skill 结论主导（候选方向与条款依据见本组设计
@@ -1370,7 +1536,8 @@ function DeckVideoBackCard({ width, height }: { width: number; height: number })
  * 不读作另一张照片）。
  *
  * **图片堆 / 视频堆同一套机制（单组件参数化，零复制）**：几何/位形/转场/
- * 手势/计数对两种 kind 完全同构，差异只在三槽的卡体渲染——
+ * 手势/计数对全部 kind 完全同构，差异只在三槽的卡体渲染（**按成员 kind 分支**
+ * ——显式 groupId 混合组允许图/视频/音频混排，自然组恒同 kind）——
  *   图片堆：前卡 DeckFrontCard（Image 封面）+ 露边层 DeckBackCard（真实
  *     邻图内容，楔形有内容线索）；
  *   视频堆：前卡 DeckVideoFrontCard（封面态，仅此卡挂 player，点前卡 =
@@ -1378,7 +1545,11 @@ function DeckVideoBackCard({ width, height }: { width: number; height: number })
  *     占位卡，**绝不挂载视频播放器**——性能红线，见其注；schema 无缩略
  *     图列，楔形露 tone 不露内容，形状语法承担可读性）；收口换张前卡按
  *     media.id 重挂（player 随内容轮转重建，避免 replaceAsync 异步窗口的
- *     错内容闪帧，见 DeckVideoFrontCard 注）。
+ *     错内容闪帧，见 DeckVideoFrontCard 注）；
+ *   音频成员（仅显式组）：前卡 DeckAudioFrontCard（AudioBlock 常驻操作面）
+ *     + 露边层 DeckAudioBackCard（raised 底 + 声纹 icon 占位，零订阅）。
+ * 多选模式（selection prop，合并堆叠交互流）：非 null 时前卡点按 = 切换
+ * 选中（覆盖层压住全屏/长按链），音频成员置灰吸收，底缘楔形带照常换位。
  *
  * 几何（组容器 relative overflow-hidden，宽 = 列宽 onLayout 量取，高 =
  * 中卡高 + 相纸楔形带 + 计数行；overflow-hidden 是横滑与楔形「部分可见」
@@ -1505,15 +1676,16 @@ interface DeckAdvance {
 
 function MediaDeckStack({
     items,
-    mediaKind,
     editable,
+    selection,
     onBlockAction,
 }: {
     items: DeckItem[];
-    /** 堆种类（buildRenderUnits 按 kind 分段保证组内同 kind；图/视频只
-     *  差异化三槽卡体，堆叠机制同一套——见组件注）。 */
-    mediaKind: DeckMediaKind;
     editable: boolean;
+    /** 多选模式（合并堆叠）：非 null 时前卡点按 = 切换选中（全屏/长按被
+     *  选中覆盖层屏蔽），勾选角标随选中态渲染；音频成员不可选（置灰 + 触摸
+     *  吸收）；底缘楔形带仍可点按换位（循环翻看选中成员）。 */
+    selection?: { selectedIds: ReadonlySet<string>; onToggle(blockId: string): void } | null;
     /** 请求弹出当前中卡的块操作卡（屏层渲染，作用于该块）。 */
     onBlockAction(blockId: string): void;
 }) {
@@ -2044,8 +2216,13 @@ function MediaDeckStack({
             {cardWidth > 0 && leftItem ? (
                 <View style={[cardSlot, { zIndex: 2 }]} pointerEvents="none">
                     <DeckAnimatedSlot style={[{ flex: 1 }, leftSlotStyle]}>
-                        {mediaKind === 'video' ? (
+                        {/* 三槽按成员 kind 分支卡体（显式混合组允许图/视频/音频混排；
+                            自然组恒同 kind）：图 = 真实邻图 / 视频 = 无 player 占位 /
+                            音频 = 声纹占位（露边层零播放器零订阅，性能红线） */}
+                        {leftItem.deckKind === 'video' ? (
                             <DeckVideoBackCard width={cardWidth} height={cardHeight} />
+                        ) : leftItem.deckKind === 'audio' ? (
+                            <DeckAudioBackCard width={cardWidth} height={cardHeight} />
                         ) : (
                             <DeckBackCard
                                 media={leftItem.media}
@@ -2062,8 +2239,10 @@ function MediaDeckStack({
             {cardWidth > 0 && rightItem ? (
                 <View style={[cardSlot, { zIndex: 2 }]} pointerEvents="none">
                     <DeckAnimatedSlot style={[{ flex: 1 }, rightSlotStyle]}>
-                        {mediaKind === 'video' ? (
+                        {rightItem.deckKind === 'video' ? (
                             <DeckVideoBackCard width={cardWidth} height={cardHeight} />
+                        ) : rightItem.deckKind === 'audio' ? (
+                            <DeckAudioBackCard width={cardWidth} height={cardHeight} />
                         ) : (
                             <DeckBackCard
                                 media={rightItem.media}
@@ -2088,32 +2267,77 @@ function MediaDeckStack({
                 <View style={cardSlot}>
                     <DeckAnimatedSlot style={[{ flex: 1 }, frontStyle]}>
                         {frontItem && cardWidth > 0 ? (
-                            mediaKind === 'video' ? (
-                                <DeckVideoFrontCard
-                                    key={frontItem.media.id}
-                                    media={frontItem.media}
-                                    width={cardWidth}
-                                    height={cardHeight}
-                                    interactive={advance == null}
-                                    onBlockAction={
-                                        editable
-                                            ? () => onBlockAction(frontItem.block.id)
-                                            : undefined
-                                    }
-                                />
-                            ) : (
-                                <DeckFrontCard
-                                    media={frontItem.media}
-                                    width={cardWidth}
-                                    height={cardHeight}
-                                    interactive={advance == null}
-                                    onBlockAction={
-                                        editable
-                                            ? () => onBlockAction(frontItem.block.id)
-                                            : undefined
-                                    }
-                                />
-                            )
+                            <>
+                                {/* 前卡卡体按成员 kind 分支（图/视频既有 Deck 卡复用口径：
+                                    点前卡按 kind 全屏——图 viewer / 视频全屏播放；音频 =
+                                    AudioBlock 常驻操作面，deck 内直接播放/暂停） */}
+                                {frontItem.deckKind === 'video' ? (
+                                    <DeckVideoFrontCard
+                                        key={frontItem.media.id}
+                                        media={frontItem.media}
+                                        width={cardWidth}
+                                        height={cardHeight}
+                                        interactive={advance == null && selection == null}
+                                        onBlockAction={
+                                            editable && selection == null
+                                                ? () => onBlockAction(frontItem.block.id)
+                                                : undefined
+                                        }
+                                    />
+                                ) : frontItem.deckKind === 'audio' ? (
+                                    <DeckAudioFrontCard
+                                        item={frontItem}
+                                        width={cardWidth}
+                                        height={cardHeight}
+                                        interactive={advance == null && selection == null}
+                                        dimmed={selection != null}
+                                        onBlockAction={() => onBlockAction(frontItem.block.id)}
+                                    />
+                                ) : (
+                                    <DeckFrontCard
+                                        media={frontItem.media}
+                                        width={cardWidth}
+                                        height={cardHeight}
+                                        interactive={advance == null && selection == null}
+                                        onBlockAction={
+                                            editable && selection == null
+                                                ? () => onBlockAction(frontItem.block.id)
+                                                : undefined
+                                        }
+                                    />
+                                )}
+                                {/* 多选覆盖层（z-10 压住前卡：点按 = 切换选中，全屏/长按
+                                    被屏蔽；角标 pointerEvents none 只作视觉）。触摸面零
+                                    className（deck 铁律，见组件注）：覆盖层走 inline style。
+                                    音频成员不可选：同位覆盖层仅吸收触摸（置灰在卡体上） */}
+                                {selection ? (
+                                    frontItem.deckKind === 'audio' ? (
+                                        <Pressable
+                                            style={SELECTION_OVERLAY_STYLE}
+                                            accessibilityLabel="录音不参与合并堆叠"
+                                        />
+                                    ) : (
+                                        <>
+                                            <Pressable
+                                                style={SELECTION_OVERLAY_STYLE}
+                                                onPress={() => selection.onToggle(frontItem.block.id)}
+                                                accessibilityRole="button"
+                                                accessibilityState={{
+                                                    selected: selection.selectedIds.has(frontItem.block.id),
+                                                }}
+                                                accessibilityLabel={
+                                                    selection.selectedIds.has(frontItem.block.id)
+                                                        ? '取消选择这一张'
+                                                        : '选择这一张'
+                                                }
+                                            />
+                                            <SelectionCheck
+                                                selected={selection.selectedIds.has(frontItem.block.id)}
+                                            />
+                                        </>
+                                    )
+                                ) : null}
+                            </>
                         ) : null}
                     </DeckAnimatedSlot>
                 </View>
@@ -2249,6 +2473,13 @@ type BlockEditorProps = {
     focusTextId?: string | null;
     /** 画布滚动协作句柄（#12/#12b 聚焦定位；屏层 useMemo 固定传入）。 */
     canvas?: EditorCanvasHandle;
+    /**
+     * 多选模式（合并堆叠，屏层持有状态）：null = 未开启。开启时媒体块（图/
+     * 视频就绪媒体）点按 = 切换选中（覆盖层屏蔽全屏/长按），音频置灰不可选，
+     * 文本块由屏层以 editable=false 传入实现「选择优先」。selectedIds 为
+     * **有序**清单的 Set 投影（合并保持选择顺序）。
+     */
+    selection?: { selectedIds: ReadonlySet<string>; onToggle(blockId: string): void } | null;
     onChange(blocks: JournalBlock[]): void;
     /** 文本块聚焦（屏层目前只借此清空待聚焦标记）。 */
     onFocusText?(id: string): void;
@@ -2272,6 +2503,7 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(funct
         editable,
         focusTextId,
         canvas,
+        selection,
         onChange,
         onFocusText,
         onBlurText,
@@ -2351,8 +2583,8 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(funct
                             <View style={groupMargin}>
                                 <MediaDeckStack
                                     items={unit.items}
-                                    mediaKind={unit.mediaKind}
                                     editable={editable}
+                                    selection={selection}
                                     onBlockAction={openActionBlock}
                                 />
                             </View>
@@ -2416,6 +2648,45 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(funct
                     return <PendingMediaBlock key={block.id} style={verticalMargin} />;
                 const media = mediaById.get(block.mediaId);
                 if (!media) return null;
+                // 多选模式（合并堆叠）：媒体块点按 = 切换选中，全屏/长按被选中
+                // 覆盖层屏蔽（absolute 后绘制在上，压住 MediaBlock 自身的
+                // Pressability 链）；音频置灰不可选（同位吸收层吞触摸 + 0.55
+                // 降透明，inline style 不落条件类）；pending 占位不参与（上方
+                // 原样渲染）。文本块的多选屏蔽由屏层 editable=false 传入实现。
+                if (selection) {
+                    const selected = selection.selectedIds.has(block.id);
+                    if (media.kind === 'audio') {
+                        return (
+                            <BlockReveal key={block.id} index={index}>
+                                <View
+                                    className="relative"
+                                    style={[verticalMargin, { opacity: 0.55 }]}
+                                >
+                                    <MediaBlock media={media} durationMs={block.durationMs} />
+                                    <Pressable
+                                        style={SELECTION_OVERLAY_STYLE}
+                                        accessibilityLabel="录音不参与合并堆叠"
+                                    />
+                                </View>
+                            </BlockReveal>
+                        );
+                    }
+                    return (
+                        <BlockReveal key={block.id} index={index}>
+                            <View className="relative" style={verticalMargin}>
+                                <MediaBlock media={media} durationMs={block.durationMs} />
+                                <Pressable
+                                    style={SELECTION_OVERLAY_STYLE}
+                                    onPress={() => selection.onToggle(block.id)}
+                                    accessibilityRole="button"
+                                    accessibilityState={{ selected }}
+                                    accessibilityLabel={selected ? '取消选择' : '选择'}
+                                />
+                                <SelectionCheck selected={selected} />
+                            </View>
+                        </BlockReveal>
+                    );
+                }
                 return (
                     <BlockReveal key={block.id} index={index}>
                         <View className="relative" style={verticalMargin}>

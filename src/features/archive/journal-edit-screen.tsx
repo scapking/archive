@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
 import {
+    ActivityIndicator,
     BackHandler,
     Keyboard,
     KeyboardAvoidingView,
@@ -10,9 +11,11 @@ import {
     View,
     type ScrollViewInstance,
 } from 'react-native';
+import { Path, Rect } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
     BouncyPressable,
+    createIcon,
     LucideBookOpen,
     LucidePencil,
     LucidePlus,
@@ -21,8 +24,11 @@ import {
 // 深路径注记：ChevronUp/Down 与 editor 的节奏表/画布句柄未在 ui/index.ts 出口，
 // 域内深取（CloseButton 已收口进 barrel，不再深取）。
 import { ChevronDownIcon, ChevronUpIcon } from './ui/editor-icons';
+// 深路径注记：录音会话控制器（后台继续模型宿主）未在 ui/index.ts 出口（本轮
+// 改动权限不含 barrel），域内深取（editor-icons / close-button 先例）。
+import { AudioRecordingSession } from './ui/recorder-overlay';
 // 深路径注记：节奏表 / 画布句柄 / 键盘动态垫高 hook 未在 ui/index.ts 出口
-//（本轮改动权限仅 journal-edit-screen / editor 两文件），域内深取（先例同上）。
+//（域内深取纪律，先例同上）。
 import {
     EDITOR_RHYTHM,
     useKeyboardCanvasBottomPadding,
@@ -35,8 +41,10 @@ import { useArchiveRevision, useArchiveStore } from './store';
 import {
     canInsertImages,
     countImageBlocks,
+    dissolveStackBlocks,
     insertPendingBlock,
     isEditable,
+    mergeStackBlocks,
     moveBlock,
     newBlockId,
     newParagraphBlock,
@@ -62,7 +70,7 @@ import {
     EmptyState,
     InsertMenu,
     LoadingView,
-    RecordingOverlay,
+    PENDING_MEDIA_ID,
     RenameCard,
     TRIP_ICON_DEFAULT,
     TripBadge,
@@ -85,6 +93,33 @@ const MAX_MEDIA = 12;
  */
 const CANVAS_BOTTOM_BASE_INSET = 96;
 
+/* ------------------------------------------------------------------ */
+/* 图标（块操作卡新增行；lucide 1.64 path 数据，createIcon 官方用法）    */
+/* ------------------------------------------------------------------ */
+
+/** 合并堆叠（块操作卡行；layers）。 */
+const LayersIcon = createIcon(
+    <>
+        <Path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z" />
+        <Path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12" />
+        <Path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17" />
+    </>,
+);
+
+/** 解散堆叠（块操作卡行；ungroup）。 */
+const UngroupIcon = createIcon(
+    <>
+        <Rect x={11} y={14} width={10} height={7} rx={2} />
+        <Rect x={3} y={3} width={10} height={7} rx={2} />
+    </>,
+);
+
+/**
+ * 采集会话（录音 / 拍摄二选一的互斥单元）：控制器组件挂屏层（覆盖层只是
+ * 视图），一次至多一个采集面在跑；结束 = 屏层置 null（控制器随会话卸载）。
+ */
+type CaptureSession = { kind: 'audio' } | { kind: 'camera'; mode: 'photo' | 'video' };
+
 /**
  * 连续日记编辑器（行程/日常通用）——三种入口：不传参 = 今天日常；
  * tripId+date = 行程某天；journalId = 直达某篇。
@@ -93,19 +128,28 @@ const CANVAS_BOTTOM_BASE_INSET = 96;
  * - 底部工具坞清空：保存状态与字数上 masthead（轻量 meta 行），底部只留
  *   一枚 + 罗盘浮钮；「完成收笔」收进 + 选择器（动作型入口统一一处），
  *   卡内确认步强调「收笔后不可再修改」；
- * - **标题编辑走屏头编辑钮**（#1 屏头同构轮；#3 回退口径）：masthead =
- *   CloseButton 返回 + TripBadge（trip 模式）+ 名称行（有标题才渲染，无标题
- *   回纯日期口径，不再显示「M月D日 日记」占位名）+ 编辑钮；日期行恢复第六轮
- *   前排版（30px 日期 + 右侧状态）并整体上移；meta 行左槽为随机安慰话
- *   （ui/comfort-quotes，挂载时定一句）。编辑钮打开屏内重命名卡（共享组件
- *   ui/rename-card RenameCard，与首页笔记卡长按卡 archive-screen 同一落库
- *   通道 store.updateJournalTitle）；只读态编辑钮不渲染；
- * - **完成后锁定**（#7）：收笔/跨日即只读，不再自动重开（reopenAttemptedRef
- *   已移除）——「24:00 收笔后不可改」是无例外的产品承诺；
- * - 插入统一走 pending 占位流：录音/拍照/拍视频/相册先插占位块，
- *   落盘后回填真实媒体块（**只插媒体块**：不追加文本段、不自动聚焦——
- *   想写字自己点 + →「添加输入框」）；异常落 store.error 上浮且回滚占位；
- *   updater 一律纯函数（块 id 在提交路径外预生成——#1.2 修复项）；
+ * - **标题编辑走屏头编辑钮**（#1 屏头同构轮；#3 回退口径）；完成后锁定
+ *   （#7）：收笔/跨日即只读；
+ * - **录音/拍摄后台继续模型**：采集控制器（AudioRecordingSession /
+ *   CameraCaptureOverlay 控制器化）挂本屏层，覆盖层只是视图——关闭按钮
+ *   （X）= 收起继续后台执行（录音 → 屏层悬浮计时 chip「● 录音中 0:32」，
+ *   点按重开覆盖层无缝恢复；拍摄视频 → CameraView 保持挂载收成右下 96×144
+ *   悬浮小窗，点小窗重开全屏），只有手动停止才是真停止 → 落库；取消仅
+ *   覆盖层内/小窗长按；**离开编辑屏（返回/收笔）自动停止并落库（不丢素材）**
+ *   ——离开拦截点 = 返回钮/硬件返回/收笔入口（captureLeaveRef 登记链），
+ *   未拦截路径（iOS 侧滑）由控制器卸载兜底尽力保全（取舍见各控制器注）；
+ * - **插入后台异步并行**：doAttach 同步插 pending 占位即返回，落盘+落库为
+ *   后台任务（pendingUploadsRef 进程内注册表，多任务并行）；+ 菜单/插入在
+ *   上传中不再禁用（picker/相机/录音一次一个的互斥保留）；「完成收笔」
+ *   等待全部在途 allSettled（FAB 轻量进行态）再保存收笔；单任务失败仅该
+ *   pending 回滚 + store.error；录制中可继续编辑插入（采集不阻塞编辑）；
+ * - **自定义合并堆叠**：块操作卡新增「合并堆叠」（屏内图/视频 ≥2 可选）→
+ *   多选模式（媒体块勾选、点按切换、屏蔽全屏/长按，音频置灰不可选，顶部
+ *   选择栏「已选 N · 合并 · 取消」）→ 合并 = 物理重排成连续段 + 同 groupId
+ *   （journal-logic.mergeStackBlocks）；显式组堆叠操作卡新增「解散堆叠」
+ *   （dissolveStackBlocks 清 groupId——同 kind 相邻成员按默认规则重新成组）；
+ * - 插入统一走 pending 占位流（异常上浮 error 且回滚占位）；updater 一律
+ *   纯函数（块 id 在提交路径外预生成——#1.2）；
  * - 块操作卡（#1/#9）：媒体长按/双击、文本聚焦 ⋯ 钮 → 屏根浮层；
  * - 正文 800ms 防抖 + 失焦即存双通道。
  */
@@ -130,14 +174,17 @@ export function JournalEditScreen({
     const [trip, setTrip] = useState<TripRow | null>(null);
     const [blocks, setBlocks] = useState<JournalBlock[]>([]);
     const [media, setMedia] = useState<JournalMediaRow[]>([]);
-    const [busy, setBusy] = useState(false);
     const [savedAt, setSavedAt] = useState<number | null>(null);
     const [focusTextId, setFocusTextId] = useState<string | null>(null);
-    // 插入通道：+ 选择器 / 录音覆盖层 / 拍摄覆盖层 / 块操作卡（条件渲染遮罩，禁 RN Modal）
+    // 采集会话（录音/拍摄后台继续模型）：null = 空闲；一次至多一个采集面
+    //（picker/相机/录音互斥保留，编辑插入不受限——后台并行模型）
+    const [captureSession, setCaptureSession] = useState<CaptureSession | null>(null);
+    // 「完成收笔」等待在途上传的轻量进行态（FAB spinner）
+    const [finishing, setFinishing] = useState(false);
+    // 多选模式（合并堆叠）：orderedIds = **选择顺序**的块 id 清单（合并重排
+    // 按此顺序落位）
+    const [selectMode, setSelectMode] = useState<{ orderedIds: string[] } | null>(null);
     const [menuOpen, setMenuOpen] = useState(false);
-    const [recordingOpen, setRecordingOpen] = useState(false);
-    const [cameraOpen, setCameraOpen] = useState(false);
-    const [cameraMode, setCameraMode] = useState<'photo' | 'video'>('photo');
     const [actionBlockId, setActionBlockId] = useState<string | null>(null);
     // 标题重命名卡（屏头编辑钮入口；与首页长按卡同语义，共享组件 ui/rename-card）
     const [renameOpen, setRenameOpen] = useState(false);
@@ -225,7 +272,10 @@ export function JournalEditScreen({
     }, [journal, revision, store]);
 
     // 防抖自动保存（800ms）：跳过载入回填帧。
-    // blocks/journal 同步进 ref（卸载兜底 flush 要取最新值）；dirty 标记是否有未落库改动
+    // blocks/journal 同步进 ref（卸载兜底 flush / 后台链路要取最新值）；dirty
+    // 标记是否有未落库改动。**blocksRef 是本屏 blocks 的权威镜像**：所有写入
+    // 一律经 applyBlocks（同步写 ref 再 setState），后台落库链（在途上传回填、
+    // 离开屏追加媒体块）在任意渲染时序下都基于最新值，杜绝「后写覆盖」竞态。
     const firstRender = useRef(true);
     const blocksRef = useRef(blocks);
     const journalRef = useRef(journal);
@@ -257,6 +307,21 @@ export function JournalEditScreen({
         return () => clearTimeout(timer);
     }, [blocks, journal, store]);
 
+    /**
+     * blocks 唯一写入口（ref 权威镜像 + setState）：读 ref 当前值算 next、
+     * 同步回写 ref 再提交渲染——并发链路（多个在途上传同帧回填、离开屏追加、
+     * 文本编辑）按到达序串行合并，不丢写；卸载后 setBlocks 被 React 静默
+     * 忽略，ref 仍供后台落库链读取（纯 store/db 路径自洽）。
+     */
+    const applyBlocks = useCallback(
+        (updater: (current: JournalBlock[]) => JournalBlock[]) => {
+            const next = updater(blocksRef.current);
+            blocksRef.current = next;
+            setBlocks(next);
+        },
+        [],
+    );
+
     // 卸载兜底 flush：防抖窗口（≤800ms）内 safeBack/dismiss 退出时补存最后一次
     // 正文，否则静默丢失；fire-and-forget 但必须 catch（卸载后无界面）。
     //（标题不在编辑器落库——编辑入口在首页笔记卡重命名卡，见文件头注）
@@ -273,6 +338,26 @@ export function JournalEditScreen({
             }
         };
     }, [store]);
+
+    // 采集离开拦截点（录音/拍摄控制器经 onRegisterLeave 登记 stopForLeave）：
+    // 返回/收笔入口调用——录制中自动停录并落库（不丢素材），空闲时 no-op
+    const captureLeaveRef = useRef<(() => Promise<void>) | null>(null);
+    const registerCaptureLeave = useCallback((stop: (() => Promise<void>) | null) => {
+        captureLeaveRef.current = stop;
+    }, []);
+
+    // 在途媒体上传注册表（进程内 Map）：pendingId → { promise, kind }——
+    // 多任务并行、互不影响；完成收笔经 allSettled 等待全部收敛；任务收敛即
+    // 自摘除（见 doAttach）。
+    const pendingUploadsRef = useRef(
+        new Map<string, { promise: Promise<void>; kind: 'image' | 'video' | 'audio' }>(),
+    );
+    // 相册选取互斥（系统 picker 单例，防重复拉起）
+    const pickingRef = useRef(false);
+
+    // 多选模式 ref 镜像（稳定回调/返回键读取）
+    const selectModeRef = useRef(selectMode);
+    selectModeRef.current = selectMode;
 
     const editable = journal ? isEditable(journal.status) : false;
     const saving = store((s) => s.savingJournal);
@@ -292,6 +377,46 @@ export function JournalEditScreen({
     const actionIndex = actionBlockId
         ? blocks.findIndex((block) => block.id === actionBlockId)
         : -1;
+    const actionBlock = actionBlockId
+        ? blocks.find((block) => block.id === actionBlockId) ?? null
+        : null;
+    // 「合并堆叠」入口条件：屏内可选媒体（就绪图/视频）≥ 2（音频/pending 不
+    // 可选——多选模式置灰，见 BlockEditor selection 注）
+    const canMergeStack = useMemo(() => {
+        let count = 0;
+        for (const block of blocks) {
+            if (block.t !== 'media' || block.mediaId === PENDING_MEDIA_ID) continue;
+            const kind = mediaById.get(block.mediaId)?.kind;
+            if (kind === 'image' || kind === 'video') count += 1;
+            if (count >= 2) return true;
+        }
+        return false;
+    }, [blocks, mediaById]);
+    /** 多选切换（选择顺序保持追加序，合并重排按此顺序落位）。 */
+    const toggleSelect = useCallback((blockId: string) => {
+        setSelectMode((current) => {
+            if (!current) return current;
+            const exists = current.orderedIds.includes(blockId);
+            return {
+                orderedIds: exists
+                    ? current.orderedIds.filter((id) => id !== blockId)
+                    : [...current.orderedIds, blockId],
+            };
+        });
+    }, []);
+
+    const cancelSelect = useCallback(() => setSelectMode(null), []);
+
+    // 多选编辑器面：选择态屏蔽文本聚焦（editable=false 下传），媒体勾选数据。
+    // toggleSelect 在上方声明（useCallback [] 稳定），这里只做 Set 投影。
+    const editorEditable = editable && !selectMode;
+    const selection = useMemo(
+        () =>
+            selectMode
+                ? { selectedIds: new Set(selectMode.orderedIds), onToggle: toggleSelect }
+                : null,
+        [selectMode, toggleSelect],
+    );
 
     // 画布空白收键层的 onPress（#K2）：引用稳定（editorRef 为固定 ref），
     // CanvasDismissLayer 的 memo 契约依赖它恒等
@@ -314,10 +439,11 @@ export function JournalEditScreen({
                     ref={editorRef}
                     blocks={blocks}
                     mediaById={mediaById}
-                    editable={editable}
+                    editable={editorEditable}
                     focusTextId={focusTextId}
                     canvas={canvas}
-                    onChange={setBlocks}
+                    selection={selection}
+                    onChange={(next) => applyBlocks(() => next)}
                     onFocusText={() => setFocusTextId(null)}
                     onBlurText={() => {
                         if (journal && isEditable(journal.status)) {
@@ -338,140 +464,150 @@ export function JournalEditScreen({
                 />
             </View>
         ),
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- 闭包读取项已尽数列入（setBlocks/setFocusTextId/setActionBlockId/editorRef 均为稳定引用）
-        [blocks, mediaById, editable, focusTextId, canvas, journal, store],
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 闭包读取项已尽数列入（applyBlocks/稳定 setter/editorRef 稳定引用）
+        [blocks, mediaById, editorEditable, focusTextId, canvas, selection, journal, store],
     );
 
     /**
-     * 插入流本体（busy 由调用方管理）：pending 占位 → file-storage 落盘 → 回填
-     * 真实媒体块。**只插媒体块**：不追加空文本段、不自动聚焦新输入框（用户
-     * 反馈——想写字自己点 + →「添加输入框」，媒体插入只管媒体本身，pending
-     * 占位 → 回填的既有流程不变）。异常上浮 error 并回滚占位。
-     * 落点/回填走 journal-logic 纯函数（v9 插入语义回正，用户裁决推翻 v8）：
-     * - 占位插入点 = **真实文末追加**（不跳位：v8 的「图片插到最后一个图片
-     *   块之后」会在堆叠位于文档中间、且其后已加输入框/音频/视频时越过新
-     *   内容并入旧堆叠，破坏文档时间线）；回填后是否并入堆叠只由**自然相
-     *   邻**决定（buildRenderUnits 连续相邻判定）——堆叠恰在文末 → 新图紧
-     *   邻并入；堆叠在中间/其后有其他内容 → 新图文末独立不成组；
-     * - 回填 = 占位**原位替换**为真实媒体块（v8 修复保留：占位不被后续编
-     *   辑挤漂移，真实块留在插入位置）；失败仅移除占位。
-     * updater 一律纯函数：块 id 在 updater 外预生成（#1.2：旧实现把 id 生成/
-     * 焦点副作用夹进 updater，并发重跑会生成漂移 id，媒体回填竞态下布局错乱）。
-     *
-     * @returns 本次插入的 pending 占位块 id（供调用方兜底 catch 精确回滚）。
+     * 插入流本体（**后台异步并行**）：pending 占位**同步**插入（即时反馈，
+     * 不阻塞继续写字），落盘+落库为后台任务注册进 pendingUploadsRef——多任务
+     * 并行互不等待；单任务失败仅回滚该 pending + 上浮 store.error，其余在途
+     * 任务不受影响。**只插媒体块**：不追加空文本段、不自动聚焦（想写字自己
+     * 点 + →「添加输入框」）。落点/回填走 journal-logic 纯函数（v9 语义）：
+     * 占位真实文末追加、回填原位替换；失败仅移除占位。
+     * 守卫在入口同步判定：媒体总量（含在途占位）与图片九图配额（已就绪图片
+     * + 在途图片任务计数）。updater 一律纯函数（块 id 在 updater 外预生成）。
      */
-    const doAttach = async (
+    const doAttach = (
         kind: 'image' | 'video' | 'audio',
         uri: string,
         width: number | null,
         height: number | null,
         durationMs?: number,
-    ) => {
-        if (!journal) return null;
+    ): void => {
+        const row = journalRef.current;
+        if (!row || !isEditable(row.status)) return;
+        // 媒体总量守卫：blocks 已含在途 pending 占位（同为 t:'media'，天然计入）
+        if (blocksRef.current.filter((block) => block.t === 'media').length >= MAX_MEDIA) {
+            store.setState({ error: `本篇媒体最多 ${MAX_MEDIA} 个。` });
+            return;
+        }
+        // 图片配额守卫（微信九图口径）：已就绪图片 + 在途图片任务数
+        if (kind === 'image') {
+            let pendingImages = 0;
+            for (const entry of pendingUploadsRef.current.values()) {
+                if (entry.kind === 'image') pendingImages += 1;
+            }
+            const imageCount =
+                countImageBlocks(
+                    blocksRef.current,
+                    (mediaId) => mediaById.get(mediaId)?.kind === 'image',
+                ) + pendingImages;
+            if (!canInsertImages(imageCount, 1)) {
+                store.setState({ error: `图片最多 ${JOURNAL_IMAGE_LIMIT} 张。` });
+                return;
+            }
+        }
         const pendingId = newBlockId();
-        // 先插 pending 占位（真实文末追加，不阻塞继续写字），落盘后原位回填
-        setBlocks((current) => insertPendingBlock(current, pendingId));
-        try {
-            const mediaId = await store.getState().attachJournalMedia(journal.id, kind, uri, width, height);
-            // 媒体块 id 在 updater 外预生成（#1.2 纯函数纪律）；落库失败不生成
-            const mediaBlockId = mediaId ? newBlockId() : null;
-            setBlocks((current) =>
-                // 原位回填：段落数量不变、不补空文本段；落库失败（store 已上浮
-                // error）仅移除占位，不进无效媒体块（画布段落由既有不变量保证
-                // 非空）；只动本 pendingId，不误伤其他在途占位
-                resolvePendingBlock(
-                    current,
-                    pendingId,
-                    mediaId && mediaBlockId
-                        ? { blockId: mediaBlockId, mediaId, durationMs }
-                        : null,
-                ),
-            );
-        } catch (caught) {
-            // 通道失败（环境/权限/取消异常）必须可见，不能是"点了没反应"
-            const label = kind === 'video' ? '视频' : kind === 'audio' ? '录音' : '图片';
-            store.setState({
-                error: `${label}保存失败：${caught instanceof Error ? caught.message : String(caught)}`,
-            });
-            // 回滚 pending 占位（按 pendingId 精确回滚，不全局过滤）
-            setBlocks((current) => resolvePendingBlock(current, pendingId, null));
-        }
-        return pendingId;
+        applyBlocks((current) => insertPendingBlock(current, pendingId));
+        const label = kind === 'video' ? '视频' : kind === 'audio' ? '录音' : '图片';
+        // 后台任务（不 await——并行模型的核心）：收敛后注册表自摘除
+        const task = (async () => {
+            try {
+                const mediaId = await store
+                    .getState()
+                    .attachJournalMedia(row.id, kind, uri, width, height);
+                // 媒体块 id 在 updater 外预生成（#1.2 纯函数纪律）；落库失败不生成
+                const mediaBlockId = mediaId ? newBlockId() : null;
+                applyBlocks((current) =>
+                    // 原位回填：段落数量不变、不补空文本段；落库失败（store 已上浮
+                    // error）仅移除占位，不进无效媒体块；只动本 pendingId，不误伤
+                    // 其他在途占位
+                    resolvePendingBlock(
+                        current,
+                        pendingId,
+                        mediaId && mediaBlockId
+                            ? { blockId: mediaBlockId, mediaId, durationMs }
+                            : null,
+                    ),
+                );
+            } catch (caught) {
+                // 单任务失败：仅回滚本 pending + 上浮 error，不影响其他在途任务
+                store.setState({
+                    error: `${label}保存失败：${caught instanceof Error ? caught.message : String(caught)}`,
+                });
+                applyBlocks((current) => resolvePendingBlock(current, pendingId, null));
+            }
+        })();
+        pendingUploadsRef.current.set(pendingId, { promise: task, kind });
+        void task.then(() => {
+            pendingUploadsRef.current.delete(pendingId);
+        });
     };
 
     /**
-     * 图片配额守卫（相册/拍照两路径统一入口，#5b）：现有图片数 + 待插张数
-     * 超过 JOURNAL_IMAGE_LIMIT（journal-logic 常量，微信九图口径）→ 落
-     * store.error 可见提示并拒绝。守卫触发必须给可见反馈（同 busy 守卫
-     * #1 口径）；kind 判定注入 mediaById（pending 占位查不到行不计入）。
-     * 返回 true = 放行。
+     * 离开屏落库（DB 级，无 UI）：停录产物直接追加为**真实媒体块**（无 pending
+     * 占位——屏幕即将离开/已离开，占位回填链无人渲染），追加后立刻落库一次。
+     * blocks 读写全走 blocksRef 权威镜像：卸载后的兜底 flush、收笔的保存都会
+     * 读到包含本块的最新值，不存在「后写覆盖」竞态（见 applyBlocks 注）。
+     * 失败仅上浮 error（素材文件留 cache 随系统清理），不阻塞离开。
      */
-    const assertImageQuota = (incoming: number): boolean => {
-        const imageCount = countImageBlocks(
-            blocks,
-            (mediaId) => mediaById.get(mediaId)?.kind === 'image',
-        );
-        if (canInsertImages(imageCount, incoming)) return true;
-        store.setState({ error: `图片最多 ${JOURNAL_IMAGE_LIMIT} 张。` });
-        return false;
-    };
-
-    /**
-     * 插入统一入口（录音/拍摄完成回调用）：busy 守卫 + 上限守卫 + 统一流。
-     * 守卫触发必须给可见反馈（#1「点了没反应」修复面）：静默 return 会被
-     * 感知为「没点上，再点一下才好」。图片路径在总量守卫之外再过图片配额
-     * （JOURNAL_IMAGE_LIMIT = 9，拍照与相册同闸）。
-     */
-    const attachMedia = async (
+    const appendLeaveMediaBlock = async (
+        journalId: string,
         kind: 'image' | 'video' | 'audio',
         uri: string,
         width: number | null,
         height: number | null,
         durationMs?: number,
     ) => {
-        if (!journal) return;
-        if (busy) {
-            store.setState({ error: '上一个媒体还在保存，稍等一下。' });
-            return;
-        }
-        const mediaCount = blocks.filter((b) => b.t === 'media').length;
-        if (mediaCount >= MAX_MEDIA) {
-            store.setState({ error: `本篇媒体最多 ${MAX_MEDIA} 个。` });
-            return;
-        }
-        if (kind === 'image' && !assertImageQuota(1)) return;
-        setBusy(true);
-        try {
-            await doAttach(kind, uri, width, height, durationMs);
-        } catch (caught) {
-            // 中断场景：doAttach 之外的意外 reject 也必须可见——只写 finally 会让
-            // busy 复位但异常变 unhandled rejection。占位回滚已由 doAttach 自愈
-            // （其内部 catch 按 pendingId 精确回滚，v8 起不再在外层做全局 pending
-            // 过滤——那会误删其他在途占位）
-            store.setState({
-                error: `媒体插入失败：${caught instanceof Error ? caught.message : String(caught)}`,
-            });
-        } finally {
-            setBusy(false);
-        }
+        const mediaId = await store
+            .getState()
+            .attachJournalMedia(journalId, kind, uri, width, height);
+        if (!mediaId) return; // 失败文案已由 store 上浮
+        const mediaBlockId = newBlockId();
+        applyBlocks((current) => [
+            ...current,
+            {
+                t: 'media' as const,
+                id: mediaBlockId,
+                mediaId,
+                ...(durationMs != null ? { durationMs } : {}),
+            },
+        ]);
+        await store.getState().saveJournalBlocks(journalId, blocksRef.current);
     };
 
-    /** 相册通道：权限 → 选图/选视频 → 统一插入流。图片在打开 picker 前先过
-     *  配额守卫（与拍照同闸，省一次权限流程；当前通道单张选入，incoming=1，
-     *  未来放开多选时传批量张数即可）。 */
+    /** 录音离开屏落库（AudioRecordingSession stopForLeave 消费）。 */
+    const persistLeaveRecording = useCallback(
+        async (result: RecordingResult) => {
+            const row = journalRef.current;
+            if (!row || !isEditable(row.status)) return;
+            await appendLeaveMediaBlock(row.id, 'audio', result.uri, null, null, result.durationMs);
+        },
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- appendLeaveMediaBlock 读 ref/store，无状态依赖
+        [],
+    );
+
+    /** 拍摄离开屏落库（CameraCaptureOverlay stopForLeave 消费）。 */
+    const persistLeaveCapture = useCallback(
+        async (capture: CameraCapture) => {
+            const row = journalRef.current;
+            if (!row || !isEditable(row.status)) return;
+            await appendLeaveMediaBlock(row.id, capture.kind, capture.uri, capture.width, capture.height);
+        },
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- appendLeaveMediaBlock 读 ref/store，无状态依赖
+        [],
+    );
+
+    /** 相册通道：权限 → 选图/选视频 → 统一插入流（doAttach 同步返回，后台并行）。 */
     const pick = async (kind: 'image' | 'video') => {
-        if (!journal) return;
-        if (busy) {
-            store.setState({ error: '上一个媒体还在保存，稍等一下。' });
+        const row = journalRef.current;
+        if (!row || !isEditable(row.status)) return;
+        if (pickingRef.current) {
+            store.setState({ error: '相册选取进行中，稍等一下。' });
             return;
         }
-        const mediaCount = blocks.filter((b) => b.t === 'media').length;
-        if (mediaCount >= MAX_MEDIA) {
-            store.setState({ error: `本篇媒体最多 ${MAX_MEDIA} 个。` });
-            return;
-        }
-        if (kind === 'image' && !assertImageQuota(1)) return;
-        setBusy(true);
+        pickingRef.current = true;
         try {
             const permission = await imagePicker.getMediaLibraryPermissionAsync();
             if (!permission.granted) {
@@ -488,40 +624,50 @@ export function JournalEditScreen({
             });
             if (result.canceled || result.assets.length === 0) return;
             const asset = result.assets[0];
-            await doAttach(kind, asset.uri, asset.width ?? null, asset.height ?? null);
+            doAttach(kind, asset.uri, asset.width ?? null, asset.height ?? null);
         } catch (caught) {
             store.setState({
                 error: `${kind === 'video' ? '视频' : '图片'}选取失败：${caught instanceof Error ? caught.message : String(caught)}`,
             });
         } finally {
-            setBusy(false);
+            pickingRef.current = false;
         }
     };
 
-    /** 收笔（#7）：保存失败中止；收笔后本页即只读锁定（无重开路径）。 */
+    /**
+     * 收笔（#7）：录制中先走「离开屏自动停止落库」（等产物落库完成，后续
+     * 保存 blocks 才带得上）；再等待全部在途上传收敛（allSettled——单任务
+     * 失败已各自上浮 error 并回滚占位，不互相影响也不中止收笔）；保存失败
+     * 中止；收笔后本页即只读锁定（无重开路径）。
+     */
     const complete = async () => {
-        if (!journal) return;
-        if (busy) {
-            store.setState({ error: '媒体还在保存，稍等一下再收笔。' });
-            return;
+        const row = journalRef.current;
+        if (!row) return;
+        await captureLeaveRef.current?.();
+        if (pendingUploadsRef.current.size > 0) {
+            setFinishing(true);
+            try {
+                await Promise.allSettled(
+                    Array.from(pendingUploadsRef.current.values(), (entry) => entry.promise),
+                );
+            } finally {
+                setFinishing(false);
+            }
         }
         // 保存失败必须中止收笔：否则旧内容会连同本次输入一起封存。
         // 结果按 unknown 收窄判断：旧契约返回 void（放行），store 侧正收紧为
         // Promise<boolean>（false 中止）——两种形态下这里的语义都成立
-        const saved: unknown = await store.getState().saveJournalBlocks(journal.id, blocks);
+        const saved: unknown = await store.getState().saveJournalBlocks(row.id, blocksRef.current);
         if (saved === false) return;
-        await store.getState().completeJournal(journal.id);
+        await store.getState().completeJournal(row.id);
         safeBack();
     };
 
-    /** + 选择器动作分发：录音/拍照/拍视频先收键盘，相册走既有 picker 通道，
-     *  添加输入框走块栈追加（#11）。busy 只护媒体通道（非媒体动作放行）。 */
+    /** + 选择器动作分发：媒体动作不再受上传阻塞（后台并行）；采集三行保持
+     *  「一次一个」互斥（录音/相机进行中给可见反馈）；相册/文本随时可用。 */
     const runInsert = async (action: InsertAction) => {
-        if (!journal) return;
-        if (action !== 'complete' && action !== 'append-text' && busy) {
-            store.setState({ error: '上一个媒体还在保存，稍等一下。' });
-            return;
-        }
+        const row = journalRef.current;
+        if (!row) return;
         switch (action) {
             case 'complete': {
                 Keyboard.dismiss();
@@ -529,6 +675,16 @@ export function JournalEditScreen({
                 return;
             }
             case 'record': {
+                // 采集互斥：已有录音/拍摄进行中 → 可见反馈（不静默吞点按）
+                if (captureSession) {
+                    store.setState({
+                        error:
+                            captureSession.kind === 'audio'
+                                ? '已有录音在进行中。'
+                                : '相机使用中，先处理拍摄再来录音。',
+                    });
+                    return;
+                }
                 // 麦克风权限由屏层处理（录音覆盖层只负责录制本身）
                 const permission = await audio.getRecordingPermissionAsync();
                 if (!permission.granted) {
@@ -539,19 +695,24 @@ export function JournalEditScreen({
                     }
                 }
                 Keyboard.dismiss();
-                setRecordingOpen(true);
+                setCaptureSession({ kind: 'audio' });
                 return;
             }
             case 'photo':
+            case 'video': {
+                if (captureSession) {
+                    store.setState({
+                        error:
+                            captureSession.kind === 'camera'
+                                ? '相机使用中，先处理拍摄。'
+                                : '录音进行中，不能同时拍摄。',
+                    });
+                    return;
+                }
                 Keyboard.dismiss();
-                setCameraMode('photo');
-                setCameraOpen(true);
+                setCaptureSession({ kind: 'camera', mode: action === 'video' ? 'video' : 'photo' });
                 return;
-            case 'video':
-                Keyboard.dismiss();
-                setCameraMode('video');
-                setCameraOpen(true);
-                return;
+            }
             case 'library-image':
                 void pick('image');
                 return;
@@ -560,57 +721,91 @@ export function JournalEditScreen({
                 return;
             case 'append-text': {
                 // 「+ → 添加输入框」（#11）：块 id 在 updater 外预生成、焦点走
-                // focusTextId 通道（TextBlock 内延后一帧聚焦 + Android 滚动补偿，
-                // 机制不变）。末段已是空段时不堆积空行，直接聚焦续写（连点两次 +
-                // 不会出现两个空段）。注：媒体插入已改为不自动建段，本动作是
-                // 唯一的手动加段入口。
-                // 闭包 blocks 判定安全：菜单打开期间键盘已收起，blocks 不会变化。
-                const last = blocks[blocks.length - 1];
+                // focusTextId 通道（TextBlock 内延后一帧聚焦 + Android 滚动补偿）。
+                // 末段已是空段时不堆积空行，直接聚焦续写。判定读 blocksRef 权威
+                // 镜像（后台回填链同帧写入也不丢）。
+                const current = blocksRef.current;
+                const last = current[current.length - 1];
                 if (last && last.t === 'p' && last.text === '') {
                     setFocusTextId(last.id);
                     return;
                 }
                 const appended = newParagraphBlock();
-                setBlocks((current) => [...current, appended]);
+                applyBlocks((blocks) => [...blocks, appended]);
                 setFocusTextId(appended.id);
                 return;
             }
         }
     };
 
-    const onRecordingComplete = (result: RecordingResult) => {
-        setRecordingOpen(false);
-        void attachMedia('audio', result.uri, null, null, result.durationMs);
+    /** 合并确认：物理重排 + 同 groupId（journal-logic.mergeStackBlocks）。 */
+    const confirmMerge = useCallback(() => {
+        const current = selectModeRef.current;
+        if (!current || current.orderedIds.length < 2) return;
+        const ordered = current.orderedIds;
+        const groupId = newBlockId();
+        applyBlocks((blocks) => mergeStackBlocks(blocks, ordered, groupId));
+        setSelectMode(null);
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- applyBlocks 稳定引用
+    }, []);
+
+    /** 解散堆叠（仅显式组）：清 groupId；同 kind 相邻成员按默认规则重新成组。 */
+    const dissolveActionStack = () => {
+        const gid = actionBlock?.t === 'media' ? actionBlock.groupId : null;
+        if (!gid) return;
+        setActionBlockId(null);
+        applyBlocks((current) => dissolveStackBlocks(current, gid));
     };
 
-    const onCameraCapture = (capture: CameraCapture) => {
-        setCameraOpen(false);
-        void attachMedia(
-            capture.kind,
-            capture.uri,
-            capture.width,
-            capture.height,
-        );
+    /** 块操作卡「合并堆叠」行：以当前块为起点进入多选（首块已选中）。 */
+    const openMergeSelect = () => {
+        if (!actionBlockId) return;
+        const anchor = actionBlockId;
+        setActionBlockId(null);
+        Keyboard.dismiss();
+        setSelectMode({ orderedIds: [anchor] });
     };
 
-    /** 拍摄覆盖层的相册兜底入口（权限拒绝态）：转相册图片通道。 */
+    /** 拍摄覆盖层的相册兜底入口（权限拒绝态）：关闭会话转相册图片通道。 */
     const onCameraLibraryFallback = () => {
-        setCameraOpen(false);
+        setCaptureSession(null);
         void pick('image');
     };
 
-    /** 块操作卡动作（上移/下移/删除）：移块不删文件（软删除语义）。 */
+    // 离开编辑屏（返回钮/硬件返回）：录制/拍摄进行中 = 自动停止并落库（不丢
+    // 素材，后台链路自洽，不阻塞返回导航）；多选中 = 先退出选择态；空闲 = 直接
+    // 返回。Android 返回键在此收口（浮层各自的 handler 在栈顶优先响应）。
+    const handleLeave = useCallback(() => {
+        if (selectModeRef.current) {
+            setSelectMode(null);
+            return;
+        }
+        void captureLeaveRef.current?.();
+        safeBack();
+    }, []);
+
+    useEffect(() => {
+        const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+            handleLeave();
+            return true;
+        });
+        return () => sub.remove();
+    }, [handleLeave]);
+
+    /** 块操作卡动作（上移/下移）：移块不删文件（软删除语义）。读 blocksRef
+     *  权威镜像（后台回填/离开追加同帧写入不丢）。 */
     const moveActionBlock = (direction: -1 | 1) => {
         if (!actionBlockId) return;
         const id = actionBlockId;
-        setBlocks((current) => moveBlock(current, id, direction));
+        applyBlocks((current) => moveBlock(current, id, direction));
     };
+
+    /** 块操作卡动作（删除）：删到空时 removeBlock 会补一个可落笔空段。 */
     const removeActionBlock = () => {
         if (!actionBlockId) return;
         const id = actionBlockId;
         setActionBlockId(null);
-        // 删到空时 removeBlock 会补一个可落笔空段（编辑器永不空容器）
-        setBlocks((current) => removeBlock(current, id));
+        applyBlocks((current) => removeBlock(current, id));
     };
 
     // 载入失败态（自愈口径，参照 useFileUrlState 三态）：明确失败 + 重试入口，
@@ -645,25 +840,16 @@ export function JournalEditScreen({
         >
             <View style={{ paddingTop: insets.top }} className="flex-1">
                 {/* 屏头（#3 回退：日期行恢复第六轮之前的排版——30px 日期 + 右侧
-                    状态同一基线行，整体上移到报头最紧位置；上一轮的「名称行常驻 +
-                    日期徽章角色」组合撤销）。结构：CloseButton 返回 + TripBadge
-                    （trip 模式）+ 名称行（**有标题才渲染**，无标题回纯日期口径，
-                    不再显示「M月D日 日记」占位名）+ 编辑钮（铅笔 → 屏内标题重命名
-                    卡，保留；只读态不渲染）。命中区核算：
+                    状态同一基线行，整体上移到报头最紧位置）。结构：CloseButton 返回
+                    （离开 = 录制中自动停录落库，见 handleLeave）+ TripBadge（trip
+                    模式）+ 名称行（**有标题才渲染**）+ 编辑钮。命中区核算：
                     - 返回钮：CloseButton 44 圆形触感底盒 in-flow 填满 h-11 行，
-                      命中区 = 视觉盒（不传 hitSlop），命中底缘 = insets.top + 8 + 44；
-                    - 顶部 pt-2 与 trip-detail 屏头容器（px-6 pb-3 pt-2）同口径——
-                      native 上 insets.top 掩盖差异、web（insets.top=0）会裸露 8dp
-                      错位，故报头顶距必须与行程屏逐 dp 对齐；日期行行盒顶 =
-                      insets.top + 52；与返回钮命中底缘齐平但为 in-flow 兄弟
-                      节点，天然无重叠；30px 行盒自带 ~4dp 字面 leading 作视觉净空；
-                    - 编辑钮：36 视觉盒 + hitSlop 10 → 56×56 ≥44（trip-detail
-                      编辑钮同口径）；左邻名称/占位为非按压体、右缘距屏 24，无
-                      重叠核算项；
+                      命中区 = 视觉盒（不传 hitSlop）；
+                    - 编辑钮：36 视觉盒 + hitSlop 10 → 56×56 ≥44；
                     - TripBadge 40 盒为非按压体（ml-2 停车距），无命中核算项。 */}
                 <View className="px-6 pb-2 pt-2">
                     <View className="h-11 flex-row items-center">
-                        <CloseButton icon="back" onPress={safeBack} />
+                        <CloseButton icon="back" onPress={handleLeave} />
                         {trip ? (
                             <View className="ml-2">
                                 <TripBadge icon={trip.icon} size="detail" />
@@ -697,8 +883,7 @@ export function JournalEditScreen({
                             </BouncyPressable>
                         ) : null}
                     </View>
-                    {/* 日期行（#3 恢复第六轮前排版）：30 报头阶 + 右侧状态位（进行中/
-                        已收笔，工具坞下沉的状态位 #1 同行右对齐）——上移见上核算 */}
+                    {/* 日期行（#3 恢复第六轮前排版）：30 报头阶 + 右侧状态位 */}
                     <View className="flex-row items-baseline justify-between">
                         <Text className="text-[30px] font-semibold tracking-wide text-ink-text dark:text-inkd-text">
                             {monthDay}
@@ -713,9 +898,7 @@ export function JournalEditScreen({
                             {editable ? '进行中' : '已收笔'}
                         </Text>
                     </View>
-                    {/* meta 行（#3）：原时间/星期槽位改为随机安慰话（挂载时定一句，
-                        语料见 ui/comfort-quotes）；字数/保存状态保持原位（tabular-nums
-                        房规；只读态只展示字数） */}
+                    {/* meta 行（#3）：随机安慰话 + 字数/保存状态（tabular-nums 房规） */}
                     <View className="mt-0.5 flex-row items-baseline justify-between">
                         <Text
                             numberOfLines={1}
@@ -732,9 +915,7 @@ export function JournalEditScreen({
                                 : `${chars} 字`}
                         </Text>
                     </View>
-                    {/* 行程上下文行（保留：icon + 行程名，trip 模式——在写谁的哪一天）。
-                        icon 空值兜底走 TRIP_ICON_DEFAULT 具名常量（trip-badge 收口纪律，
-                        不散写字面量） */}
+                    {/* 行程上下文行（保留：icon + 行程名，trip 模式） */}
                     {trip ? (
                         <Text
                             numberOfLines={1}
@@ -763,26 +944,12 @@ export function JournalEditScreen({
                     }}
                     scrollEventThrottle={16}
                     keyboardShouldPersistTaps="handled"
-                    // iOS：键盘弹出时滚动位置由系统 insets 自动补偿（主补偿，与键盘
-                    // 动画同源同帧），编辑器定位器只在聚焦段完全不可见时补一次
-                    // （防双写打架，见 editor.createFocusedBlockPositioner 注）；
-                    // Android 走 adjustResize 整体重排 + 定位器「最佳位置」落位；
-                    // Web 走浏览器原生 focus scroll-into-view
                     automaticallyAdjustKeyboardInsets
-                    // 滚动即拖拽收键盘（journal 手感；Android interactive 回落 on-drag 语义）
                     keyboardDismissMode="interactive"
                 >
                     {/* 画布空白收键层（#K2，垫高层 CanvasDismissLayer）：键盘动态垫高
-                        在层内收口（useKeyboardCanvasBottomPadding）——键盘打开且窗口
-                        未被系统收缩（Android 问题机型）时放大底部垫高，末段聚焦才有
-                        足够滚动余量顶到键盘上方最佳位置；其余分支（iOS KAV 模式 /
-                        adjustResize 正常机型 / web）恒等静态基线，防双重垫高。
-                        静止态（键盘收起）paddingBottom 恒 = CANVAS_BOTTOM_BASE_INSET
-                        路径，布局与旧版逐 dp 一致；+ 浮钮 z-10 悬浮语义不变。
-                        重渲隔离：键盘事件只重渲本层的 style，canvasContent（children
-                        直传 + 引用稳定）零重渲——媒体堆/音频卡/TextBlock 不被键盘
-                        生命周期波及。tap 语义/防误触/子元素认领/触摸面零 className
-                        等层内契约见组件注。 */}
+                        在层内收口（生效分支矩阵与防双重垫高见 editor 注）。多选模式
+                        期间本层仍可点（收键语义已无键盘，空操作） */}
                     <CanvasDismissLayer
                         bottomBaseline={insets.bottom + CANVAS_BOTTOM_BASE_INSET}
                         onPress={dismissCanvasKeyboard}
@@ -791,12 +958,10 @@ export function JournalEditScreen({
                     </CanvasDismissLayer>
                 </ScrollView>
 
-                {/* 罗盘 + 号（#1：底部工具坞清空，只留一枚 + 浮钮）：右手拇指区，
-                    位置口径同 compose-fab（bottom + 24）；全程可点（busy 不禁用——
-                    上传中也能打开选择器，动作分发处统一给可见反馈），杀掉
-                    「上传中点 + 没反应 → 再点一下才好」的假双击感知 */}
-                {editable ? (
-                    // right-6（24）：与 ComposeFab 同一屏隅口径（原 right-5(20) 双轨，收敛）
+                {/* 罗盘 + 号（#1）：上传中不再禁用（后台并行模型）；多选模式隐藏
+                    （选择优先）；收笔等待在途时显示轻量进行态（spinner 替换 + 号）。
+                    位置口径同 compose-fab（bottom = insets.bottom + 24） */}
+                {editable && !selectMode ? (
                     <View
                         className="absolute right-6 z-10"
                         style={{ bottom: insets.bottom + 24 }}
@@ -809,28 +974,119 @@ export function JournalEditScreen({
                                 accessibilityRole="button"
                                 accessibilityLabel="插入内容"
                             >
-                                <LucidePlus size={24} color={palette.onPrimaryBtn} strokeWidth={2.2} />
+                                {finishing ? (
+                                    <ActivityIndicator size="small" color={palette.onPrimaryBtn} />
+                                ) : (
+                                    <LucidePlus size={24} color={palette.onPrimaryBtn} strokeWidth={2.2} />
+                                )}
                             </View>
                         </BouncyPressable>
                     </View>
                 ) : null}
             </View>
 
-            {/* 块操作卡（#1/#9：媒体长按/双击、文本聚焦 ⋯ → 屏根浮层，条件渲染） */}
+            {/* 多选选择栏（顶部，选择优先）：44 命中双钮 + 已选计数；覆盖在报头
+                之上但不遮画布（bar 以下区域全部留给媒体勾选点按） */}
+            {selectMode ? (
+                <View className="absolute inset-x-0 top-0 z-40" style={{ paddingTop: insets.top }}>
+                    <View className="flex-row items-center gap-1 border-b border-ink-rule bg-ink-base px-3 py-1 dark:border-inkd-rule dark:bg-inkd-base">
+                        <Text
+                            className="px-1 text-[13px] font-medium text-ink-text dark:text-inkd-text"
+                            style={{ fontVariant: ['tabular-nums'] }}
+                        >
+                            {`已选 ${selectMode.orderedIds.length}`}
+                        </Text>
+                        <View className="flex-1" />
+                        <BouncyPressable onPress={cancelSelect} scaleTo={0.95}>
+                            <View
+                                className="h-11 items-center justify-center rounded-control px-3"
+                                accessibilityRole="button"
+                                accessibilityLabel="取消合并选择"
+                            >
+                                <Text className="text-[14px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    取消
+                                </Text>
+                            </View>
+                        </BouncyPressable>
+                        <BouncyPressable
+                            onPress={confirmMerge}
+                            disabled={selectMode.orderedIds.length < 2}
+                            scaleTo={0.95}
+                        >
+                            <View
+                                className={`h-11 items-center justify-center rounded-control px-4 ${
+                                    selectMode.orderedIds.length < 2 ? 'opacity-40' : ''
+                                }`}
+                                style={{ backgroundColor: palette.primaryBtn }}
+                                accessibilityRole="button"
+                                accessibilityLabel="合并为堆叠"
+                                accessibilityState={{ disabled: selectMode.orderedIds.length < 2 }}
+                            >
+                                <Text
+                                    className="text-[14px] font-semibold"
+                                    style={{ color: palette.onPrimaryBtn }}
+                                >
+                                    合并
+                                </Text>
+                            </View>
+                        </BouncyPressable>
+                    </View>
+                </View>
+            ) : null}
+
+            {/* 录音会话（控制器挂屏层，覆盖层只是视图）：停止 = 真停止落库；
+                收起 = 后台继续（chip 承接）；取消 = 丢弃；离开屏 = 停录落库 */}
+            {captureSession?.kind === 'audio' ? (
+                <AudioRecordingSession
+                    onFinish={(result) => {
+                        setCaptureSession(null);
+                        doAttach('audio', result.uri, null, null, result.durationMs);
+                    }}
+                    onDiscard={() => setCaptureSession(null)}
+                    onError={(message) => {
+                        setCaptureSession(null);
+                        store.setState({ error: message });
+                    }}
+                    onLeavePersist={persistLeaveRecording}
+                    onRegisterLeave={registerCaptureLeave}
+                    chipBottomInset={insets.bottom + 32}
+                />
+            ) : null}
+            {/* 拍摄会话（控制器化）：录制中 X = 收成右下悬浮小窗（CameraView 保持
+                挂载继续录）；快门/小窗停止 = 落库；覆盖层取消/小窗长按 = 丢弃 */}
+            {captureSession?.kind === 'camera' ? (
+                <CameraCaptureOverlay
+                    initialMode={captureSession.mode}
+                    onFinish={(capture) => {
+                        setCaptureSession(null);
+                        doAttach(capture.kind, capture.uri, capture.width, capture.height);
+                    }}
+                    onClose={() => setCaptureSession(null)}
+                    onDiscard={() => setCaptureSession(null)}
+                    onLeavePersist={persistLeaveCapture}
+                    onRegisterLeave={registerCaptureLeave}
+                    onLibraryFallback={onCameraLibraryFallback}
+                />
+            ) : null}
+
+            {/* 块操作卡（#1/#9 + 自定义合并堆叠入口）：媒体长按/双击、文本聚焦 ⋯
+                → 屏根浮层，条件渲染（禁 RN Modal） */}
             {actionBlockId && actionIndex >= 0 ? (
                 <BlockActionCard
                     index={actionIndex}
                     total={blocks.length}
+                    canMergeStack={canMergeStack}
+                    groupId={actionBlock?.t === 'media' ? actionBlock.groupId ?? null : null}
                     onMove={moveActionBlock}
                     onDelete={removeActionBlock}
+                    onMergeStack={openMergeSelect}
+                    onDissolveStack={dissolveActionStack}
                     onClose={() => setActionBlockId(null)}
                 />
             ) : null}
             {/* 标题重命名卡（屏头编辑钮 → 与首页笔记卡长按卡同语义，共享组件
                 ui/rename-card；条件渲染 scrim，禁 RN Modal）。落库通道经 onSave
-                注入（store.updateJournalTitle，不回退）；onClose 一律回读刷新：
-                保存成功以 DB 归一化结果为准（normalizeJournalTitle 落库），取消时
-                为幂等回读 */}
+                注入（store.updateJournalTitle，不回退）；onClose 一律回读刷新 */}
             {renameOpen && journal ? (
                 <RenameCard
                     initialTitle={journal.title ?? ''}
@@ -864,26 +1120,6 @@ export function JournalEditScreen({
                     }
                 />
             ) : null}
-            {/* 录音覆盖层：卡片浮层 + 声纹条；停止落库 / 取消丢弃 */}
-            {recordingOpen ? (
-                <RecordingOverlay
-                    onComplete={onRecordingComplete}
-                    onCancel={() => setRecordingOpen(false)}
-                    onError={(message) => {
-                        setRecordingOpen(false);
-                        store.setState({ error: message });
-                    }}
-                />
-            ) : null}
-            {/* 拍摄覆盖层：卡片取景 + 快门/翻转/关闭（拍照/视频 + 权限拒绝引导与相册兜底） */}
-            {cameraOpen ? (
-                <CameraCaptureOverlay
-                    initialMode={cameraMode}
-                    onClose={() => setCameraOpen(false)}
-                    onCapture={onCameraCapture}
-                    onLibraryFallback={onCameraLibraryFallback}
-                />
-            ) : null}
         </KeyboardAvoidingView>
     );
 }
@@ -894,38 +1130,23 @@ export function JournalEditScreen({
  * 收键盘 + blur 聚焦段；原 contentContainerStyle 三向 padding 全数下沉到本层
  * （几何不变，padding 区变成可点面）。
  *
- * 键盘动态垫高（本轮修复面）：paddingBottom = useKeyboardCanvasBottomPadding(
- * bottomBaseline)——键盘打开且窗口未被 adjustResize 收缩（Android 问题机型）
- * 时放大到 max(键盘高 + 24 呼吸, 静态基线)，末段聚焦永远有足够滚动余量把
- * 光标行顶到键盘上方最佳位置；键盘收起立即回静态基线。生效分支矩阵与防
- * 双重垫高判定见 editor.useKeyboardCanvasBottomPadding 注；垫高一次性 style
- * 变更不动画（Animated native driver 不支持 padding 布局属性，且增量区被
- * 键盘覆盖，跳变不可见）。
+ * 键盘动态垫高：paddingBottom = useKeyboardCanvasBottomPadding(bottomBaseline)
+ * ——键盘打开且窗口未被 adjustResize 收缩（Android 问题机型）时放大，末段
+ * 聚焦永远有足够滚动余量；键盘收起立即回静态基线。生效分支矩阵见 editor 注。
  *
- * 重渲隔离（选型：键盘状态收进本叶子组件而非屏根）：memo + children 直传 +
- * 稳定 onPress/bottomBaseline——键盘弹出/收起只重渲本层自身 style，children
- * 子树经引用相等 bail-out 零重渲（媒体堆/音频卡/TextBlock 零波及）。
+ * 重渲隔离：memo + children 直传 + 稳定 onPress/bottomBaseline——键盘弹出/
+ * 收起只重渲本层自身 style，children 子树经引用相等 bail-out 零重渲。
  *
- * 防误触机制（原 Pressable 契约原样保留）：
- * - Pressable tap 语义：滚动接管的手势不触发 onPress（滚动手感中不误收键盘），
- *   长按/横滑等被子元素认领的手势同样到不了本层；
- * - dismissKeyboard 空引用闸（BlockEditorHandle）：无聚焦段空点零动作；引用
- *   同步清空，双击第二击短路（防连点抖动）；
- * - 子元素认领优先：输入框本体/媒体块/音频卡/⋯微钮/deck 点按带各自消费，
- *   零影响；块操作卡/重命名卡/选择器/录音/拍摄等浮层在屏根后渲染、层级恒
- *   在本层之上（不抢）；+ 浮钮 z-10 悬浮于本层之上；报头在 ScrollView 之外
- *   （报头点击无动作，保持）。
- * 触摸面零 className（房规：css-interop 按压 observable 不进手势窗口）；无障碍
- * 不挂 role（背景装饰层，非交互语义）。卸载零副作用：垫高 hook 摘订阅 +
- * 键盘追踪引用计数 −1（定位器/屏层共担，次序无关），不动保存通道。
+ * 防误触机制（原 Pressable 契约原样保留）：tap 语义（滚动接管的手势不触发）、
+ * dismissKeyboard 空引用闸、子元素认领优先；触摸面零 className；无障碍不挂
+ * role（背景装饰层）。卸载零副作用。
  */
 const CanvasDismissLayer = memo(function CanvasDismissLayer({
     bottomBaseline,
     onPress,
     children,
 }: {
-    /** 底部垫高静态基线（insets.bottom + CANVAS_BOTTOM_BASE_INSET）：动态垫高
-     *  的下限与回退值（键盘收起 / 非生效分支恒返回本值）。 */
+    /** 底部垫高静态基线（insets.bottom + CANVAS_BOTTOM_BASE_INSET）。 */
     bottomBaseline: number;
     onPress(): void;
     children: React.ReactNode;
@@ -936,8 +1157,7 @@ const CanvasDismissLayer = memo(function CanvasDismissLayer({
             onPress={onPress}
             style={{
                 // 画布顶部留白 16dp：叠加报头 pb-2(8dp) 后，报头→首段净间距
-                // 24dp（EDITOR_RHYTHM.mastheadToFirstBlock；360dp 小屏到平板
-                // 同值，间距体系不随屏宽变化）
+                // 24dp（EDITOR_RHYTHM.mastheadToFirstBlock）
                 paddingTop: 16,
                 paddingHorizontal: 24,
                 paddingBottom,
@@ -949,23 +1169,40 @@ const CanvasDismissLayer = memo(function CanvasDismissLayer({
 });
 
 /**
- * 块操作卡（上移/下移/删除，浮层居中弹出）：屏根条件渲染（禁 RN Modal），
- * 深色 scrim + 居中卡片；Android 返回键关闭。媒体块经长按/双击（组件内
- * useBlockActionGestures 平台分派）、文本块经聚焦态 ⋯ 钮进入。
+ * 块操作卡（上移/下移/合并堆叠/解散堆叠/删除，浮层居中弹出）：屏根条件渲染
+ * （禁 RN Modal），深色 scrim + 居中卡片；Android 返回键关闭。媒体块经长按/
+ * 双击（组件内 useBlockActionGestures 平台分派）、文本块经聚焦态 ⋯ 钮进入。
+ *
+ * 自定义合并堆叠入口（本轮新增）：
+ * - 「合并堆叠」：canMergeStack（屏内可选图/视频 ≥2）时出现——以当前块为
+ *   起点（已选中）进入多选模式；
+ * - 「解散堆叠」：当前块带 groupId（显式组成员，含被移散的孤员）时出现——
+ *   清 groupId（journal-logic.dissolveStackBlocks）；解散后同 kind 相邻成员
+ *   按渲染层自然相邻规则**立即重新成组**（默认分组语义的既定口径，报告注明）。
  */
 function BlockActionCard({
     index,
     total,
+    canMergeStack,
+    groupId,
     onMove,
     onDelete,
+    onMergeStack,
+    onDissolveStack,
     onClose,
 }: {
     /** 当前块下标（决定上移/下移禁用态）。 */
     index: number;
     /** 块总数。 */
     total: number;
+    /** 屏内可选媒体（就绪图/视频）≥2 → 显示「合并堆叠」行。 */
+    canMergeStack: boolean;
+    /** 当前块所属显式组 id（null = 不在显式组 → 无「解散堆叠」行）。 */
+    groupId: string | null;
     onMove(direction: -1 | 1): void;
     onDelete(): void;
+    onMergeStack(): void;
+    onDissolveStack(): void;
     onClose(): void;
 }) {
     const palette = usePalette();
@@ -984,6 +1221,7 @@ function BlockActionCard({
         key: string;
         icon: React.ReactNode;
         label: string;
+        hint?: string;
         danger?: boolean;
         disabled: boolean;
         onPress(): void;
@@ -1002,8 +1240,32 @@ function BlockActionCard({
             disabled: !canDown,
             onPress: () => onMove(1),
         },
+        ...(canMergeStack
+            ? [
+                  {
+                      key: 'merge-stack',
+                      icon: <LayersIcon size={18} strokeWidth={1.9} color={palette.secondary} />,
+                      label: '合并堆叠',
+                      hint: '勾选多张图/视频合成一组',
+                      disabled: false,
+                      onPress: onMergeStack,
+                  },
+              ]
+            : []),
+        ...(groupId
+            ? [
+                  {
+                      key: 'dissolve-stack',
+                      icon: <UngroupIcon size={18} strokeWidth={1.9} color={palette.secondary} />,
+                      label: '解散堆叠',
+                      hint: '移出堆叠，恢复独立排列',
+                      disabled: false,
+                      onPress: onDissolveStack,
+                  },
+              ]
+            : []),
         {
-            // 尺寸档收敛：17 → 16（16/18/20/24 档内），stroke 1.9 全仓图标口径
+            // 尺寸档收敛：16/18/20/24 档内，stroke 1.9 全仓图标口径
             key: 'delete',
             icon: <LucideTrash size={16} strokeWidth={1.9} color={palette.negative} />,
             label: '删除',
@@ -1021,8 +1283,7 @@ function BlockActionCard({
                 accessibilityLabel="关闭块操作"
             >
                 <Pressable className="w-full max-w-xs rounded-card bg-ink-base p-2 dark:bg-inkd-base">
-                    {/* 卡头（关闭语言统一 #8）：题 + 右上关闭钮（scrim 点击与 Android
-                        返回键之外的显式出口，与其他浮层卡同一设计语言） */}
+                    {/* 卡头（关闭语言统一 #8）：题 + 右上关闭钮 */}
                     <View className="flex-row items-center justify-between pl-4 pr-1.5 pt-0.5">
                         <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">
                             调整这一块
@@ -1033,11 +1294,8 @@ function BlockActionCard({
                     <View className="gap-0.5">
                         {/* 行高 44 视觉盒 ≥44：不传 hitSlop（0）；行间 gap-0.5(2px)
                             为不可点间隙，命中盒无重叠。onPress 恒挂接 + disabled 显式
-                            传导（#3 条件置空显式化）：row.disabled 随每次移动操作高频
-                            翻转，条件置空会在翻转瞬间重配置 Pressability 吞首点；显式
-                            disabled=true 时 BouncyPressable 不出按压反馈、触摸穿透到
-                            无按压体的 scrim（行为矩阵见 bouncy-pressable 文件头），
-                            可观察行为与置空一致 */}
+                            传导（#3 条件置空显式化）：row.disabled 随移动操作翻转，
+                            条件置空会在翻转瞬间重配置 Pressability 吞首点 */}
                         {rows.map((row) => (
                             <BouncyPressable
                                 key={row.key}
@@ -1062,6 +1320,14 @@ function BlockActionCard({
                                     >
                                         {row.label}
                                     </Text>
+                                    {row.hint ? (
+                                        <Text
+                                            numberOfLines={1}
+                                            className="ml-auto shrink text-[11px] text-ink-muted dark:text-inkd-muted"
+                                        >
+                                            {row.hint}
+                                        </Text>
+                                    ) : null}
                                 </View>
                             </BouncyPressable>
                         ))}

@@ -201,6 +201,82 @@ async function removeFilesBestEffort(keys: string[]): Promise<{ key: string; mes
     return failures;
 }
 
+// ─── 启动孤儿文件 GC（上传中断恢复）────────────────────────────────────────
+
+/**
+ * GC 管辖的媒体 key 前缀：与 store 三个上传入口的 key 规则一一对应
+ * （journal-media/<journalId>/<mediaId>.<ext>、trip-media/<tripId>/<mediaId>.<ext>、
+ * trip-video/<tripId>.mp4）。GC 只在这些前缀内求差集，其余 key（迁移包、未来
+ * 扩展等）一律不碰——前缀外文件即使无引用也绝不误删。
+ */
+const GC_MEDIA_PREFIXES = ['journal-media/', 'trip-media/', 'trip-video/'] as const;
+
+/**
+ * 宽限期：mtime 距今不足该时长的孤儿候选一律不删。覆盖两类窗口——
+ * ① 「落盘完成 → 媒体行落库」间隙被杀的孤儿（GC 的目标本体，但刚发生时若用户
+ *    立刻重开 App，sweep 与重试上传可能在同一时段，宽限期避免把重试正要引用的
+ *    同 key 文件删掉）；
+ * ② sweep 自身「引用集采集 → 文件列表遍历」非原子的间隙里新落盘的在途上传
+ *    （其 key 必不在已采集的引用集内，没有宽限期就是确定性误删）。
+ * 1h 取舍：图片经 manipulator、视频直落字节，正常上传远小于 1h；被杀孤儿至多
+ * 多活一个宽限期 + 距下次冷启的间隔，存储浪费可接受。半文件不校验内容（写入
+ * 无 checksum 比对，且部分写入的文件 mtime 一样新鲜，校验也无从区分「在途」
+ * 与「损坏」）——内容完整性交给「行引用为唯一事实源」：无行引用的文件本就不可见。
+ */
+const GC_GRACE_PERIOD_MS = 60 * 60 * 1000;
+
+/**
+ * 冷启单飞闸门：整个 JS 会话至多执行一次 sweep。模块级而非 ref——effect 重跑 /
+ * Fast Refresh 重挂载会重建 ref，模块变量在本 JS 会话内恒存（同 last-route 的
+ * lastRouteRestoreDone 取径）。失败后不重试（下次冷启再说），Promise 不携带
+ * rejection（sweep 内部全兜底）。
+ */
+let startupGcOnce: Promise<void> | null = null;
+
+/**
+ * 启动孤儿媒体文件 GC（冷启一次，fire-and-forget）：
+ * 引用集采集（db）→ 遍历媒体前缀文件列表 → 差集 - 宽限期 → best-effort 删除。
+ * 任何失败（引用集查询/列表遍历/单文件删除）只 console.warn 聚合告警：不抛错、
+ * 不进 error 状态、不阻塞启动。GC 是存储回收增强而非正确性依赖——漏删只浪费
+ * 存储（下次冷启重扫），误删由「行引用集 + 宽限期」双保险挡住。
+ */
+export function runStartupOrphanMediaGc(): Promise<void> {
+    startupGcOnce ??= sweepOrphanMediaFiles();
+    return startupGcOnce;
+}
+
+/** sweep 本体：所有异常自吞（调用方 fire-and-forget，无人接 rejection）。 */
+async function sweepOrphanMediaFiles(): Promise<void> {
+    try {
+        const [referencedKeys, ...listings] = await Promise.all([
+            db.listReferencedMediaFileKeys(),
+            ...GC_MEDIA_PREFIXES.map((prefix) => fileStorage.list(prefix)),
+        ]);
+        const now = Date.now();
+        const orphans = listings
+            .flat()
+            .filter((info) => !referencedKeys.has(info.key))
+            // 宽限期保护：mtime 缺失（平台未提供）视同新鲜保守跳过——漏删只浪费
+            // 存储，误删在途上传会丢用户数据，两侧代价不对称
+            .filter(
+                (info) =>
+                    info.modifiedAt !== null && now - info.modifiedAt >= GC_GRACE_PERIOD_MS,
+            );
+        if (orphans.length === 0) return;
+        const failures = await removeFilesBestEffort(orphans.map((info) => info.key));
+        if (failures.length > 0) {
+            console.warn(
+                `[archive-gc] 孤儿媒体清理 ${orphans.length - failures.length}/${orphans.length} 成功，` +
+                    `失败留待下次冷启重试，示例：${failures[0].key} ${failures[0].message}`,
+            );
+            return;
+        }
+        console.log(`[archive-gc] 孤儿媒体清理完成：${orphans.length} 个文件已回收`);
+    } catch (error) {
+        console.warn('[archive-gc] 孤儿媒体扫描失败（本次跳过，不影响功能）：', error);
+    }
+}
+
 /** 搜索时间范围参数校验：非法本地日期返回错误文案（调用方走 error 通道 + 空结果）。 */
 function invalidSearchRangeError(range?: { from?: string; to?: string }): string | null {
     if (range?.from && !isValidLocalDate(range.from)) return `搜索范围起点不是有效日期：${range.from}`;

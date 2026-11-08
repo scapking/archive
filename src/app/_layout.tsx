@@ -14,6 +14,9 @@ import {
     pathFromNavigationState,
     saveLastRoute,
 } from '@/features/archive/last-route';
+// 启动孤儿媒体 GC（上传中断恢复）：同 last-route 深路径直连先例——barrel 只导出
+// useArchiveStore/useArchiveRevision，本次允许改动清单不含 index.ts
+import { runStartupOrphanMediaGc } from '@/features/archive/store';
 import { archiveConfig } from '@/config/archive';
 
 /**
@@ -62,6 +65,14 @@ export default function RootLayout() {
         if (!ready) void loadAll();
         applyThemePref(archiveConfig.get()['ui.theme'] as ThemePref);
     }, [ready, loadAll]);
+
+    useEffect(() => {
+        // 启动孤儿媒体文件 GC（上传中断恢复）：冷启 sweep 至多一次（单飞闸门在
+        // store 模块级，effect 重跑 / Fast Refresh 重挂载无害）。fire-and-forget：
+        // sweep 内部全兜底静默降级，不 reject、不 set error、不阻塞 ready——GC 是
+        // 存储回收增强，失败只浪费存储不影响功能。
+        void runStartupOrphanMediaGc();
+    }, []);
 
     useEffect(() => {
         // web reset 注入（DEV.md #11 + #13 输入框规范）：web-reset.css 只能走静态

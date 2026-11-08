@@ -47,10 +47,14 @@ export type JournalStatus = 'open' | 'closed';
  * parseBlocks 解析时回填，保存后随 JSON 持久化（schema 无迁移，纯 JSON 字段）。
  * `durationMs` 仅音频块使用（录音时长；媒体行无可空时长列，块级元数据即真身，
  * 避免为单一字段加表迁移）。
+ * `groupId` 仅媒体块使用（自定义合并堆叠）：非空 = 显式堆叠组成员——同 groupId
+ * 的媒体块渲染为一个堆叠单元（混合 kind 允许）；成员必须已被物理重排为连续段
+ * （由合并操作保证，见 journal-logic.mergeStackBlocks）。纯 JSON 字段，无 DB 迁移；
+ * 无 groupId 的相邻同 kind ≥2 仍按渲染层自然相邻规则自动成组。
  */
 export type JournalBlock =
     | { t: 'p'; id: string; text: string }
-    | { t: 'media'; id: string; mediaId: string; durationMs?: number };
+    | { t: 'media'; id: string; mediaId: string; durationMs?: number; groupId?: string };
 
 export interface TripRow {
     id: string;

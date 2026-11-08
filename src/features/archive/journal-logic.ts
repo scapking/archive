@@ -41,8 +41,21 @@ function isBlockShape(block: unknown): block is JournalBlock {
 }
 
 /**
+ * 媒体块 groupId 规范化（parseBlocks 透传旁路的唯一清洗点）：空串/非串的
+ * groupId 一律剥除（「无组」语义统一为字段缺席，渲染层判定不必防脏值）；
+ * 合法非空串原样透传（自定义合并堆叠的成员资格随 JSON 持久化）。
+ */
+function normalizeBlockGroup(block: JournalBlock): JournalBlock {
+    if (block.t !== 'media' || block.groupId == null) return block;
+    if (typeof block.groupId === 'string' && block.groupId.length > 0) return block;
+    const { groupId: _dropped, ...rest } = block;
+    return rest;
+}
+
+/**
  * 解析块 JSON（坏数据降级为空容器——日记正文损坏不该打不开页面）。
  * 旧数据块无 id：解析时统一回填（保存后随 JSON 持久化，此后稳定）。
+ * groupId 随 JSON 透传（仅做空值清洗，见 normalizeBlockGroup；无 DB 迁移）。
  */
 export function parseBlocks(json: string): JournalBlock[] {
     try {
@@ -50,7 +63,9 @@ export function parseBlocks(json: string): JournalBlock[] {
         if (!Array.isArray(parsed)) return [];
         return parsed
             .filter(isBlockShape)
-            .map((block) => (block.id ? block : { ...block, id: newBlockId() }));
+            .map((block) =>
+                normalizeBlockGroup(block.id ? block : { ...block, id: newBlockId() }),
+            );
     } catch {
         // 手写 JSON 损坏按空日记处理：内容仍在 DB，可编辑重写
         return [];
@@ -266,6 +281,71 @@ export function resolvePendingBlock(
         ...(media.durationMs != null ? { durationMs: media.durationMs } : {}),
     };
     return next;
+}
+
+// ─── 自定义合并堆叠（显式 groupId 组的物化/解散，纯函数）────────────────────
+
+/**
+ * 合并堆叠（多选确认的物化步）：把选中媒体块按**选择顺序**物理重排到
+ * 「第一选中块」的原位置成连续段，并统一打上 groupId。
+ *
+ * 语义细则：
+ * - 只接受媒体块（t === 'media'）；选中清单里混入的文本/pending 块按无效条目
+ *   忽略（多选模式 UI 侧本就不给文本/音频勾选，这里是数据层防御）；
+ * - 有效成员 < 2 时原样返回（堆叠 min 2，无上限）；
+ * - 连续段落点 = 第一选中块在原数组中的位置——先把未选中块按原序收拢，再把
+ *   选中序列插到「第一选中块之前的保留块数」处（等价于其原位置，不受移除
+ *   抖动影响，anchor 前的相对顺序零变化）；
+ * - groupId 覆盖写（重复合并 = 并入新组，旧组随成员迁移自然消散）。
+ * 渲染层 buildRenderUnits 按「连续同 groupId」派生堆叠单元（混合 kind 允许）。
+ */
+export function mergeStackBlocks(
+    blocks: JournalBlock[],
+    orderedIds: string[],
+    groupId: string,
+): JournalBlock[] {
+    const byId = new Map(blocks.map((block) => [block.id, block] as const));
+    const selected = orderedIds.filter((id) => byId.get(id)?.t === 'media');
+    if (selected.length < 2) return blocks;
+    const selectedSet = new Set(selected);
+    // 落点：第一选中块之前的未选中块数（物理重排不扰动该锚点之前的顺序）
+    const anchorId = selected[0];
+    let insertAt = 0;
+    for (const block of blocks) {
+        if (block.id === anchorId) break;
+        if (!selectedSet.has(block.id)) insertAt += 1;
+    }
+    const moved: (JournalBlock | null)[] = selected.map((id) => {
+        const block = byId.get(id);
+        if (!block || block.t !== 'media') {
+            // 不可达（上方 filter 保证媒体块），防御性跳过
+            return null;
+        }
+        return { t: 'media' as const, id: block.id, mediaId: block.mediaId, groupId };
+    });
+    const others = blocks.filter((block) => !selectedSet.has(block.id));
+    const next = [...others];
+    const movable = moved.filter((block): block is JournalBlock => block != null);
+    next.splice(insertAt, 0, ...movable);
+    return next;
+}
+
+/**
+ * 解散堆叠（仅显式组）：剥掉该 groupId 全部成员的 groupId（无论成员当前是否
+ * 连续——用户可能已把成员手动移散），位置零变化。
+ * 注意：解散后同 kind 且相邻的成员会立即按渲染层自然相邻规则**重新自动成组**
+ * （buildRenderUnits 既有行为），想要完全散开需再手动移开——这是默认分组语义
+ * 的既定口径，非缺陷。
+ */
+export function dissolveStackBlocks(blocks: JournalBlock[], groupId: string): JournalBlock[] {
+    let changed = false;
+    const next = blocks.map((block) => {
+        if (block.t !== 'media' || block.groupId !== groupId) return block;
+        changed = true;
+        const { groupId: _dropped, ...rest } = block;
+        return rest;
+    });
+    return changed ? next : blocks;
 }
 
 // ─── 收笔规则 ────────────────────────────────────────────────────────────────

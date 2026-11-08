@@ -1,5 +1,7 @@
 import { openDatabase } from '@/core/database';
 import { ARCHIVE_MIGRATIONS } from './migrations';
+// PENDING_MEDIA_ID 本模块消毒逻辑自用（下方同时 re-export 供域内其他层取用）
+import { PENDING_MEDIA_ID } from './schema';
 import type {
     DayPlanRow,
     JournalMediaRow,
@@ -172,10 +174,12 @@ export async function tripStats(): Promise<Map<string, TripStats>> {
 
 export async function getJournalByDate(tripId: string | null, localDate: string): Promise<JournalRow | null> {
     const db = await getDb();
-    return db.getFirst<JournalRow>(
+    const row = await db.getFirst<JournalRow>(
         'SELECT * FROM journals WHERE deleted_at IS NULL AND trip_id IS ? AND local_date = ? LIMIT 1',
         [tripId, localDate],
     );
+    // 载入消毒（上传中断恢复）：PENDING 占位块正常只存在于编辑器内存，落库即脏数据
+    return row ? { ...row, blocks: sanitizeBlocksJson(row.blocks) } : null;
 }
 
 /**
@@ -228,7 +232,9 @@ export async function reopenJournal(id: string): Promise<void> {
 
 export async function getJournal(id: string): Promise<JournalRow | null> {
     const db = await getDb();
-    return db.getFirst<JournalRow>('SELECT * FROM journals WHERE id = ? AND deleted_at IS NULL', [id]);
+    const row = await db.getFirst<JournalRow>('SELECT * FROM journals WHERE id = ? AND deleted_at IS NULL', [id]);
+    // 载入消毒（上传中断恢复）：同 getJournalByDate，编辑器/详情的单一载入口统一摘占位块
+    return row ? { ...row, blocks: sanitizeBlocksJson(row.blocks) } : null;
 }
 
 /** 本地时区 24:00 自动收笔：所有 open 且日期早于今天的日记收口。 */
@@ -328,6 +334,41 @@ export async function searchTrips(
 
 function escapeLike(value: string): string {
     return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+/**
+ * 载入消毒（上传中断恢复，防御性兜底）：过滤 blocks JSON 里的 PENDING_MEDIA_ID
+ * 占位媒体块。占位块正常只存在于编辑器内存（saveJournalBlocks 落库前已滤除、
+ * 屏层上传完成后回填真实 mediaId），落库即脏数据（历史版本/未来路径绕过保存
+ * 过滤的残渣）——读取侧统一摘除：编辑器不再渲染坏引用，且下次保存会把消毒
+ * 结果写回，行自愈。
+ *
+ * 落点说明：消毒的理想位置是 journal-logic.parseBlocks（所有读取方的单一解析口），
+ * 但该文件不在本次改动权限内，且屏层（journal-edit-screen 等）直连 db 不经 store——
+ * 故收口在本文件的两个单条日记载入函数（getJournal / getJournalByDate）。
+ * 列表出口（listJournalsByTrip / listDailyJournals / searchJournals）仅喂预览文案
+ * （占位块降级 '[媒体]'，不渲染、不再持久化），不做消毒省去逐行 JSON 往返。
+ *
+ * 坏 JSON 原样放行：读侧 parseBlocks 已有「损坏 → 空容器」降级语义，不在此重复兜底；
+ * 无占位块时原串返回（快路径，避免无谓的 stringify 重排）。
+ */
+function sanitizeBlocksJson(blocks: string): string {
+    try {
+        const parsed: unknown = JSON.parse(blocks);
+        if (!Array.isArray(parsed)) return blocks;
+        const cleaned = (parsed as unknown[]).filter(
+            (block) =>
+                !(
+                    typeof block === 'object' &&
+                    block !== null &&
+                    (block as { t?: unknown }).t === 'media' &&
+                    (block as { mediaId?: unknown }).mediaId === PENDING_MEDIA_ID
+                ),
+        );
+        return cleaned.length === parsed.length ? blocks : JSON.stringify(cleaned);
+    } catch {
+        return blocks;
+    }
 }
 
 /** me 页 30 天写作曲线：按日的字数总和。 */
@@ -525,6 +566,43 @@ export async function detachTripDayBackgroundByMediaId(mediaId: string, at: numb
         'UPDATE trip_day_meta SET background_media_id = NULL, updated_at = ? WHERE background_media_id = ?',
         [at, mediaId],
     );
+}
+
+// ─── 启动孤儿文件 GC（上传中断恢复）─────────────────────────────────────────
+
+/**
+ * 孤儿文件 GC 的引用集（存续文件白名单，元素 = file-storage key）。
+ * 四路 UNION（UNION 自带去重，同一文件被多处引用只出现一次）：
+ * ① 日记媒体：journal_media 未删 且 所属 journals 未删——日记已删时其媒体行即使
+ *    因级联中断残留存活，文件也不再受保护（读取侧本就不可见，交 GC 回收）；
+ * ② 行程媒体：trip_media 未删（日卡背景图本体也是 trip_media 行，随此覆盖）；
+ * ③ 行程封面视频：未删行程的 video_key（可空列，NULL 不产生行）；
+ * ④ 日卡背景指针兜底：trip_day_meta.background_media_id → 未删 trip_media 的
+ *    file_key。与 ② 当前恒等（活指针必指向活行，编排顺序见 upsertTripDayBackground），
+ *    属防御性冗余：防未来指针/行编排改动把背景文件漏出引用集。
+ *
+ * 语义边界：孤儿媒体行（行未删但 blocks JSON 不再引用，如保存对账前的窗口态）
+ * 的文件仍在白名单内——行级对账归 saveJournalBlocks（该日记下次保存时触发），
+ * GC 只负责「已落盘但无任何行引用」的孤儿文件（put 落盘后被杀、insert 未及执行的窗口态）。
+ */
+export async function listReferencedMediaFileKeys(): Promise<Set<string>> {
+    const db = await getDb();
+    const rows = await db.getAll<{ file_key: string }>(
+        `SELECT jm.file_key AS file_key
+         FROM journal_media jm
+         JOIN journals j ON j.id = jm.journal_id AND j.deleted_at IS NULL
+         WHERE jm.deleted_at IS NULL
+         UNION
+         SELECT tm.file_key FROM trip_media tm WHERE tm.deleted_at IS NULL
+         UNION
+         SELECT t.video_key FROM trips t WHERE t.deleted_at IS NULL AND t.video_key IS NOT NULL
+         UNION
+         SELECT pm.file_key
+         FROM trip_day_meta d
+         JOIN trip_media pm ON pm.id = d.background_media_id AND pm.deleted_at IS NULL
+         WHERE d.background_media_id IS NOT NULL`,
+    );
+    return new Set(rows.map((row) => row.file_key));
 }
 
 // ─── day plans ───────────────────────────────────────────────────────────────
