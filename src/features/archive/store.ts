@@ -17,6 +17,7 @@ import {
 import {
     curveSeries,
     isEditable,
+    newBlockId,
     newParagraphBlock,
     normalizeJournalTitle,
     parseBlocks,
@@ -139,6 +140,16 @@ interface ArchiveStore {
     deleteJournal(journalId: string): Promise<boolean>;
     /** 编辑器插图/视频：落 file-storage + 建媒体行，返回 mediaId 供块引用。 */
     attachJournalMedia(journalId: string, kind: JournalMediaKind, uri: string, width: number | null, height: number | null): Promise<string | null>;
+    /**
+     * 【归属铁律】DB 级媒体块追加（全局录制会话停录产物落库专用，见
+     * recording-session.tsx）：绕过任何未挂载/在栈下的编辑屏本地态，读该
+     * journal 当前 blocks（DB 权威值）→ 尾部追加真实媒体块（复用既有
+     * parse/serialize 语义）→ 立即落库 + revision bump。幂等：mediaId 已被
+     * 引用时直接成功（owner 屏在 DB 写入前经 persist 事件合并进本地态并抢先
+     * 保存的场景，不产生重复块）。已收笔（closed）/ 已删除的笔记拒绝（#7
+     * 只读语义 + 归属目标失效兜底）。true = 追加成功（含幂等命中）。
+     */
+    appendMediaBlockToJournal(journalId: string, media: { mediaId: string; kind: JournalMediaKind; durationMs?: number }): Promise<boolean>;
 }
 
 function toMessage(error: unknown): string {
@@ -857,6 +868,46 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         } catch (error) {
             set({ error: `媒体上传失败：${toMessage(error)}` });
             return null;
+        }
+    },
+
+    async appendMediaBlockToJournal(journalId, media) {
+        try {
+            // DB 权威读取（不经过任何屏的本地态——owner 屏可能未挂载/在栈下/
+            // 已卸载，本地 blocksRef 不可信）
+            const row = await db.getJournal(journalId);
+            if (!row) {
+                set({ error: '笔记不存在或已删除，录音没有落点。' });
+                return false;
+            }
+            // #7 只读语义兜底：发起后笔记被收笔（手动/24:00 自动）→ 拒绝追加
+            if (!isEditable(row.status)) {
+                set({ error: '这篇笔记已收笔，录音素材未能保存。' });
+                return false;
+            }
+            const blocks = parseBlocks(row.blocks);
+            // 幂等闸：owner 屏在 DB 写入前经 persist 事件合并进本地态并抢先保存
+            // （blocks 已带引用）→ 不重复追加，直接成功
+            if (blocks.some((block) => block.t === 'media' && block.mediaId === media.mediaId)) {
+                return true;
+            }
+            // 块 id 在 store 层生成（与屏层 newBlockId 同源）；durationMs 仅音频携带
+            const appended: JournalBlock = {
+                t: 'media',
+                id: newBlockId(),
+                mediaId: media.mediaId,
+                ...(media.durationMs != null ? { durationMs: media.durationMs } : {}),
+            };
+            const next = [...blocks, appended];
+            // 直接 updateJournalBlocks（非 saveJournalBlocks）：这里是「新增引用」，
+            // 不需要孤儿对账，也不该动 savingJournal 指示器；媒体行刚由
+            // attachJournalMedia 建立，引用随写随闭合
+            await db.updateJournalBlocks(journalId, serializeBlocks(next), wordCount(next));
+            set({ error: null, revision: get().revision + 1 });
+            return true;
+        } catch (error) {
+            set({ error: `媒体块追加失败：${toMessage(error)}` });
+            return false;
         }
     },
 }));

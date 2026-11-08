@@ -4,12 +4,10 @@ import {
     BackHandler,
     Linking,
     Platform,
-    Pressable,
     StyleSheet,
     Text,
     View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView } from 'expo-camera';
 import { BouncyPressable, LucideCamera, LucideImage, LucideTrash } from '@/core/icons';
 import { SwitchCameraIcon } from './editor-icons';
@@ -17,28 +15,30 @@ import { CloseButton } from './close-button';
 import { camera } from '@/core/camera';
 
 /**
- * 拍摄域（控制器化 + 悬浮小窗，后台继续模型）：
+ * 拍摄域（全局会话化控制器，跨页面后台录制 + 隐形保活槽）：
  *
- * **CameraView 卸载即停是原生约束**——因此拍摄会话把「关闭覆盖层」重新定义为
- * **最小化**：录制中按 X（或返回键）= 全屏取景卡收起为右下悬浮小窗
- * （96×144dp 圆角小窗，CameraView 保持挂载在小窗内继续录制），点小窗重开
- * 全屏覆盖层，小窗带停止钮（真停止 → 落库）与长按丢弃；只有快门停止/小窗
- * 停止才落库，取消（覆盖层内取消钮 / 小窗长按）= 丢弃。
+ * **CameraView 卸载即停是原生约束**——因此拍摄会话的 CameraView 常驻根层级
+ * （由 recording-session.RecordingSessionHost 挂载本组件），「关闭覆盖层」
+ * 语义 = **最小化**：录制中按 X（或返回键）= 全屏取景卡收起为**隐形保活槽**
+ * （1×1dp + opacity 0 + pointerEvents none，absolute 挂根层级边缘——原生
+ * 录制管线与预览可见性解耦，录制继续），点悬浮 chip（全局会话宿主渲染）
+ * 重开全屏覆盖层；只有停止（快门再按 / 完成收笔编排停止）才落库，取消
+ * （覆盖层内取消钮）= 丢弃；stop/cancel 后会话终结、CameraView 随之卸载。
  *
- * 实现关键：**相机帧节点恒挂载**——全屏卡 ↔ 悬浮小窗只切换宿主/帧的 style
- * （同一 React 节点换布局，CameraView 不重挂不重开），全屏态独有的模式切换
- * 行与控制行在收起态整段卸载（不影响相机帧身份）。scrim 仅全屏态渲染；收起
- * 态宿主 pointerEvents box-none→auto，画布编辑零阻塞（后台并行模型）。
+ * 实现关键：**相机帧节点恒挂载**——全屏取景卡 ↔ 隐形保活槽只切换宿主/帧的
+ * style（同一 React 节点换布局，CameraView 不重挂不重开），全屏态独有的
+ * 模式切换行与控制行在收起态整段卸载（不影响相机帧身份）。scrim 仅全屏态
+ * 渲染；收起态整层零阻塞（后台并行模型）。
  *
  * 权限流与旧口径一致（checking/unavailable/denied 三态卡，权限拒绝引导 +
- * 相册兜底）；视频录制无时长上限（#10）；web 能力边界不变（recordAsync 无
- * web 实现，视频档隐藏）。
+ * 相册兜底——兜底经全局编排 requestCaptureLibraryFallback 在根层级拉起
+ * 相册，产物仍归属发起笔记）；视频录制无时长上限（#10）；web 能力边界不变
+ * （recordAsync 无 web 实现，视频档隐藏，全局相机会在 web 仅承担拍照）。
  *
- * 离开屏契约（onRegisterLeave 登记）：stopForLeave 在屏层卸载 CameraView
- * 之前同步发起 stopRecording，并等待 recordAsync resolve（5s 超时护栏）后交
- * onLeavePersist 落库（不丢素材）；卸载兜底路径（屏层未拦截的退出，如 iOS
- * 侧滑）尝试停录并让产物走 onLeavePersist——CameraView 已随卸载释放时产物
- * 无法追回（文件留 cache 由系统清理），属极端退出路径的已知取舍，见报告。
+ * 产物与取消全部经 props 上收全局编排（onProduct → persistCaptureProduct
+ * 按 ownerJournalId 落库 / onDiscarded·onClosed → 会话收场）；外部停止
+ * （完成收笔编排）经 registerHardware 登记的 stop() 桥——停录后等待
+ * recordAsync resolve（5s 护栏）把产物交回编排层，避免双驱动。
  */
 
 export interface CameraCapture {
@@ -48,47 +48,60 @@ export interface CameraCapture {
     height: number | null;
 }
 
+/** 全局会话的相机硬件句柄（本组件登记、recording-session 编排层消费）。 */
+export interface CameraCaptureHardware {
+    /** 外部停止：停录并等待产物（5s 护栏兜底；未开录返回 uri null）。 */
+    stop(): Promise<{ uri: string | null }>;
+    /** 外部取消：停录并丢弃。 */
+    cancel(): void;
+}
+
 export function isVideoCaptureSupported(): boolean {
     return Platform.OS !== 'web';
 }
 
-/** 悬浮小窗几何（dp）：96×144 圆角小窗右下悬挂（+ FAB 上方 12dp）。 */
-const PIP_WIDTH = 96;
-const PIP_HEIGHT = 144;
-const PIP_RADIUS = 12;
-/** 小窗录制态描边（录制红，一眼可辨）。 */
-const PIP_RECORDING_BORDER = '#DC4A5E';
-/** 小窗相对 + FAB（bottom + 24 + 56）的抬升。 */
-const PIP_BOTTOM_OFFSET = 92;
-/** 停录 promise 的收尾护栏（ms）：stopRecording 后 recordAsync 未 resolve 的
- *  极端时序下放弃等待（产物无法追回，不让离开屏无限挂起）。 */
+/** 隐形保活槽几何：1×1dp 贴根层级右下缘（absolute + opacity 0，不挤占布局）。 */
+const KEEP_ALIVE_SIZE = 1;
+/** 外部停止的收尾护栏（ms）：stopRecording 后 recordAsync 未 resolve 的极端
+ *  时序下放弃等待（产物无法追回，不让收笔编排无限挂起）。 */
 const STOP_RESOLVE_TIMEOUT_MS = 5000;
 
 export function CameraCaptureOverlay({
     initialMode = 'photo',
-    onFinish,
-    onClose,
-    onDiscard,
-    onLeavePersist,
-    onRegisterLeave,
+    minimized,
+    ownerHint,
+    registerHardware,
+    onRecordStart,
+    onTick,
+    onProduct,
+    onClosed,
+    onDiscarded,
+    onMinimize,
     onLibraryFallback,
 }: {
     /** 打开时的默认模式（+ 选择器行语义：拍照 / 拍视频）。 */
     initialMode?: 'photo' | 'video';
-    /** 快门产物（拍照即完成；视频 = 手动停止后完成）——屏层走异步上传流。 */
-    onFinish: (capture: CameraCapture) => void;
-    /** 关闭会话（未录制时的 X/返回键；无落库义务）。 */
-    onClose: () => void;
-    /** 取消录像：停录并丢弃（覆盖层内取消钮 / 小窗长按）。 */
-    onDiscard: () => void;
-    /** 离开屏落库（屏层提供：DB 级追加媒体块 + 落库，不依赖已卸载的 UI 状态）。 */
-    onLeavePersist: (capture: CameraCapture) => Promise<void>;
-    /** 向屏层登记 stopForLeave（返回/收笔入口调用；卸载时登记 null）。 */
-    onRegisterLeave: (stop: (() => Promise<void>) | null) => void;
-    /** 相册导入兜底（权限拒绝态入口；屏层关闭会话并切换到 picker 流）。 */
+    /** 收起态（全局会话最小化）：CameraView 收进隐形保活槽，录制继续。 */
+    minimized: boolean;
+    /** 归属提示（owner 笔记展示名，录制中展示「停止后保存到 X」）。 */
+    ownerHint: string | null;
+    /** 向全局会话登记硬件句柄（外部停止/取消的桥；卸载时登记 null）。 */
+    registerHardware: (handlers: CameraCaptureHardware | null) => void;
+    /** 开录回执（快门进入录制态）：全局会话 phase → recording。 */
+    onRecordStart: () => void;
+    /** 录制秒数上收（1s 节拍）：全局 chip / + 菜单状态行计时。 */
+    onTick: (elapsedSec: number) => void;
+    /** 产物（拍照即完成；视频 = 手动停止后 resolve）——编排层按归属落库。 */
+    onProduct: (capture: CameraCapture) => void;
+    /** 未录制时关闭会话（X/返回键；无落库义务）。 */
+    onClosed: () => void;
+    /** 取消录像：停录并丢弃（覆盖层内取消钮）。 */
+    onDiscarded: () => void;
+    /** 录制中收起（X/返回键）：CameraView 进隐形保活槽，录制继续。 */
+    onMinimize: () => void;
+    /** 相册导入兜底（权限拒绝态入口；全局编排收场会话 + 相册选取仍归 owner）。 */
     onLibraryFallback: () => void;
 }) {
-    const insets = useSafeAreaInsets();
     // checking / granted / denied 之外补 unavailable：权限查询/弹窗被系统中断
     // （reject）必须落明确失败态——卡在 checking = 永久「正在打开相机…」spinner，
     // 覆盖层整个不可用（任务口径：加载失败落失败态而非永久 spinner）
@@ -99,33 +112,34 @@ export function CameraCaptureOverlay({
     const [recording, setRecording] = useState(false);
     const [recordSeconds, setRecordSeconds] = useState(0);
     const [micDenied, setMicDenied] = useState(false);
-    // 收起态（后台继续模型）：false = 全屏取景卡，true = 右下悬浮小窗
-    const [minimized, setMinimized] = useState(false);
     // 快门失败提示（拍照/录像 promise 被打断）：可见可重试，不是「按了没反应」
     const [shutterError, setShutterError] = useState<string | null>(null);
     // 系统设置跳转失败提示（Android 无 app-settings: scheme 时）
     const [settingsHint, setSettingsHint] = useState(false);
     const cameraRef = useRef<CameraView>(null);
     // recordAsync 的 promise 在 stopRecording() 时才 resolve——pending 存 ref，
-    // 停止/取消/离开三条收尾链路共用
+    // 停止/取消/外部停止三条收尾链路共用
     const recordingRef = useRef(false);
     const recordPromiseRef = useRef<Promise<{ uri: string } | undefined> | null>(null);
     // 快门互斥 ref（「启动中」+「录制中」两态的锁）：capturePhoto/beginRecording
     // 的守卫读 ref 不读 state（deps 收口为 [] 的稳定回调，state 会陈旧）；
     // capturing state 仅服务未来 UI 态
     const capturingRef = useRef(false);
-    // 收尾路标：discard = 停录后丢弃；leaving = 离开屏（产物走 onLeavePersist）；
-    // ended = 会话已终结（防重复收尾）
+    // 外部停止桥（registerHardware.stop 的 resolver）：recordAsync resolve 时
+    // 若在途，产物交回编排层而非本地 onProduct（避免双驱动）
+    const externalStopRef = useRef<((uri: string | null) => void) | null>(null);
+    // 收尾路标：discard = 停录后丢弃；ended = 会话已终结（防重复收尾）
     const discardRef = useRef(false);
-    const leavingRef = useRef(false);
     const endedRef = useRef(false);
-    // 回调 ref 镜像（异步链跨卸载存活时读最新闭包）
-    const onFinishRef = useRef(onFinish);
-    onFinishRef.current = onFinish;
-    const onDiscardRef = useRef(onDiscard);
-    onDiscardRef.current = onDiscard;
-    const onLeavePersistRef = useRef(onLeavePersist);
-    onLeavePersistRef.current = onLeavePersist;
+    // 回调 ref 镜像（异步链跨渲染存活时读最新闭包）
+    const onProductRef = useRef(onProduct);
+    onProductRef.current = onProduct;
+    const onDiscardedRef = useRef(onDiscarded);
+    onDiscardedRef.current = onDiscarded;
+    const onRecordStartRef = useRef(onRecordStart);
+    onRecordStartRef.current = onRecordStart;
+    const onTickRef = useRef(onTick);
+    onTickRef.current = onTick;
 
     // 权限预检（进覆盖层即查/请求；拒绝进引导态，不给黑屏取景器）。
     // 可重试：checkPermission 收口，unavailable 态的「重试」钮重新走一遍
@@ -156,6 +170,13 @@ export function CameraCaptureOverlay({
         return () => clearInterval(timer);
     }, [recording]);
 
+    // 秒数上收全局会话（chip / + 菜单状态行计时；state 镜像效应避免在
+    // setState updater 内做副作用）
+    useEffect(() => {
+        if (!recording) return;
+        onTickRef.current(recordSeconds);
+    }, [recording, recordSeconds]);
+
     const openSystemSettings = () => {
         // iOS: app-settings: 直达本 app 设置页；Android 无对应 scheme，
         // openURL 会 reject——catch 后改提示手动路径
@@ -175,7 +196,8 @@ export function CameraCaptureOverlay({
             });
             if (picture?.uri) {
                 endedRef.current = true;
-                onFinishRef.current({
+                // 拍照即产物：编排层按会话归属落库（拍照无后台语义，会话随之终结）
+                onProductRef.current({
                     kind: 'image',
                     uri: picture.uri,
                     width: picture.width ?? null,
@@ -194,8 +216,8 @@ export function CameraCaptureOverlay({
 
     /**
      * 录像主链：麦克风权限 → recordAsync（不传 maxDuration，#10 无上限）→
-     * resolve 后按路标分派：leaving = onLeavePersist（离开屏）/
-     * discard = onDiscard（取消）/ 其余 = onFinish（真停止落库）。
+     * resolve 后按路标分派：externalStop 在途 = 产物交回编排层（外部停止桥）/
+     * discard = onDiscarded（取消）/ 其余 = onProduct（真停止 → 归属落库）。
      */
     const beginRecording = useCallback(async () => {
         if (capturingRef.current || recordingRef.current) return;
@@ -217,6 +239,7 @@ export function CameraCaptureOverlay({
             discardRef.current = false;
             recordingRef.current = true;
             setRecording(true);
+            onRecordStartRef.current(); // 全局会话 phase → recording（chip/状态行口径）
             // 不传 maxDuration（#10 无上限）：resolve 只发生在手动停止
             const recordPromise = cameraRef.current?.recordAsync() ?? Promise.resolve(undefined);
             recordPromiseRef.current = recordPromise;
@@ -224,26 +247,19 @@ export function CameraCaptureOverlay({
             recordPromiseRef.current = null;
             recordingRef.current = false;
             setRecording(false);
-            if (leavingRef.current) {
-                // 离开屏路径：产物交 DB 级落库（不进 UI 回调——会话已在收尾）
-                if (result?.uri) {
-                    endedRef.current = true;
-                    await onLeavePersistRef.current({
-                        kind: 'video',
-                        uri: result.uri,
-                        width: null,
-                        height: null,
-                    });
-                }
+            // 外部停止在途（完成收笔编排 / 外部 stopCaptureSession）：产物交回
+            // 编排层，不进本地回调（双驱动防线）
+            if (externalStopRef.current) {
+                externalStopRef.current(result?.uri ?? null);
                 return;
             }
             if (discardRef.current) {
-                onDiscardRef.current();
+                onDiscardedRef.current();
                 return;
             }
             if (result?.uri) {
                 endedRef.current = true;
-                onFinishRef.current({ kind: 'video', uri: result.uri, width: null, height: null });
+                onProductRef.current({ kind: 'video', uri: result.uri, width: null, height: null });
             } else {
                 // resolve 空产物（取景器被系统停掉等）：可见可重试
                 setShutterError('录制失败，请重试。');
@@ -252,11 +268,15 @@ export function CameraCaptureOverlay({
             // 中断场景：录像 promise 被打断（recordAsync reject，如相机被系统回收）
             // ——不复位 recording 会让界面永久停在「录制中」红块且 stopRecording
             // 永远等不到 resolve；finally 只复位 capturing，录制态必须在 catch 归零。
-            // 收尾路标优先：取消/离开路径的 reject 不当失败提示
+            // 收尾路标优先：外部停止/取消路径的 reject 不当失败提示
             recordingRef.current = false;
             setRecording(false);
-            if (discardRef.current) onDiscardRef.current();
-            else if (!leavingRef.current) setShutterError('录制失败，请重试。');
+            if (externalStopRef.current) {
+                externalStopRef.current(null);
+                return;
+            }
+            if (discardRef.current) onDiscardedRef.current();
+            else setShutterError('录制失败，请重试。');
         } finally {
             capturingRef.current = false;
             setCapturing(false);
@@ -264,14 +284,14 @@ export function CameraCaptureOverlay({
     }, []);
 
     const onShutterPress = useCallback(() => {
-        if (permission !== 'granted' || leavingRef.current || endedRef.current) return;
+        if (permission !== 'granted' || endedRef.current) return;
         setShutterError(null); // 重试即清上次失败提示
         if (mode === 'photo') {
             void capturePhoto();
             return;
         }
         if (recordingRef.current) {
-            // 录制中再按快门 = 真停止（resolve → onFinish 落库）。必须先于
+            // 录制中再按快门 = 真停止（resolve → onProduct → 归属落库）。必须先于
             // capturing 守卫（#6 根因，见旧注）：recordAsync await 期间
             // capturing 恒为 true，先查会把停止路径整段吞掉
             recordingRef.current = false;
@@ -281,14 +301,7 @@ export function CameraCaptureOverlay({
         void beginRecording();
     }, [permission, mode, capturePhoto, beginRecording]);
 
-    /** 小窗/控制行的停止（真停止 → 落库）：与快门停止同一收尾链。 */
-    const stopRecording = useCallback(() => {
-        if (!recordingRef.current) return;
-        recordingRef.current = false;
-        cameraRef.current?.stopRecording();
-    }, []);
-
-    /** 取消录像（覆盖层内取消钮 / 小窗长按）：停录并丢弃。 */
+    /** 取消录像（覆盖层内取消钮）：停录并丢弃。 */
     const cancelRecording = useCallback(() => {
         if (!recordingRef.current) return;
         discardRef.current = true;
@@ -297,81 +310,81 @@ export function CameraCaptureOverlay({
     }, []);
 
     /**
-     * 离开屏停录（屏层返回/收笔入口调用；收笔路径 await 本 promise）：在
-     * 屏层卸载 CameraView **之前**同步发起 stopRecording（卸载即停是原生
-     * 约束，停录必须在位），再等 recordAsync resolve（5s 护栏）落库。
+     * 外部停止（全局编排层经 registerHardware 调用；完成收笔等同步链路）：
+     * 停录并等待 recordAsync resolve（5s 护栏）——resolve 后 beginRecording
+     * 的 continuation 经 externalStopRef 把产物交回本 promise。
      */
-    const stopForLeave = useCallback(async (): Promise<void> => {
-        if (endedRef.current) return;
-        if (!recordingRef.current) {
-            endedRef.current = true;
-            return;
-        }
-        leavingRef.current = true;
-        recordingRef.current = false;
-        cameraRef.current?.stopRecording();
-        const pending = recordPromiseRef.current ?? Promise.resolve(undefined);
-        const result = await Promise.race([
-            pending,
-            new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), STOP_RESOLVE_TIMEOUT_MS)),
-        ]);
-        endedRef.current = true;
-        if (result?.uri) {
-            await onLeavePersistRef.current({
-                kind: 'video',
-                uri: result.uri,
-                width: null,
-                height: null,
-            });
-        }
-    }, []);
-
-    // 向屏层登记离开入口（返回/收笔的拦截点）；卸载摘除
-    useEffect(() => {
-        onRegisterLeave(stopForLeave);
-        return () => onRegisterLeave(null);
-    }, [stopForLeave, onRegisterLeave]);
-
-    // 卸载兜底：屏层未拦截的退出路径（如 iOS 侧滑返回）——标记 leaving 让
-    // recordAsync 的 resolve 走 onLeavePersist（异步落库），并尽力停录；
-    // CameraView 已随卸载释放时产物无法追回（见文件头注，已知取舍）
-    useEffect(() => {
-        return () => {
-            if (endedRef.current || !recordingRef.current) return;
+    const requestExternalStop = useCallback((): Promise<{ uri: string | null }> => {
+        return new Promise((resolve) => {
+            let settled = false;
+            const finish = (uri: string | null) => {
+                if (settled) return;
+                settled = true;
+                externalStopRef.current = null;
+                resolve({ uri });
+            };
+            if (!recordingRef.current) {
+                // 未开录（取景/拍照态）：无产物收场
+                finish(null);
+                return;
+            }
+            externalStopRef.current = finish;
             recordingRef.current = false;
-            leavingRef.current = true;
             try {
                 cameraRef.current?.stopRecording();
             } catch {
-                // 相机已随卸载释放：产物无法追回（cache 文件由系统清理）
+                // 相机已被系统回收：走 5s 护栏收场（产物无法追回）
             }
-        };
+            setTimeout(() => finish(null), STOP_RESOLVE_TIMEOUT_MS);
+        });
     }, []);
 
+    /** 外部取消（编排层 cancelCaptureSession）：停录并丢弃。 */
+    const requestExternalCancel = useCallback(() => {
+        if (!recordingRef.current) return;
+        discardRef.current = true;
+        recordingRef.current = false;
+        try {
+            cameraRef.current?.stopRecording();
+        } catch {
+            // 相机已释放：丢弃路径无产物可追
+        }
+    }, []);
+
+    // 硬件句柄登记（全局编排的停止/取消桥）；卸载（会话终结）时摘除
+    useEffect(() => {
+        registerHardware({ stop: requestExternalStop, cancel: requestExternalCancel });
+        return () => registerHardware(null);
+    }, [registerHardware, requestExternalStop, requestExternalCancel]);
+
     // Android 返回键（仅全屏态接管）：录制中 = 收起（后台继续）；未录制 =
-    // 关闭会话。收起态不注册（回落屏层 handler：离开屏 = 停录落库）
+    // 关闭会话。收起态不注册（回落屏层 handler：导航自由，会话继续后台）
     useEffect(() => {
         if (minimized || permission !== 'granted') return;
         const sub = BackHandler.addEventListener('hardwareBackPress', () => {
             if (recordingRef.current) {
-                setMinimized(true);
+                onMinimize();
                 return true;
             }
-            onClose();
+            onClosed();
             return true;
         });
         return () => sub.remove();
-    }, [minimized, permission, onClose]);
+    }, [minimized, permission, onMinimize, onClosed]);
 
-    const pipHostStyle = useMemo(
+    // 隐形保活槽宿主（1×1dp + opacity 0 + pointerEvents none）：不挤占布局、
+    // 不可见、零命中——原生录制管线继续采集（耗电代价见文件头注/报告）
+    const keepAliveHostStyle = useMemo(
         () => ({
             position: 'absolute' as const,
-            right: 24,
-            bottom: insets.bottom + PIP_BOTTOM_OFFSET,
-            width: PIP_WIDTH,
-            height: PIP_HEIGHT,
+            right: 0,
+            bottom: 0,
+            width: KEEP_ALIVE_SIZE,
+            height: KEEP_ALIVE_SIZE,
+            opacity: 0,
+            overflow: 'hidden' as const,
         }),
-        [insets.bottom],
+        [],
     );
     const fullHostStyle = useMemo(
         () => ({
@@ -383,14 +396,9 @@ export function CameraCaptureOverlay({
         [],
     );
     // 相机帧样式（同一节点换布局，见文件头注）：全屏 = max-w 400 + 3:4；
-    // 小窗 = 撑满 96×144 宿主 + 录制红描边
+    // 保活槽 = 撑满 1×1 宿主（几何无意义，仅保活）
     const frameStyle = minimized
-        ? {
-              flex: 1 as const,
-              borderRadius: PIP_RADIUS,
-              borderWidth: 2,
-              borderColor: PIP_RECORDING_BORDER,
-          }
+        ? { flex: 1 as const }
         : {
               width: '100%' as const,
               maxWidth: 400,
@@ -405,20 +413,20 @@ export function CameraCaptureOverlay({
     return (
         <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
             {/* 全屏 scrim（仅全屏态）：压暗日记画布，不接管点击（拍摄误触关闭
-                代价高），出口只有关闭钮；收起态整层卸载，画布交互零阻塞 */}
+                代价高），出口只有关闭钮；收起态整层卸载，画布/导航零阻塞 */}
             {!minimized ? (
                 <View className="absolute inset-0 bg-ink-scrim dark:bg-inkd-scrim" />
             ) : null}
 
             {/* 相机宿主（恒挂载）：CameraView 卸载即停是原生约束——全屏取景卡 ↔
-                右下悬浮小窗只切宿主 style（同一 React 节点换布局），取景卡内
-                CameraView 不重挂不重开。全屏态 host = 居中列（flex-1）+ box-none
-                （卡外触摸落 scrim）；小窗态 host = 96×144 绝对定位 + auto（小窗
-                即命中面），画布其余区域零阻塞 */}
+                隐形保活槽只切宿主 style（同一 React 节点换布局），CameraView
+                不重挂不重开。全屏态 host = 居中列（flex-1）+ box-none（卡外
+                触摸落 scrim）；保活槽态 host = 1×1 绝对定位 + none（不可见、
+                零命中、零布局挤占），画布与其余页面交互完全自由 */}
             {permission === 'granted' ? (
                 <View
-                    style={minimized ? pipHostStyle : fullHostStyle}
-                    pointerEvents={minimized ? 'auto' : 'box-none'}
+                    style={minimized ? keepAliveHostStyle : fullHostStyle}
+                    pointerEvents={minimized ? 'none' : 'box-none'}
                 >
                     <View className="relative overflow-hidden bg-black" style={frameStyle}>
                         {/* CameraView 只作取景层：零 children，铺满帧（P0：CameraView
@@ -433,8 +441,8 @@ export function CameraCaptureOverlay({
                             flash="off"
                         />
                         {/* 录制指示：红点 + 计时（tabular-nums 房规）；帧内左上，
-                            全屏/小窗两态共用 */}
-                        {recording ? (
+                            仅全屏态渲染（保活槽态不可见，无需指示） */}
+                        {recording && !minimized ? (
                             <View
                                 className="absolute left-3 top-3 z-10 flex-row items-center gap-2 rounded-full bg-black/45 px-3 py-1.5"
                                 pointerEvents="none"
@@ -448,43 +456,7 @@ export function CameraCaptureOverlay({
                                 </Text>
                             </View>
                         ) : null}
-                        {minimized ? (
-                            <>
-                                {/* 小窗交互面（z-10，压住取景层——小窗不需要相机手势）：
-                                    点按 = 重开全屏覆盖层（计时/录制态无缝恢复）；长按 =
-                                    停录并丢弃。触摸面零 className（房规）：inline style */}
-                                <Pressable
-                                    style={{
-                                        position: 'absolute',
-                                        top: 0,
-                                        left: 0,
-                                        right: 0,
-                                        bottom: 0,
-                                        zIndex: 10,
-                                    }}
-                                    onPress={() => setMinimized(false)}
-                                    onLongPress={cancelRecording}
-                                    accessibilityRole="button"
-                                    accessibilityLabel="正在录制，点按回到拍摄界面，长按取消录制"
-                                />
-                                {/* 小窗停止钮（z-20，真停止 → 落库）：32 视觉盒 +
-                                    hitSlop 6 → 44 命中；red 方块停止语言与快门录制态一致 */}
-                                <View
-                                    className="absolute inset-x-0 bottom-0 z-20 items-center pb-1.5"
-                                    pointerEvents="box-none"
-                                >
-                                    <BouncyPressable onPress={stopRecording} hitSlop={6} scaleTo={0.88}>
-                                        <View
-                                            className="h-8 w-8 items-center justify-center rounded-full bg-black/55"
-                                            accessibilityRole="button"
-                                            accessibilityLabel="停止录制"
-                                        >
-                                            <View className="h-3.5 w-3.5 rounded-[3px] bg-[#DC4A5E]" />
-                                        </View>
-                                    </BouncyPressable>
-                                </View>
-                            </>
-                        ) : micDenied || shutterError ? (
+                        {micDenied || shutterError ? (
                             // 提示槽单例（同一位置不叠两层）：麦克风引导优先，其次快门失败
                             <View
                                 className="absolute inset-x-3 bottom-3 z-10 items-center"
@@ -519,6 +491,13 @@ export function CameraCaptureOverlay({
                         </View>
                     ) : null}
 
+                    {/* 归属提示（录制中，#归属铁律可视化）：停止产物固定落回发起笔记 */}
+                    {!minimized && recording && ownerHint ? (
+                        <Text className="mt-2 text-center text-[12px] text-white/60">
+                            {`停止后保存到「${ownerHint}」`}
+                        </Text>
+                    ) : null}
+
                     {/* 控制行（全屏态）：关闭/收起 / 快门 / 翻转或取消。快门视觉 64px
                         圆 ≥44；关闭与右钮 44px 盒（CloseButton 统一组件），三者中心距
                         均远超 2×hitSlop(0)，核算通过。录制中语义切换：X = 收起（后台
@@ -528,7 +507,7 @@ export function CameraCaptureOverlay({
                         <View className="mt-5 w-full max-w-[400px] flex-row items-center justify-between px-8">
                             <CloseButton
                                 onDark
-                                onPress={recording ? () => setMinimized(true) : onClose}
+                                onPress={recording ? onMinimize : onClosed}
                                 label={recording ? '收起并继续录制' : '关闭相机'}
                             />
 
@@ -594,7 +573,7 @@ export function CameraCaptureOverlay({
                         <View className="w-full max-w-[400px] rounded-card bg-black p-5">
                             <View className="flex-row items-center justify-between">
                                 <Text className="text-[15px] font-semibold text-white">相机启动失败</Text>
-                                <CloseButton onDark onPress={onClose} label="关闭相机" />
+                                <CloseButton onDark onPress={onClosed} label="关闭相机" />
                             </View>
                             <View className="items-center gap-3 py-6">
                                 <LucideCamera size={36} color="#FFFFFF66" strokeWidth={1.5} />
@@ -635,7 +614,7 @@ export function CameraCaptureOverlay({
                             <View className="flex-row items-center justify-between">
                                 <Text className="text-[15px] font-semibold text-white">没有相机权限</Text>
                                 {/* 44 视觉盒：左邻标题非按压体，卡头右缘即卡内边距，无重叠核算项 */}
-                                <CloseButton onDark onPress={onClose} label="关闭相机" />
+                                <CloseButton onDark onPress={onClosed} label="关闭相机" />
                             </View>
                             <View className="items-center gap-3 py-6">
                                 <LucideCamera size={36} color="#FFFFFF66" strokeWidth={1.5} />

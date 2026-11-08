@@ -38,6 +38,11 @@ import { usePalette } from './theme';
  * 关闭语言统一（#8 打磨轮）：底部「取消」文字行退役，关闭入口统一为
  * 卡头右上 CloseButton（圆形触感底）+ scrim 点击 + Android 返回键三条路，
  * 与块操作卡 / 重命名卡 / 行程动作卡 / 拍摄卡 / 录音卡同一设计语言。
+ *
+ * 全局录制会话状态行（跨页面后台录制）：会话进行中（无论发起自哪篇笔记）
+ * 时在行列表顶部展示「● 录音中 0:32 · 继续」，点按重开全局覆盖层；非 owner
+ * 屏副标注明「素材将保存到发起的笔记」（归属铁律可视化）。状态行数据经
+ * props 注入（屏层从会话 store 投影），本组件不感知会话实现。
  */
 
 export type InsertAction =
@@ -49,12 +54,26 @@ export type InsertAction =
     | 'append-text'
     | 'complete';
 
+/** 全局录制会话状态行数据（屏层从会话 store 投影；本组件不 import 会话模块
+ *  ——依赖方向纪律：ui 层只收 props，防 store→ui→会话→store 环）。 */
+export interface ActiveCaptureStatus {
+    /** 状态行标题，如「● 录音中 0:32」。 */
+    title: string;
+    /** 副标（归属提示：owner 本尊 / 非 owner 的「素材归发起笔记」口径）。 */
+    hint: string;
+    /** 点按 = 重开全局覆盖层（无缝恢复，会话状态一直在）。 */
+    onResume: () => void;
+}
+
 export function InsertMenu({
     onClose,
     onAction,
+    activeCapture,
 }: {
     onClose: () => void;
     onAction: (action: InsertAction) => void;
+    /** 全局录制会话进行中（任意发起方）时展示状态行；null = 不展示。 */
+    activeCapture?: ActiveCaptureStatus | null;
 }) {
     const palette = usePalette();
     // 收笔确认步：行卡片 → 确认卡（同卡替换内容，仍是条件渲染遮罩）
@@ -174,6 +193,52 @@ export function InsertMenu({
                                 <CloseButton onPress={onClose} />
                             </View>
                             <View className="mt-4 gap-2.5">
+                                {/* 全局录制会话状态行（跨页面后台录制 + 归属铁律的可视化）：
+                                    「● 录音中 0:32 · 继续」——点按重开全局覆盖层（任意页面
+                                    可恢复）；停止产物归发起笔记（ownerJournalId），与当前
+                                    编辑的笔记零耦合。行高 ~64 ≥44，不传 hitSlop（0） */}
+                                {activeCapture ? (
+                                    <BouncyPressable onPress={activeCapture.onResume} scaleTo={0.97}>
+                                        <View
+                                            className="flex-row items-center gap-3 rounded-control bg-ink-surface p-3 dark:bg-inkd-surface"
+                                            accessibilityRole="button"
+                                            accessibilityLabel={`${activeCapture.title}，点按回到录制界面`}
+                                        >
+                                            {/* 录制红点标识（negative 色，与 chip/录制态一致）：
+                                                容器 40×40 rounded-control，与 MenuRow 图标容器同几何 */}
+                                            <View
+                                                pointerEvents="none"
+                                                className="h-10 w-10 items-center justify-center rounded-control"
+                                                style={{ backgroundColor: `${palette.negative}24` }}
+                                            >
+                                                <View
+                                                    className="h-2.5 w-2.5 rounded-full"
+                                                    style={{ backgroundColor: palette.negative }}
+                                                />
+                                            </View>
+                                            <View className="flex-1">
+                                                <Text
+                                                    className="text-[15px] font-medium text-ink-text dark:text-inkd-text"
+                                                    style={{ fontVariant: ['tabular-nums'] }}
+                                                >
+                                                    {activeCapture.title}
+                                                </Text>
+                                                <Text
+                                                    numberOfLines={1}
+                                                    className="text-[12px] text-ink-muted dark:text-inkd-muted"
+                                                >
+                                                    {activeCapture.hint}
+                                                </Text>
+                                            </View>
+                                            <Text
+                                                className="shrink-0 text-[13px] font-medium"
+                                                style={{ color: palette.secondary }}
+                                            >
+                                                继续
+                                            </Text>
+                                        </View>
+                                    </BouncyPressable>
+                                ) : null}
                                 {/* 各行完整视觉盒（icon 容器 40 + p-3 → 行高 ~64 ≥44）：不传
                                     hitSlop（0），命中盒 == 视觉盒；行距 gap-2.5(10px) 为不可点
                                     间隙（archive chooser 同口径） */}

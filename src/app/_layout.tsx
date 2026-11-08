@@ -17,6 +17,9 @@ import {
 // 启动孤儿媒体 GC（上传中断恢复）：同 last-route 深路径直连先例——barrel 只导出
 // useArchiveStore/useArchiveRevision，本次允许改动清单不含 index.ts
 import { runStartupOrphanMediaGc } from '@/features/archive/store';
+// 全局录制会话宿主（跨页面后台录制 + 归属铁律）：同 last-route/store 深路径直连
+// 先例——域 barrel index.ts 不在本次允许改动清单内。
+import { RecordingSessionHost } from '@/features/archive/recording-session';
 import { archiveConfig } from '@/config/archive';
 
 /**
@@ -225,6 +228,14 @@ export default function RootLayout() {
                     }}
                 />
             </Stack>
+            {/* 全局录制会话宿主（跨页面后台录制 + 归属铁律，见 recording-session.tsx
+                头注）：常驻根层级、Stack 之后的兄弟节点 = 绘制在全部屏之上——录音
+                控制器 / 相机隐形保活槽 / 覆盖层 / 悬浮 chip 都在这里，不随任何屏
+                挂载/卸载。与 viewer 透明路由天然互斥：覆盖层展开时其 scrim 拦截
+                全部触摸（viewer 打不开）；最小化会话 + viewer 时 chip 悬浮其上，
+                点按重开的覆盖层同样以 scrim 覆盖 viewer，关闭后回到 viewer，
+                无层级穿透路径。空闲（无会话）渲染 null，零布局挤占。 */}
+            <RecordingSessionHost />
         </>
     );
 }

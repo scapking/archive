@@ -24,9 +24,16 @@ import {
 // 深路径注记：ChevronUp/Down 与 editor 的节奏表/画布句柄未在 ui/index.ts 出口，
 // 域内深取（CloseButton 已收口进 barrel，不再深取）。
 import { ChevronDownIcon, ChevronUpIcon } from './ui/editor-icons';
-// 深路径注记：录音会话控制器（后台继续模型宿主）未在 ui/index.ts 出口（本轮
-// 改动权限不含 barrel），域内深取（editor-icons / close-button 先例）。
-import { AudioRecordingSession } from './ui/recorder-overlay';
+// 深路径注记：全局录制会话（跨页面后台录制 + 归属铁律的宿主）未在域 barrel
+// 出口，域内深取（editor-icons / close-button 先例）。控制器/覆盖层/保活槽
+// 都挂根层级（app/_layout 的 RecordingSessionHost），本屏只发起与展示状态。
+import {
+    restoreCaptureOverlay,
+    startCaptureSession,
+    stopCaptureSession,
+    subscribeRecordingSessionPersist,
+    useRecordingSessionStore,
+} from './recording-session';
 // 深路径注记：节奏表 / 画布句柄 / 键盘动态垫高 hook 未在 ui/index.ts 出口
 //（域内深取纪律，先例同上）。
 import {
@@ -65,18 +72,16 @@ import { safeBack } from './ui';
 import { pickComfortQuote } from './ui/comfort-quotes';
 import {
     BlockEditor,
-    CameraCaptureOverlay,
     CloseButton,
     EmptyState,
+    formatAudioTime,
     InsertMenu,
     LoadingView,
     PENDING_MEDIA_ID,
     RenameCard,
     TRIP_ICON_DEFAULT,
     TripBadge,
-    type CameraCapture,
     type InsertAction,
-    type RecordingResult,
     usePalette,
 } from './ui';
 
@@ -115,12 +120,6 @@ const UngroupIcon = createIcon(
 );
 
 /**
- * 采集会话（录音 / 拍摄二选一的互斥单元）：控制器组件挂屏层（覆盖层只是
- * 视图），一次至多一个采集面在跑；结束 = 屏层置 null（控制器随会话卸载）。
- */
-type CaptureSession = { kind: 'audio' } | { kind: 'camera'; mode: 'photo' | 'video' };
-
-/**
  * 连续日记编辑器（行程/日常通用）——三种入口：不传参 = 今天日常；
  * tripId+date = 行程某天；journalId = 直达某篇。
  *
@@ -130,14 +129,16 @@ type CaptureSession = { kind: 'audio' } | { kind: 'camera'; mode: 'photo' | 'vid
  *   卡内确认步强调「收笔后不可再修改」；
  * - **标题编辑走屏头编辑钮**（#1 屏头同构轮；#3 回退口径）；完成后锁定
  *   （#7）：收笔/跨日即只读；
- * - **录音/拍摄后台继续模型**：采集控制器（AudioRecordingSession /
- *   CameraCaptureOverlay 控制器化）挂本屏层，覆盖层只是视图——关闭按钮
- *   （X）= 收起继续后台执行（录音 → 屏层悬浮计时 chip「● 录音中 0:32」，
- *   点按重开覆盖层无缝恢复；拍摄视频 → CameraView 保持挂载收成右下 96×144
- *   悬浮小窗，点小窗重开全屏），只有手动停止才是真停止 → 落库；取消仅
- *   覆盖层内/小窗长按；**离开编辑屏（返回/收笔）自动停止并落库（不丢素材）**
- *   ——离开拦截点 = 返回钮/硬件返回/收笔入口（captureLeaveRef 登记链），
- *   未拦截路径（iOS 侧滑）由控制器卸载兜底尽力保全（取舍见各控制器注）；
+ * - **录音/拍摄全局会话（跨页面后台录制 + 归属铁律）**：采集控制器与覆盖层
+ *   上收根层级（recording-session.tsx + app/_layout 的 RecordingSessionHost），
+ *   本屏只负责发起（startCaptureSession 带 **ownerJournalId**——发起时编辑
+ *   上下文的 journal id，ensureJournal 已保证写前有 id）与状态展示。会话
+ *   不随本屏离开而中止（后台继续，任意页面可经悬浮 chip / + 菜单状态行
+ *   重开）；停止产物经 DB 级 appendMediaBlockToJournal **固定落回发起笔记**
+ *   ——无论停止发生在哪个页面、本屏是否在栈下；owner 屏挂载时经 persist
+ *   事件把产物块合并进本地 blocksRef（applyBlocks 到达序合并，随后的保存
+ *   天然携带，零丢写）；非 owner 屏的 + 菜单显示状态行可「继续」，但其
+ *   编辑/收笔与该会话零交互（B 的 blocks/pendingUploads 不消费 A 的产物）；
  * - **插入后台异步并行**：doAttach 同步插 pending 占位即返回，落盘+落库为
  *   后台任务（pendingUploadsRef 进程内注册表，多任务并行）；+ 菜单/插入在
  *   上传中不再禁用（picker/相机/录音一次一个的互斥保留）；「完成收笔」
@@ -176,9 +177,6 @@ export function JournalEditScreen({
     const [media, setMedia] = useState<JournalMediaRow[]>([]);
     const [savedAt, setSavedAt] = useState<number | null>(null);
     const [focusTextId, setFocusTextId] = useState<string | null>(null);
-    // 采集会话（录音/拍摄后台继续模型）：null = 空闲；一次至多一个采集面
-    //（picker/相机/录音互斥保留，编辑插入不受限——后台并行模型）
-    const [captureSession, setCaptureSession] = useState<CaptureSession | null>(null);
     // 「完成收笔」等待在途上传的轻量进行态（FAB spinner）
     const [finishing, setFinishing] = useState(false);
     // 多选模式（合并堆叠）：orderedIds = **选择顺序**的块 id 清单（合并重排
@@ -339,11 +337,33 @@ export function JournalEditScreen({
         };
     }, [store]);
 
-    // 采集离开拦截点（录音/拍摄控制器经 onRegisterLeave 登记 stopForLeave）：
-    // 返回/收笔入口调用——录制中自动停录并落库（不丢素材），空闲时 no-op
-    const captureLeaveRef = useRef<(() => Promise<void>) | null>(null);
-    const registerCaptureLeave = useCallback((stop: (() => Promise<void>) | null) => {
-        captureLeaveRef.current = stop;
+    // 全局录制会话归属合并（owner 屏挂载时）：会话停录产物在媒体行建立后、
+    // DB 块写入前发 persist 事件——本屏若正是发起方（ownerJournalId 匹配），
+    // 先把媒体块合并进本地 blocksRef（applyBlocks 到达序合并），其后的防抖/
+    // 收笔保存天然携带该块（DB 追加侧幂等，不产生重复块）。非 owner 事件
+    // 一律忽略（归属铁律：B 的编辑状态与 A 的会话零耦合）。订阅随卸载摘除
+    //（已卸载的 owner 屏无需合并——DB 级追加不依赖屏）。
+    useEffect(() => {
+        return subscribeRecordingSessionPersist((event) => {
+            const row = journalRef.current;
+            if (!row || event.ownerJournalId !== row.id || !isEditable(row.status)) return;
+            applyBlocks((current) => {
+                // 幂等闸：同一 mediaId 只合并一次（双挂载同篇/重复事件防重）
+                if (current.some((block) => block.t === 'media' && block.mediaId === event.mediaId)) {
+                    return current;
+                }
+                return [
+                    ...current,
+                    {
+                        t: 'media' as const,
+                        id: newBlockId(),
+                        mediaId: event.mediaId,
+                        ...(event.durationMs != null ? { durationMs: event.durationMs } : {}),
+                    },
+                ];
+            });
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- applyBlocks 稳定引用（useCallback []）
     }, []);
 
     // 在途媒体上传注册表（进程内 Map）：pendingId → { promise, kind }——
@@ -361,6 +381,13 @@ export function JournalEditScreen({
 
     const editable = journal ? isEditable(journal.status) : false;
     const saving = store((s) => s.savingJournal);
+    // 全局录制会话状态投影（+ 菜单状态行「录音中 0:32 · 继续」）：owner 本尊
+    // 与非 owner 屏都展示（任意页面可重开），停止产物一律归发起笔记
+    //（ownerJournalId）；本屏的 blocks/pendingUploads 与会话零交互
+    const sessionKind = useRecordingSessionStore((s) => s.kind);
+    const sessionPhase = useRecordingSessionStore((s) => s.phase);
+    const sessionElapsed = useRecordingSessionStore((s) => s.elapsedSec);
+    const sessionOwnerJournalId = useRecordingSessionStore((s) => s.ownerJournalId);
     const mediaById = useMemo(() => new Map(media.map((row) => [row.id, row])), [media]);
     const chars = useMemo(() => wordCount(blocks), [blocks]);
     const { monthDay } = formatDateParts(journal?.local_date ?? todayEntryDate());
@@ -546,58 +573,10 @@ export function JournalEditScreen({
     };
 
     /**
-     * 离开屏落库（DB 级，无 UI）：停录产物直接追加为**真实媒体块**（无 pending
-     * 占位——屏幕即将离开/已离开，占位回填链无人渲染），追加后立刻落库一次。
-     * blocks 读写全走 blocksRef 权威镜像：卸载后的兜底 flush、收笔的保存都会
-     * 读到包含本块的最新值，不存在「后写覆盖」竞态（见 applyBlocks 注）。
-     * 失败仅上浮 error（素材文件留 cache 随系统清理），不阻塞离开。
+     * 离开屏落库职责已上收全局会话（recording-session.persistCaptureProduct →
+     * store.appendMediaBlockToJournal，DB 级、不依赖屏）——本屏不再持有离开
+     * 兜底链；离开编辑屏不再中止录制（跨页面后台继续是会话的一等语义）。
      */
-    const appendLeaveMediaBlock = async (
-        journalId: string,
-        kind: 'image' | 'video' | 'audio',
-        uri: string,
-        width: number | null,
-        height: number | null,
-        durationMs?: number,
-    ) => {
-        const mediaId = await store
-            .getState()
-            .attachJournalMedia(journalId, kind, uri, width, height);
-        if (!mediaId) return; // 失败文案已由 store 上浮
-        const mediaBlockId = newBlockId();
-        applyBlocks((current) => [
-            ...current,
-            {
-                t: 'media' as const,
-                id: mediaBlockId,
-                mediaId,
-                ...(durationMs != null ? { durationMs } : {}),
-            },
-        ]);
-        await store.getState().saveJournalBlocks(journalId, blocksRef.current);
-    };
-
-    /** 录音离开屏落库（AudioRecordingSession stopForLeave 消费）。 */
-    const persistLeaveRecording = useCallback(
-        async (result: RecordingResult) => {
-            const row = journalRef.current;
-            if (!row || !isEditable(row.status)) return;
-            await appendLeaveMediaBlock(row.id, 'audio', result.uri, null, null, result.durationMs);
-        },
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- appendLeaveMediaBlock 读 ref/store，无状态依赖
-        [],
-    );
-
-    /** 拍摄离开屏落库（CameraCaptureOverlay stopForLeave 消费）。 */
-    const persistLeaveCapture = useCallback(
-        async (capture: CameraCapture) => {
-            const row = journalRef.current;
-            if (!row || !isEditable(row.status)) return;
-            await appendLeaveMediaBlock(row.id, capture.kind, capture.uri, capture.width, capture.height);
-        },
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- appendLeaveMediaBlock 读 ref/store，无状态依赖
-        [],
-    );
 
     /** 相册通道：权限 → 选图/选视频 → 统一插入流（doAttach 同步返回，后台并行）。 */
     const pick = async (kind: 'image' | 'video') => {
@@ -634,16 +613,30 @@ export function JournalEditScreen({
         }
     };
 
+    /** 归属提示名（发起会话时冻结）：有标题用标题，无标题回退「M月D日 日记」。 */
+    const captureOwnerLabel = () => {
+        const current = journalRef.current;
+        const label = current?.title?.trim();
+        return label ? label : `${monthDay} 日记`;
+    };
+
     /**
-     * 收笔（#7）：录制中先走「离开屏自动停止落库」（等产物落库完成，后续
-     * 保存 blocks 才带得上）；再等待全部在途上传收敛（allSettled——单任务
-     * 失败已各自上浮 error 并回滚占位，不互相影响也不中止收笔）；保存失败
-     * 中止；收笔后本页即只读锁定（无重开路径）。
+     * 收笔（#7）：本篇发起的录制会话先停录（归属落库链：产物经 persist 事件
+     * 已合并进本地 blocksRef + DB 级 appendMediaBlockToJournal 落回本篇——
+     * 后续保存 blocks 才带得上；非 owner 会话零交互，各自独立）；再等待全部
+     * 在途上传收敛（allSettled——单任务失败已各自上浮 error 并回滚占位，不
+     * 互相影响也不中止收笔）；保存失败中止；收笔后本页即只读锁定（无重开路径）。
      */
     const complete = async () => {
         const row = journalRef.current;
         if (!row) return;
-        await captureLeaveRef.current?.();
+        // owner 路径：只有本篇发起的会话才停（别的笔记发起的录制与本篇收笔无关）
+        const session = useRecordingSessionStore.getState();
+        if (session.kind && session.ownerJournalId === row.id) {
+            const outcome = await stopCaptureSession();
+            // 停止失败（错误文案已上浮）：中止收笔，否则录制产物与本次输入一起丢失
+            if (!outcome.ok) return;
+        }
         if (pendingUploadsRef.current.size > 0) {
             setFinishing(true);
             try {
@@ -663,8 +656,9 @@ export function JournalEditScreen({
         safeBack();
     };
 
-    /** + 选择器动作分发：媒体动作不再受上传阻塞（后台并行）；采集三行保持
-     *  「一次一个」互斥（录音/相机进行中给可见反馈）；相册/文本随时可用。 */
+    /** + 选择器动作分发：媒体动作不再受上传阻塞（后台并行）；采集三行经全局
+     *  会话互斥（已有会话 → start 拒绝并给 reason，可见反馈不静默吞点按）；
+     *  相册/文本随时可用。 */
     const runInsert = async (action: InsertAction) => {
         const row = journalRef.current;
         if (!row) return;
@@ -675,17 +669,19 @@ export function JournalEditScreen({
                 return;
             }
             case 'record': {
-                // 采集互斥：已有录音/拍摄进行中 → 可见反馈（不静默吞点按）
-                if (captureSession) {
+                // 互斥预检（先于权限弹窗——已有会话时直接给可见反馈，不拉系统弹窗；
+                // start 内部另有竞态闸）
+                const existing = useRecordingSessionStore.getState();
+                if (existing.kind) {
                     store.setState({
                         error:
-                            captureSession.kind === 'audio'
-                                ? '已有录音在进行中。'
+                            existing.kind === 'audio'
+                                ? '已有录音在进行中（素材将保存到发起的笔记）。'
                                 : '相机使用中，先处理拍摄再来录音。',
                     });
                     return;
                 }
-                // 麦克风权限由屏层处理（录音覆盖层只负责录制本身）
+                // 麦克风权限由屏层预检（拒绝不开会话；会话内 prepare 失败另有兜底）
                 const permission = await audio.getRecordingPermissionAsync();
                 if (!permission.granted) {
                     const requested = await audio.requestRecordingPermissionAsync();
@@ -695,22 +691,40 @@ export function JournalEditScreen({
                     }
                 }
                 Keyboard.dismiss();
-                setCaptureSession({ kind: 'audio' });
+                // 全局会话发起（归属铁律）：ownerJournalId = 当前编辑的 journal id
+                //（ensureJournal 保证写前有 id，row 就绪才可能到这里）；
+                // 已有会话 → 拒绝并给 reason（可见反馈）
+                const started = startCaptureSession('audio', row.id, { ownerLabel: captureOwnerLabel() });
+                if (!started.ok) {
+                    store.setState({ error: started.reason });
+                    return;
+                }
                 return;
             }
             case 'photo':
             case 'video': {
-                if (captureSession) {
+                // 互斥预检（与录音行同口径：已有会话直接可见反馈）
+                const existing = useRecordingSessionStore.getState();
+                if (existing.kind) {
                     store.setState({
                         error:
-                            captureSession.kind === 'camera'
-                                ? '相机使用中，先处理拍摄。'
-                                : '录音进行中，不能同时拍摄。',
+                            existing.kind === 'audio'
+                                ? '录音进行中，不能同时拍摄。'
+                                : '相机使用中，先处理拍摄。',
                     });
                     return;
                 }
                 Keyboard.dismiss();
-                setCaptureSession({ kind: 'camera', mode: action === 'video' ? 'video' : 'photo' });
+                // 全局拍摄会话（拍照 = 即时产物；拍视频 = 可后台继续的录像）——
+                // 互斥/归属口径与录音一致
+                const started = startCaptureSession('video', row.id, {
+                    cameraMode: action === 'video' ? 'video' : 'photo',
+                    ownerLabel: captureOwnerLabel(),
+                });
+                if (!started.ok) {
+                    store.setState({ error: started.reason });
+                    return;
+                }
                 return;
             }
             case 'library-image':
@@ -766,21 +780,15 @@ export function JournalEditScreen({
         setSelectMode({ orderedIds: [anchor] });
     };
 
-    /** 拍摄覆盖层的相册兜底入口（权限拒绝态）：关闭会话转相册图片通道。 */
-    const onCameraLibraryFallback = () => {
-        setCaptureSession(null);
-        void pick('image');
-    };
-
-    // 离开编辑屏（返回钮/硬件返回）：录制/拍摄进行中 = 自动停止并落库（不丢
-    // 素材，后台链路自洽，不阻塞返回导航）；多选中 = 先退出选择态；空闲 = 直接
-    // 返回。Android 返回键在此收口（浮层各自的 handler 在栈顶优先响应）。
+    // 离开编辑屏（返回钮/硬件返回）：**录制会话不再随离开中止**（跨页面后台
+    // 继续是全局会话的一等语义——产物归属发起笔记，用户可从任意页面经 chip /
+    // + 菜单状态行停止）；多选中 = 先退出选择态。Android 返回键在此收口
+    //（全局覆盖层各自的 handler 在其展开时优先响应）。
     const handleLeave = useCallback(() => {
         if (selectModeRef.current) {
             setSelectMode(null);
             return;
         }
-        void captureLeaveRef.current?.();
         safeBack();
     }, []);
 
@@ -807,6 +815,30 @@ export function JournalEditScreen({
         setActionBlockId(null);
         applyBlocks((current) => removeBlock(current, id));
     };
+
+    // + 菜单状态行数据（全局会话进行中且本屏可编辑时展示）：「● 录音中 0:32 ·
+    // 继续」点按重开全局覆盖层（无缝恢复）；副标按 owner 身份分流——归属
+    // 铁律可视化：非 owner 屏明示「素材将保存到发起的笔记」
+    const activeCapture = (() => {
+        if (!sessionKind || !editable) return null;
+        const label =
+            sessionKind === 'audio'
+                ? '录音中'
+                : sessionPhase === 'recording'
+                    ? '录像中'
+                    : '拍摄中';
+        return {
+            title: `${label} ${formatAudioTime(sessionElapsed)}`,
+            hint:
+                sessionOwnerJournalId === journal?.id
+                    ? '点按回到录制界面，停止后保存到本篇'
+                    : '点按回到录制界面，素材将保存到发起的笔记',
+            onResume: () => {
+                setMenuOpen(false);
+                restoreCaptureOverlay();
+            },
+        };
+    })();
 
     // 载入失败态（自愈口径，参照 useFileUrlState 三态）：明确失败 + 重试入口，
     // 绝不把失败渲染成永久 spinner；store.error（如「日记初始化失败」）一并展示
@@ -1034,40 +1066,10 @@ export function JournalEditScreen({
                 </View>
             ) : null}
 
-            {/* 录音会话（控制器挂屏层，覆盖层只是视图）：停止 = 真停止落库；
-                收起 = 后台继续（chip 承接）；取消 = 丢弃；离开屏 = 停录落库 */}
-            {captureSession?.kind === 'audio' ? (
-                <AudioRecordingSession
-                    onFinish={(result) => {
-                        setCaptureSession(null);
-                        doAttach('audio', result.uri, null, null, result.durationMs);
-                    }}
-                    onDiscard={() => setCaptureSession(null)}
-                    onError={(message) => {
-                        setCaptureSession(null);
-                        store.setState({ error: message });
-                    }}
-                    onLeavePersist={persistLeaveRecording}
-                    onRegisterLeave={registerCaptureLeave}
-                    chipBottomInset={insets.bottom + 32}
-                />
-            ) : null}
-            {/* 拍摄会话（控制器化）：录制中 X = 收成右下悬浮小窗（CameraView 保持
-                挂载继续录）；快门/小窗停止 = 落库；覆盖层取消/小窗长按 = 丢弃 */}
-            {captureSession?.kind === 'camera' ? (
-                <CameraCaptureOverlay
-                    initialMode={captureSession.mode}
-                    onFinish={(capture) => {
-                        setCaptureSession(null);
-                        doAttach(capture.kind, capture.uri, capture.width, capture.height);
-                    }}
-                    onClose={() => setCaptureSession(null)}
-                    onDiscard={() => setCaptureSession(null)}
-                    onLeavePersist={persistLeaveCapture}
-                    onRegisterLeave={registerCaptureLeave}
-                    onLibraryFallback={onCameraLibraryFallback}
-                />
-            ) : null}
+            {/* 录音/拍摄会话已上收根层级（app/_layout 的 RecordingSessionHost）：
+                覆盖层/隐形保活槽/悬浮 chip 全局渲染，任意页面可重开；停止产物经
+                DB 级 appendMediaBlockToJournal 落回发起笔记（ownerJournalId），
+                owner 屏经 persist 事件合并进本地 blocksRef（见订阅 effect） */}
 
             {/* 块操作卡（#1/#9 + 自定义合并堆叠入口）：媒体长按/双击、文本聚焦 ⋯
                 → 屏根浮层，条件渲染（禁 RN Modal） */}
@@ -1105,10 +1107,12 @@ export function JournalEditScreen({
                     errorText={error}
                 />
             ) : null}
-            {/* 插入选择器（+ 号罗盘）：条件渲染遮罩，打开时键盘收起（组件内 blur） */}
+            {/* 插入选择器（+ 号罗盘）：条件渲染遮罩，打开时键盘收起（组件内 blur）；
+                全局录制会话进行中时顶部展示状态行（「录音中 0:32 · 继续」） */}
             {menuOpen ? (
                 <InsertMenu
                     onClose={() => setMenuOpen(false)}
+                    activeCapture={activeCapture}
                     onAction={(action) =>
                         void runInsert(action).catch((caught) => {
                             // 中断场景：录音权限/收笔通道 reject（系统中断、环境异常）
