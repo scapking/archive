@@ -7,8 +7,10 @@ import * as SystemUI from 'expo-system-ui';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { applyThemePref, getPalette, useEffectiveTheme, useArchiveStore, type ThemePref } from '@/features/archive';
 // Android E2E 冷启自愈（同 last-route/store 深路径直连先例——域 barrel index.ts
-// 不在本次允许改动清单内）：等价调 Me 切换链的 native 生效点但不切主题
-import { reapplyAndroidEdgeToEdge } from '@/features/archive/ui/theme';
+// 不在本次允许改动清单内）：reapply 等价调 Me 切换链的 native 生效点但不切主题
+// （dev build 正解，Expo Go 下 no-op）；useAndroidE2eSelfRepair 是 Expo Go 冷启
+// 非 E2E 的主题双翻自动修复（检测口径、时序与 guardrail 全集见 theme.ts 尾段）。
+import { reapplyAndroidEdgeToEdge, useAndroidE2eSelfRepair } from '@/features/archive/ui/theme';
 // 上一次界面缓存（R8 深路径直连：域 barrel index.ts 不在本次允许改动清单内）
 import {
     consumeLastRoute,
@@ -84,6 +86,11 @@ export default function RootLayout() {
     const navigationRef = useNavigationContainerRef();
     // 上一次界面恢复用（replace 到缓存路径）
     const router = useRouter();
+    // Expo Go 冷启非 E2E 的自动修复挂载点（Android-only，web/iOS 短路）：内部
+    // 自取 insets/生效主题，挂载 ~700ms 单次判定 bottom===0 → 主题双翻两次
+    // Activity 重建。与下方 600ms 探测 effect 无耦合（一个 Expo Go no-op 只服务
+    // dev build，一个只服务 Expo Go），机理与时序见 theme.ts 尾段实现注。
+    useAndroidE2eSelfRepair();
 
     useEffect(() => {
         if (!ready) void loadAll();
@@ -109,6 +116,9 @@ export default function RootLayout() {
         // 重挂载重复执行也因幂等无害）；与用户 600ms 窗口内手动切主题无竞态：
         // onColorSchemeChange 与主题无耦合（导航栏按钮深浅由原生按当前 uiMode
         // 自取），用户切主题伴随的重建链路本就会重跑 applyEdgeToEdge，幂等叠加。
+        // 【Expo Go 的冷启修复不在此 effect】两次调用在该宿主均为 no-op，真正的
+        // 修复走 useAndroidE2eSelfRepair 的主题双翻（上方挂载点），本 effect 仅
+        // 服务 dev build；两机制判定窗口错开（600/700ms）互不干扰。
         if (Platform.OS !== 'android') return;
         const immediate = setTimeout(() => reapplyAndroidEdgeToEdge(), 0);
         const probe = setTimeout(() => {
