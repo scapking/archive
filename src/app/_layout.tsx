@@ -91,24 +91,24 @@ export default function RootLayout() {
     }, [ready, loadAll]);
 
     useEffect(() => {
-        // Android edge-to-edge 冷启自愈（2026-11-09 真机：冷启内容止步于导航栏
-        // 上方，Me 切一次主题才恢复）：冷启 E2E 生效全押 react-native-edge-to-edge
-        // 插件 onHostResume 的派发时序（RN 核心 updateEdgeToEdgeFeatureFlag 仅
-        // Android 15+ 自动启用），派发错过即无 E2E。修复 = 挂载后直接补调
-        // RNEdgeToEdge.onColorSchemeChange()——原生实现就是插件 applyEdgeToEdge
-        // （setDecorFitsSystemWindows(false) 等，EdgeToEdgeModuleImpl.kt:64-117），
-        // 与 Me 切主题后 Activity 重建链路最终执行的动作完全等价，但不切主题、
-        // 不触发重建、无闪屏、幂等可重入。两道保险：
-        // ①挂载后一拍无条件补调（等价 Me 切换链 native 生效点，错过派发即补）；
-        // ②600ms insets 稳定点条件补调：E2E 下手势条/三键导航的 bottom inset 必
-        //   >0，decorFits=true（非 E2E）时 insets 被窗口消费恒 =0 → bottom===0
-        //   判定①未生效。误判面（写明前提）：全屏隐藏导航栏的设备/应用 E2E 且
-        //   bottom=0——本项目常驻导航栏不属此类，且误判后果只是多一次幂等
-        //   applyEdgeToEdge，无害。两次调用均为冷启一次性定时器（无监听订阅、
-        //   无循环重入，Fast Refresh 重挂载重复执行也因幂等无害）；与用户 600ms
-        //   窗口内手动切主题无竞态：onColorSchemeChange 与主题无耦合（导航栏
-        //   按钮深浅由原生按当前 uiMode 自取），用户切主题伴随的重建链路本就会
-        //   重跑 applyEdgeToEdge，幂等叠加。
+        // Android edge-to-edge 冷启自愈（2026-11-09 二轮审计修订生效域注释，
+        // 完整机理证见 theme.ts 头注；定时器逻辑不变）：补调
+        // RNEdgeToEdge.onColorSchemeChange()（原生 = 插件 applyEdgeToEdge，
+        // setDecorFitsSystemWindows(false) 等，幂等可重入、无闪屏、不切主题）。
+        // 【dev build】react-native-edge-to-edge 原生模块存在，此为冷启自愈
+        // 正解；两道保险：①挂载后一拍无条件补调（错过插件 onHostResume 派发
+        // 即补）；②600ms insets 稳定点条件补调：E2E 下手势条/三键导航的
+        // bottom inset 必 >0，decorFits=true（非 E2E）时 insets 被窗口消费恒
+        // =0 → bottom===0 判定①未生效；误判后果只是多一次幂等调用，无害。
+        // 【Expo Go】RNEdgeToEdge 原生模块未捆绑（expo 58 bundledNativeModules
+        // .json 无此包），两次调用均为静默 no-op；Expo Go 的窗口状态通道是
+        // app.json → manifest extra['expo-navigation-bar']（enforceContrast
+        // :false，勿删）→ 原生 ExperienceActivity.onWindowFocusChanged 每次
+        // 焦点写 isNavigationBarContrastEnforced=false（theme.ts 头注③）。
+        // 两次调用均为冷启一次性定时器（无监听订阅、无循环重入，Fast Refresh
+        // 重挂载重复执行也因幂等无害）；与用户 600ms 窗口内手动切主题无竞态：
+        // onColorSchemeChange 与主题无耦合（导航栏按钮深浅由原生按当前 uiMode
+        // 自取），用户切主题伴随的重建链路本就会重跑 applyEdgeToEdge，幂等叠加。
         if (Platform.OS !== 'android') return;
         const immediate = setTimeout(() => reapplyAndroidEdgeToEdge(), 0);
         const probe = setTimeout(() => {

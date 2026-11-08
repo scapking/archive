@@ -125,32 +125,53 @@ export function useEffectiveTheme(): 'light' | 'dark' {
 }
 
 // ---------------------------------------------------------------------------
-// Android edge-to-edge 冷启自愈（2026-11-09 真机症状：冷启内容止步于导航栏上方，
-// 去 Me 点一次主题切换后才恢复）。
+// Android edge-to-edge 自愈（2026-11-09 第二轮 API 面审计修订）。
 //
-// 机理（全部 file:line 见下）：Me 切换链最终 native 生效点 =
-// react-native-edge-to-edge 插件的 EdgeToEdgeModuleImpl.applyEdgeToEdge
-// （setDecorFitsSystemWindows(false) + 透明系统栏 + cutout mode，
-// EdgeToEdgeModuleImpl.kt:64-117）。Android <15 冷启时该函数只能由插件模块
-// onHostResume 派发（newarch EdgeToEdgeModule.kt:23-25）——RN 核心的
-// updateEdgeToEdgeFeatureFlag 仅 Android 15+ 置位 enableEdgeToEdge
-// （views/view/WindowUtil.kt:45-63），<15 全押插件派发时序，错过即无 E2E；
-// 而切主题时 uiMode 变化触发 Activity 重建（AppearanceModule.kt:85-95 →
-// AppCompatDelegate.setDefaultNightMode → applyDayNight → recreate），重建后
-// onHostResume 重新派发，E2E 恢复——这正是「切一下主题就好了」的全部原因。
+// 生效域分两种宿主，机理完全不同（本轮穷举结论，全部 file:line 实证）：
 //
-// 本函数 = 「不切主题的等价调用」（模拟可行性判定结论 a）：RNEdgeToEdge
-// TurboModule 暴露的 onColorSchemeChange() 的原生实现就是 applyEdgeToEdge
-// （newarch EdgeToEdgeModule.kt:31-33；插件 JS spec 在 Appearance 变化时也是调
-// 它，specs/NativeEdgeToEdgeModule.ts:17-21）——幂等重设全部窗口 flag，不切
-// 主题、不触发 Activity 重建、无闪屏。已排除「模拟切换」路线（结论 b 不成立）：
-// androidx AppCompatDelegate.setDefaultNightMode 同值调用是 no-op
-// （AppCompatDelegate.java：`if (sDefaultNightMode == mode) return;`），
-// 同值双翻翻不动，只能真翻反再翻回（两次 Activity 重建闪屏），劣于直调。
+// 【dev build / prebuild（expo-dev-client）】react-native-edge-to-edge 原生
+// 模块真实存在（package.json 依赖参与了原生编译）。onColorSchemeChange() 的
+// 原生实现 = EdgeToEdgeModuleImpl.applyEdgeToEdge（setDecorFitsSystemWindows
+// (false) + 透明系统栏 + contrast + cutout mode，EdgeToEdgeModuleImpl.kt）。
+// 插件模块 onHostResume 派发（newarch EdgeToEdgeModule.kt），冷启错过派发即
+// 补调本函数等价恢复。app.json 两个插件（react-native-edge-to-edge 的
+// enforceNavigationBarContrast:false + expo-navigation-bar 的
+// enforceContrast:false）此时也会真正写入 styles.xml（Theme.EdgeToEdge 平台
+// attr 链），全链路自洽。
 //
-// 用 TurboModuleRegistry.get（可能 null）而非 getEnforcing：模块未注册（未来
-// 版本改名/移除/平台差异）时静默降级，不影响启动；失败也只 console.warn——
-// 自愈是增强不是关键路径。
+// 【Expo Go（用户当前跑 npx expo start 的环境）】本函数是静默 no-op：
+// Expo Go 未捆绑 react-native-edge-to-edge 原生模块（expo 58 的
+// bundledNativeModules.json 22 个 react-native-* 无此包；expo/expo main
+// apps/expo-go/package.json 亦无该依赖）→ TurboModuleRegistry.get 返回 null
+// → 直调无效。此前「直调无效 ≠ applyEdgeToEdge 不是缺的那块」，而是模块根本
+// 不存在。Expo Go 的真实窗口链路（expo/expo main 源码）：
+//   ① ExperienceActivity.onCreate → androidx enableEdgeToEdge()（窗口 E2E，
+//      Q+ 上 isNavigationBarContrastEnforced=true 系统对比度 scrim，androidx
+//      activity EdgeToEdge.kt:310-316）；
+//   ② RN 核心 updateEdgeToEdgeFeatureFlag 从不执行：项目宿主
+//      ReactNativeActivity extends AppCompatActivity（非 ReactActivity，
+//      无 ReactActivityDelegate.onCreate 派发），expo-modules-core 的
+//      EdgeToEdgePackage（反射调 updateEdgeToEdgeFeatureFlag 的桥）也不在
+//      Expo Go 的 ExperiencePackagePicker.EXPO_MODULES_PACKAGES 白名单内
+//      → RN 静态 flag isEdgeToEdgeFeatureFlagOn 恒 false → DeviceInfoModule
+//      的 window 尺寸扣除系统栏 → Dimensions.get('window') 不含导航栏高度
+//      =「部分功能不 E2E」的机制面（JS 侧 Expo Go 天花板，无法从 JS 置位）；
+//   ③ 每次 onWindowFocusChanged(hasFocus, manifest!=null) →
+//      ExperienceActivityUtils.setNavigationBar(manifest) 读 manifest
+//      extra['expo-navigation-bar']（= app.json 里 expo-navigation-bar 插件
+//      提升的 props）→ enforceContrast:false 写 isNavigationBarContrastEnforced
+//      =false——这是 Expo Go 里唯一从项目配置到导航栏状态的通道，已在
+//      app.json 接通，勿删。
+//
+// 保留本函数：dev build 下是冷启自愈正解；Expo Go 下 no-op 无副作用。
+//
+// 已排除路线（本轮+上轮，勿再试）：NavigationBar.setStyle（Q+ 上
+// isContrastEnforced 读平台 attr 默认 true，setNavigationBarContrastEnforced
+// 恒被打开，重开 scrim）；模拟主题切换（AppCompatDelegate.setDefaultNightMode
+// 同值 no-op，双翻必闪屏）；SystemUI.setBackgroundColorAsync 三拍补刷（只改
+// decorView 底色，不穿 contrast/布局语义）。Expo Go 环境若仍复现冷启症状，
+// 出口只有 dev build（`npx expo prebuild --platform android` 本地构建或
+// `eas build --profile development`），届时插件链与本函数同时生效。
 /** RNEdgeToEdge TurboModule 最小 spec（严格对齐 react-native-edge-to-edge
     src/specs/NativeEdgeToEdgeModule.ts；只声明我们要调的方法，codegen 不参与）。 */
 export interface RNEdgeToEdgeSpec extends TurboModule {
