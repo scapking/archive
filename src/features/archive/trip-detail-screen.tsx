@@ -707,15 +707,20 @@ export function TripDetailScreen() {
 
     if (missing || !trip) {
         return (
+            // 外层 insets.top 口径保持不动（屏头带与正常视图逐 dp 对齐）；
+            // 降级内容整体下移一档（2026-11-09 反馈）：屏头之下加 pt-8 呼吸带
+            // ——EmptyState 居中口径下内容净下移 16dp；返回钮行为不变
             <View className="flex-1 bg-ink-base dark:bg-inkd-base" style={{ paddingTop: insets.top }}>
                 <ScreenHeader title="行程" />
-                <EmptyState
-                    icon={<LucideCalendar size={40} color={palette.muted} strokeWidth={1.5} />}
-                    title="找不到这个行程"
-                    hint="它可能已被删除。回到 Archive 看看其他内容。"
-                    actionLabel="返回"
-                    onAction={safeBack}
-                />
+                <View className="flex-1 pt-8">
+                    <EmptyState
+                        icon={<LucideCalendar size={40} color={palette.muted} strokeWidth={1.5} />}
+                        title="找不到这个行程"
+                        hint="它可能已被删除。回到 Archive 看看其他内容。"
+                        actionLabel="返回"
+                        onAction={safeBack}
+                    />
+                </View>
             </View>
         );
     }

@@ -948,11 +948,12 @@ export function JournalEditScreen({
      * 零分支）。suggestedName 取 file-storage key 末段（入库段命名自带真实容器
      * 扩展名，web 下载文件名由此保真）。
      *
-     * 反馈口径（沿用 store.error 通道现状，报告注明）：成功关闭卡片并上浮结果
-     * 文案（error 通道是当前唯一横幅位，成功文案会以警示样式展示——属已登记
-     * 的通道局限，不新增通道）；失败保持卡片打开（同卡可重试），文案面向用户
-     * （MediaLibraryError 携带引导性 message，如权限拒绝 → 引导系统设置）。
-     * in-flight 期间保存行转 spinner + 全行禁用（见 BlockActionCard）。
+     * 反馈口径（2026-11-09 用户口径改版：成功静默）：成功关闭卡片即反馈——
+     * 文件落相册/下载开始/分享面板拉起本身就是结果，媒体块出现即确认，不再把
+     * 「已保存到手机相册」等成功文案写入 store.error（负向红字横幅）；失败保持
+     * 卡片打开（同卡可重试）+ 红字上浮，文案面向用户（MediaLibraryError 携带
+     * 引导性 message，如权限拒绝 → 引导系统设置）。in-flight 期间保存行转
+     * spinner + 全行禁用（见 BlockActionCard）。
      */
     const saveActionBlockToPhone = async () => {
         const block = actionBlock;
@@ -966,16 +967,12 @@ export function JournalEditScreen({
             // web blob: URL 引用即用即还（native 为 file:// 直路径，revoke 幂等 no-op）
             const uri = await fileStorage.url(row.file_key);
             try {
-                const destination = await mediaLibrary.saveAsync(uri, row.kind, {
+                // 成功静默（2026-11-09 用户口径）：不再把「已保存到手机相册」/
+                // 「已打开分享面板」/「已开始下载」等结果文案写入 store.error
+                //（负向红字横幅）——文件落相册即反馈；失败仍走 catch 上浮红字，
+                // 错误路径不动
+                await mediaLibrary.saveAsync(uri, row.kind, {
                     suggestedName: row.file_key.split('/').pop() ?? '',
-                });
-                store.setState({
-                    error:
-                        destination === 'library'
-                            ? '已保存到手机相册。'
-                            : destination === 'shared'
-                                ? '已打开分享面板，选择「存储/保存」完成保存。'
-                                : '已开始下载。',
                 });
                 setActionBlockId(null);
             } finally {
@@ -1027,17 +1024,24 @@ export function JournalEditScreen({
             <View className="flex-1 bg-ink-base dark:bg-inkd-base">
                 <View style={{ paddingTop: insets.top }} className="flex-1">
                     {error ? (
-                        <Text className="px-6 pb-2 pt-2 text-[12px] text-ink-negative dark:text-inkd-negative">
+                        // 失败文案下移一档（2026-11-09 反馈）：屏头→文案 8→24dp
+                        //（pt-6，与主画布报头下节奏同档）
+                        <Text className="px-6 pb-2 pt-6 text-[12px] text-ink-negative dark:text-inkd-negative">
                             {error}
                         </Text>
                     ) : null}
-                    <EmptyState
-                        icon={<LucideBookOpen size={40} color={palette.muted} strokeWidth={1.5} />}
-                        title="打不开这一页"
-                        hint="日记可能已被删除，或数据读取失败。"
-                        actionLabel="重试"
-                        onAction={() => void load()}
-                    />
+                    {/* 空态块整体下移一档（2026-11-09 反馈）：容器顶 pt-8 呼吸带
+                        ——EmptyState 居中口径下内容净下移 16dp，与屏头群留出明确
+                        间距；重试交互不变 */}
+                    <View className="flex-1 pt-8">
+                        <EmptyState
+                            icon={<LucideBookOpen size={40} color={palette.muted} strokeWidth={1.5} />}
+                            title="打不开这一页"
+                            hint="日记可能已被删除，或数据读取失败。"
+                            actionLabel="重试"
+                            onAction={() => void load()}
+                        />
+                    </View>
                 </View>
             </View>
         );
@@ -1144,7 +1148,10 @@ export function JournalEditScreen({
                     ) : null}
                 </View>
                 {error ? (
-                    <Text className="px-6 pb-2 text-[12px] text-ink-negative dark:text-inkd-negative">
+                    // 错误横幅整体下移一档（2026-11-09 反馈）：报头群→横幅间距
+                    // 8→24dp（pt-4 呼吸带，对齐 EDITOR_RHYTHM.mastheadToFirstBlock
+                    // =24 的报头下节奏），不再贴着报头/返回键区域
+                    <Text className="px-6 pb-2 pt-4 text-[12px] text-ink-negative dark:text-inkd-negative">
                         {error}
                     </Text>
                 ) : null}

@@ -70,7 +70,8 @@ import {
  * 不知道有无产物）完成后**立即终结 UI 会话**（卡片 ~160ms 淡出关闭、chip
  * 消失，无 spinner 停留）；**落库段转后台**（无进度增量护栏——连续 30s 无进度
  *  拍点才判超时，web 大文件流式落盘不再被固定总时长误杀；任务注册进会话级
- * 后台落库注册表，收敛时横幅反馈「已保存到笔记」/保存失败文案）。后台落库
+ * 后台落库注册表，收敛时成功静默（媒体块出现在笔记即反馈，2026-11-09 用户
+ * 口径）/失败文案上浮）。后台落库
  * 期间允许立即开新会话（落库是 IO+DB、录制是相机/麦克风，零资源冲突；
  * persisting 相位只作收笔等待痕迹，不渲染任何 UI）。「完成收笔」经
  * stopCaptureSession 等待同归属后台任务 allSettled 再收笔（FAB 等待口径
@@ -416,7 +417,7 @@ async function stopAudioHardwareWithGuard(
     void stopPromise
         .then((late) => {
             if (!timedOut) return;
-            // 护栏已强制收场：迟到产物尽力入库（不触碰会话状态，结果横幅反馈）
+            // 护栏已强制收场：迟到产物尽力入库（不触碰会话状态；成功静默，失败上浮）
             if ('error' in late) {
                 surfaceSessionError('录音停止超时，素材未能保存。');
                 return;
@@ -498,8 +499,9 @@ async function persistMediaToJournal(input: {
 
 /**
  * 迟到产物抢救入库（护栏超时后素材才落地）：按原归属走落库核心，**不触碰
- * 会话状态**（会话已被护栏收场，槽位可能被新会话占用）；结果横幅明确反馈
- * （store 已给出更具体的失败文案时不覆盖）。
+ * 会话状态**（会话已被护栏收场，槽位可能被新会话占用）；成功静默（2026-11-09
+ * 用户口径：「已补充保存」不再写横幅——素材出现在笔记即反馈），失败横幅明确
+ * 反馈（store 已给出更具体的失败文案时不覆盖）。
  */
 async function salvageLateProduct(input: {
     ownerJournalId: string;
@@ -518,10 +520,9 @@ async function salvageLateProduct(input: {
         height: null,
         durationMs: input.durationMs,
     });
-    if (outcome.ok) {
-        surfaceSessionError(`${input.timeoutNoun}，素材已补充保存。`);
-        return;
-    }
+    // 成功静默（2026-11-09 用户口径）：媒体块出现在笔记即反馈，不再写横幅；
+    // 失败仍保留红字（store 侧已有更具体文案时不覆盖）
+    if (outcome.ok) return;
     if (useArchiveStore.getState().error === errorBefore) {
         surfaceSessionError(`${input.timeoutNoun}，素材未能保存。`);
     }
@@ -551,15 +552,6 @@ let backgroundPersistSeq = 0;
 /** 会话落库任务在进度注册表里的 key 前缀（store.aggregateSaveProgress 聚合
  *  「保存中 N%」横幅用）；序号段与编辑器 pending 占位 id 空间隔离。 */
 const CAPTURE_PROGRESS_PREFIX = 'capture:';
-
-/** 落库成功横幅（复用既有 store.error 横幅通道——域内唯一全局反馈位）。 */
-function persistSuccessBanner(mediaKind: JournalMediaKind): string {
-    return mediaKind === 'video'
-        ? '视频已保存到笔记'
-        : mediaKind === 'audio'
-            ? '音频已保存'
-            : '图片已保存到笔记';
-}
 
 /** 同归属后台落库是否仍有在途任务（收尾协调的终结条件之一）。 */
 function hasInflightPersists(ownerJournalId: string): boolean {
@@ -596,11 +588,11 @@ async function waitForOwnerPersists(
 /**
  * 注册后台落库任务（不等待——返回任务 promise 供收笔链按需 await）：落库
  * 核心 + 无进度增量护栏（见 PERSIST_STALL_TIMEOUT_MS 注——挂死兜底：先给
- * 「保存超时」口径收场任务，底层链继续跑、成功后补横幅）+ 进度注册
+ * 「保存超时」口径收场任务，底层链继续跑）+ 进度注册
  * （taskId 进 store.mediaUploadProgress，会话保存横幅按 capture: 前缀聚合
- * 百分比）+ 结果横幅（成功 = 「已保存到笔记」系文案；失败 = 保存失败文案，
- * store 侧 attach/append 已给出更具体错误时不覆盖）。任务收敛自摘除并触发
- * UI 收尾协调（tryCloseUiSession）。
+ * 百分比）+ 结果反馈（成功静默——媒体块出现在笔记即反馈，2026-11-09 用户
+ * 口径；失败 = 保存失败文案，store 侧 attach/append 已给出更具体错误时不
+ * 覆盖）。任务收敛自摘除并触发 UI 收尾协调（tryCloseUiSession）。
  */
 function persistCaptureProduct(
     input: {
@@ -643,18 +635,16 @@ function persistCaptureProduct(
             ]);
             if (raced === 'timeout') {
                 surfaceSessionError('素材保存超时，仍在后台继续保存，请稍后在笔记中确认。');
-                // 护栏后的孤儿链：仍可能成功落库——成功时补成功横幅（与超时口径呼应）
-                void underlying
-                    .then((late) => {
-                        if (late.ok) surfaceSessionError(persistSuccessBanner(input.mediaKind));
-                    })
-                    .catch(() => undefined);
+                // 护栏后的孤儿链：仍可能成功落库——成功静默（媒体块出现在笔记
+                // 即反馈，2026-11-09 用户口径），失败由 store 侧 attach/append
+                // 文案上浮；仅防 unhandled rejection
+                void underlying.catch(() => undefined);
                 return { ok: false, message: '素材保存超时，请稍后在笔记中确认。' };
             }
-            if (raced.ok) {
-                surfaceSessionError(persistSuccessBanner(input.mediaKind));
-            } else if (useArchiveStore.getState().error === errorBefore) {
-                // 失败横幅：store 侧（attach/append）已给出更具体文案时不覆盖
+            // 成功静默（2026-11-09 用户口径）：不再写「已保存到笔记」系横幅，
+            // 媒体块出现即反馈；失败横幅保留（store 侧 attach/append 已给出
+            // 更具体文案时不覆盖）
+            if (!raced.ok && useArchiveStore.getState().error === errorBefore) {
                 surfaceSessionError(raced.message || '保存失败');
             }
             return raced;
@@ -755,7 +745,7 @@ function failStopSession(message: string, ownerJournalId: string, sessionToken: 
  * 停止会话（两段式：硬件停录 → UI 终结 → 落库后台化）：硬件停录段（会话级
  * 句柄，不依赖覆盖层挂载状态——最小化保活槽态同样可达；5s 护栏）完成即终结
  * UI 会话（卡片淡出关闭、chip 消失，无 spinner 停留）；有产物时落库立即转
- * 后台任务注册表（30s 无进度增量护栏），收敛时横幅反馈。后台落库期间新会话可立即
+ * 后台任务注册表（30s 无进度增量护栏），收敛时成功静默、失败文案上浮。后台落库期间新会话可立即
  * 发起。返回 promise 在**同归属全部后台落库收敛后**才 resolve（收笔链据此
  * 判定中止并保证不丢块；快门路径 void 调用不受影响）。
  */
@@ -964,7 +954,7 @@ function handleCameraProduct(capture: CameraCapture, sessionToken: number | null
     }
     // 自发性产物（拍照即完成/系统收尾）：先入 stopping（卡片淡出驱动），落库
     // 立即转后台任务，UI 会话按淡出缓冲终结——与停止同口径（关窗即返回，
-    // 横幅在任务收敛时反馈）
+    // 成功静默、失败横幅在任务收敛时反馈）
     const ownerJournalId = state.ownerJournalId;
     const startedAt = state.startedAt;
     useRecordingSessionStore.setState({ phase: 'stopping' });
@@ -1016,7 +1006,7 @@ function handleVideoRecordFailed(): void {
  * 渲染）。停止/取消经全局编排（stopCaptureSession/cancelCaptureSession）→
  * 硬件句柄 → 落库后台化（编排层带 5s 停录护栏 + 30s 无增量落库护栏——stop 挂死
  * 也不滞留 stopping，迟到产物走抢救入库）：停止 = 卡片淡出关闭 + 落库后台
- * 自动完成（横幅反馈），本控制器在 persisting 相位随宿主卸载、录音机释放。
+ * 自动完成（成功静默、失败上浮），本控制器在 persisting 相位随宿主卸载、录音机释放。
  *
  * 竞态防线（沿用旧口径）：prepare 未完成时停止钮禁用（Android MediaRecorder
  * 未 start 即 stop 产出无效文件）；stop/uri 读取全体 try 包裹（控制器在
@@ -1159,7 +1149,8 @@ function chipBottomInset(pathname: string, bottomInset: number): number {
  * 与悬浮 chip 同位同语言；phase 回 idle（任务收敛）或进度注册表摘除即消失，
  * 不做退场动画）。百分比 = capture: 前缀任务的平均进度（100ms 节流帧，
  * store.aggregateSaveProgress）；web 无总量时任务不进注册表 → 横幅不出现
- * （诚实降级：无可靠总量不伪造百分比，任务结果仍由既有横幅反馈）。
+ * （诚实降级：无可靠总量不伪造百分比，任务结果反馈 = 媒体块出现在笔记
+ * （成功静默）/失败横幅）。
  */
 function PersistProgressChip({ bottomInset }: { bottomInset: number }) {
     const palette = usePalette();
