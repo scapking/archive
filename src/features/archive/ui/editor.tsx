@@ -306,6 +306,154 @@ function releaseKeyboardTracking(): void {
     keyboardMetrics = null; // 归零重采：不跨编辑器实例残留陈旧基线
 }
 
+/* ---------------------------------------------------------------- */
+/* 键盘状态提升（singleton → React state，屏层「动态垫高」消费口）      */
+/* ---------------------------------------------------------------- */
+
+/**
+ * 键盘视口快照（KeyboardMetrics 的可渲染投影）：屏层「键盘动态垫高」的判定
+ * 输入。visible/height 与 singleton 字段同源；windowResized 是既有 adjustResize
+ * 基线判定（isWindowResizedByKeyboard）的即时结论。null = 无键盘度量
+ * （web 不安装追踪 / native 追踪未挂起）。
+ */
+export type KeyboardViewportSnapshot = {
+    visible: boolean;
+    /** 键盘高度（最近一次键盘事件 endCoordinates.height，dp）。 */
+    height: number;
+    /** 当前窗口是否已随键盘收缩（adjustResize 生效 → 系统已让出可视区，
+     *  动态垫高不得再加——防双重垫高在键盘上方留出一截空带）。 */
+    windowResized: boolean;
+};
+
+/**
+ * 「窗口是否已被 adjustResize 收缩」基线判定的唯一实现：定位器量测口径与
+ * 动态垫高判定共用（复用既有基线逻辑，见 KEYBOARD_WINDOW_RESIZE_TOLERANCE 注）。
+ * 旋转/分栏时基线漂移的复核语义与既有定位器一致（收起态基线在 didHide 与
+ * Dimensions change 时重采自愈，见 useKeyboardViewportSnapshot）。
+ */
+const isWindowResizedByKeyboard = (): boolean => {
+    if (!keyboardMetrics) return false;
+    const windowH = Dimensions.get('window').height;
+    return (
+        Math.abs(windowH - keyboardMetrics.baseWindowHeight) >
+        KEYBOARD_WINDOW_RESIZE_TOLERANCE
+    );
+};
+
+/** 快照读取（渲染期安全：只读 singleton 字段 + 当前窗口度量）。 */
+const readKeyboardViewportSnapshot = (): KeyboardViewportSnapshot | null => {
+    if (Platform.OS === 'web' || !keyboardMetrics) return null;
+    return {
+        visible: keyboardMetrics.visible,
+        height: keyboardMetrics.height,
+        windowResized: isWindowResizedByKeyboard(),
+    };
+};
+
+/** 快照同值守卫：字段全等即复用旧引用（setState bail-out，重渲最小化）。 */
+const isSameKeyboardViewportSnapshot = (
+    a: KeyboardViewportSnapshot | null,
+    b: KeyboardViewportSnapshot | null,
+): boolean =>
+    a === b ||
+    (a != null &&
+        b != null &&
+        a.visible === b.visible &&
+        a.height === b.height &&
+        a.windowResized === b.windowResized);
+
+/**
+ * 键盘视口快照订阅（singleton → React state 的桥）。选型理由（重渲最小方案）：
+ * 垫高是渲染输出，ref 无法驱动布局；callback/context 最终也要落一次 setState，
+ * 渲染扇出不比 hook 小，反而把状态逼到屏根（整屏重渲）。本 hook 把状态收进
+ * **叶子消费组件**（journal-edit-screen 的 CanvasDismissLayer，memo + children
+ * 直传）——键盘事件只重渲垫高层自身的 style，画布子树经 children 引用相等
+ * bail-out 零重渲。
+ *
+ * 挂载即对键盘追踪引用计数 +1（基线在挂载时采样——比首聚焦采样更早更稳；
+ * 定位器 activate/deactivate 在此之上叠加引用，互不干扰）。键盘事件 / 窗口
+ * 尺寸变化（旋转、分栏）到达时按字段同值守卫合并进 state：键盘一次弹出/
+ * 收起各一帧，quicktype 栏收展一帧，滚动与聚焦切换零重渲。
+ *
+ * 垫高落地重测钩子：快照变化提交渲染后向单例补发一拍通知——聚焦定位器在
+ * 垫高**已落地**的几何上重测落位，防「测量计时器跑赢垫高渲染」的时序竞争
+ * 把目标钳在旧 maxScroll 上。无环：通知只触发定位器量测/滚动（不写任何
+ * React 状态），本 hook 的监听器经同值守卫 bail（无第二次渲染），通知链
+ * 单拍终止；且垫高只依赖键盘快照，不依赖滚动位置/内容高，天然无反馈环。
+ */
+const useKeyboardViewportSnapshot = (): KeyboardViewportSnapshot | null => {
+    const [snapshot, setSnapshot] = useState<KeyboardViewportSnapshot | null>(
+        readKeyboardViewportSnapshot,
+    );
+    useEffect(() => {
+        // web 无键盘追踪（acquire 也早退；浏览器原生 focus scroll-into-view）
+        if (Platform.OS === 'web') return undefined;
+        acquireKeyboardTracking();
+        const sync = () => {
+            setSnapshot((current) => {
+                const next = readKeyboardViewportSnapshot();
+                return isSameKeyboardViewportSnapshot(current, next) ? current : next;
+            });
+        };
+        sync(); // 挂载对齐（后台切回时键盘已可见的罕见时序）
+        keyboardChangeListeners.add(sync);
+        const dimensionsSub = Dimensions.addEventListener('change', () => {
+            // 键盘收起态：静默重采基线（旋转/分栏漂移自愈点，不触发渲染）；
+            // 打开态：重算快照——windowResized 随新窗口几何复核 → 垫高重算
+            //（基线复核语义与既有定位器一致，键盘收起即自愈重采）
+            if (keyboardMetrics && !keyboardMetrics.visible) refreshKeyboardBase();
+            sync();
+        });
+        return () => {
+            keyboardChangeListeners.delete(sync);
+            dimensionsSub.remove();
+            releaseKeyboardTracking();
+        };
+    }, []);
+    // 垫高决策变化的落地重测（理由与无环论证见上注；web 快照恒 null 不进）
+    useEffect(() => {
+        if (snapshot == null) return;
+        notifyKeyboardChanged();
+    }, [snapshot]);
+    return snapshot;
+};
+
+/**
+ * 画布底部动态垫高（「滚到底后聚焦末段定位失效」修复面）：键盘打开且窗口
+ * **未被**系统收缩时（Android adjustResize 不生效的问题机型），静态基线下的
+ * 滚动余量 = 内容高 − 容器高，末段聚焦时无法把光标行顶到键盘上方的最佳位置
+ * ——键盘打开期间把底部垫高放大到 max(键盘高 + FOCUS_CLEARANCE, 静态基线)，
+ * 末段聚焦永远有足够滚动余量；键盘收起立即回静态基线。
+ *
+ * 生效分支矩阵（防双重垫高——垫高只在该加的分支加）：
+ * - Android + 窗口未被 adjustResize 收缩（问题机型）→ **动态垫高生效**；
+ * - Android + 窗口已收缩（adjustResize 正常机型，容器已被系统压矮）→ 静态
+ *   基线（滚动余量已由 resize 天然补足，再加 = 键盘上方空带）；
+ * - iOS → 恒静态基线（KAV padding 模式 + automaticallyAdjustKeyboardInsets
+ *   已让出键盘高度，与 adjustResize 收缩同构，语义上恒「已收缩」）；
+ * - web → 恒静态基线（无键盘追踪；浏览器原生 focus scroll-into-view）。
+ *
+ * 取 max 保证垫高 ≥ 静态基线：+ 浮钮让位语义不变（静止态布局与旧版逐 dp
+ * 一致——动态分支只在键盘打开时生效，而垫高增量区又被键盘覆盖，视觉零
+ * 扰动）。一次性 style 变更不动画：Animated native driver 不支持 padding
+ * 这类布局属性，JS 驱动会在键盘动画期间叠帧抖动，得不偿失（垫高区又被
+ * 键盘盖住，跳变不可见）。
+ */
+export const useKeyboardCanvasBottomPadding = (staticBaseline: number): number => {
+    const snapshot = useKeyboardViewportSnapshot();
+    return useMemo(() => {
+        if (
+            Platform.OS !== 'android' ||
+            !snapshot ||
+            !snapshot.visible ||
+            snapshot.windowResized
+        ) {
+            return staticBaseline;
+        }
+        return Math.max(snapshot.height + FOCUS_CLEARANCE, staticBaseline);
+    }, [snapshot, staticBaseline]);
+};
+
 /** 聚焦段入位的门档：`partial` = 段越出可视带即修（Android 全量补偿口径）；
  *  `fullyHidden` = 整段完全不可见才修（iOS automaticallyAdjustKeyboardInsets
  *  模式防双写打架——理由见 createFocusedBlockPositioner 注）。 */
@@ -388,14 +536,16 @@ export function createFocusedBlockPositioner(
             let visibleBottom = sy + sh;
             // Android 未重排机型兜底（见注计算口径）：窗口高不随 adjustResize
             // 收缩时 ScrollView 底缘仍含键盘区，按键盘度量换算上缘取 min
-            if (Platform.OS === 'android' && keyboardMetrics?.visible) {
-                const windowH = Dimensions.get('window').height;
-                const resized =
-                    Math.abs(windowH - keyboardMetrics.baseWindowHeight) >
-                    KEYBOARD_WINDOW_RESIZE_TOLERANCE;
-                if (!resized) {
-                    visibleBottom = Math.min(visibleBottom, windowH - keyboardMetrics.height);
-                }
+            //（收缩判定复用 isWindowResizedByKeyboard——与动态垫高同一基线口径）
+            if (
+                Platform.OS === 'android' &&
+                keyboardMetrics?.visible &&
+                !isWindowResizedByKeyboard()
+            ) {
+                visibleBottom = Math.min(
+                    visibleBottom,
+                    Dimensions.get('window').height - keyboardMetrics.height,
+                );
             }
             const safeBottom = visibleBottom - FOCUS_CLEARANCE;
             const anchorY = visibleTop + (visibleBottom - visibleTop) * FOCUS_ANCHOR_RATIO;

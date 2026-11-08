@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
 import {
     BackHandler,
     Keyboard,
@@ -21,7 +21,14 @@ import {
 // 深路径注记：ChevronUp/Down 与 editor 的节奏表/画布句柄未在 ui/index.ts 出口，
 // 域内深取（CloseButton 已收口进 barrel，不再深取）。
 import { ChevronDownIcon, ChevronUpIcon } from './ui/editor-icons';
-import { EDITOR_RHYTHM, type BlockEditorHandle, type EditorCanvasHandle } from './ui/editor';
+// 深路径注记：节奏表 / 画布句柄 / 键盘动态垫高 hook 未在 ui/index.ts 出口
+//（本轮改动权限仅 journal-edit-screen / editor 两文件），域内深取（先例同上）。
+import {
+    EDITOR_RHYTHM,
+    useKeyboardCanvasBottomPadding,
+    type BlockEditorHandle,
+    type EditorCanvasHandle,
+} from './ui/editor';
 import { imagePicker } from '@/core/image-picker';
 import { audio } from '@/core/audio';
 import { useArchiveRevision, useArchiveStore } from './store';
@@ -69,6 +76,14 @@ import {
  *  JOURNAL_IMAGE_LIMIT = 9（journal-logic，微信九图口径）——图片路径两道
  *  闸都过，视频/音频仍只受本值约束。 */
 const MAX_MEDIA = 12;
+
+/**
+ * 画布底部静态垫高基线（dp）：contentContainer 底部留白给 + 浮钮让位
+ * （浮钮 bottom = insets.bottom + 24 悬浮其上，不被内容顶穿）。键盘动态垫高
+ * （editor 的 useKeyboardCanvasBottomPadding）以此为下限取大——垫高 ≥ 基线，
+ * 静止态（键盘收起）布局与旧版逐 dp 一致。
+ */
+const CANVAS_BOTTOM_BASE_INSET = 96;
 
 /**
  * 连续日记编辑器（行程/日常通用）——三种入口：不传参 = 今天日常；
@@ -277,6 +292,55 @@ export function JournalEditScreen({
     const actionIndex = actionBlockId
         ? blocks.findIndex((block) => block.id === actionBlockId)
         : -1;
+
+    // 画布空白收键层的 onPress（#K2）：引用稳定（editorRef 为固定 ref），
+    // CanvasDismissLayer 的 memo 契约依赖它恒等
+    const dismissCanvasKeyboard = useCallback(() => {
+        editorRef.current?.dismissKeyboard();
+    }, []);
+
+    /**
+     * 画布内容子树（children 直传垫高层）：useMemo 把引用稳定到「真正影响
+     * 内容的依赖」上——键盘弹出/收起只重渲 CanvasDismissLayer 自身的 style，
+     * 本子树经 children 引用相等 bail-out 零重渲（键盘事件零波及媒体堆/
+     * 音频卡/TextBlock）；保存状态位、错误横幅、浮层开关等屏级重渲同样被
+     * 挡在子树之外（比旧版「屏渲即全画布 reconcile」更省）。deps 与闭包
+     * 读取严格对齐（onBlurText 读 journal/blocks/store），无陈旧闭包面。
+     */
+    const canvasContent = useMemo(
+        () => (
+            <View className="mx-auto w-full max-w-[620px]">
+                <BlockEditor
+                    ref={editorRef}
+                    blocks={blocks}
+                    mediaById={mediaById}
+                    editable={editable}
+                    focusTextId={focusTextId}
+                    canvas={canvas}
+                    onChange={setBlocks}
+                    onFocusText={() => setFocusTextId(null)}
+                    onBlurText={() => {
+                        if (journal && isEditable(journal.status)) {
+                            void store
+                                .getState()
+                                .saveJournalBlocks(journal.id, blocks)
+                                .then((saved: unknown) => {
+                                    // 新契约 Promise<boolean>：失败（false）不更新已保存时间，
+                                    // 「已保存 HH:MM」只反映真实落库；失败文案由 error 横幅展示
+                                    if (saved !== false) setSavedAt(Date.now());
+                                })
+                                .catch(() => {
+                                    // store 内部已落 error 文案；这里防 unhandled rejection
+                                });
+                        }
+                    }}
+                    onRequestActionBlock={setActionBlockId}
+                />
+            </View>
+        ),
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 闭包读取项已尽数列入（setBlocks/setFocusTextId/setActionBlockId/editorRef 均为稳定引用）
+        [blocks, mediaById, editable, focusTextId, canvas, journal, store],
+    );
 
     /**
      * 插入流本体（busy 由调用方管理）：pending 占位 → file-storage 落盘 → 回填
@@ -708,65 +772,23 @@ export function JournalEditScreen({
                     // 滚动即拖拽收键盘（journal 手感；Android interactive 回落 on-drag 语义）
                     keyboardDismissMode="interactive"
                 >
-                    {/* 画布空白收键层（#K2）：块间 gap、内容区 padding、报头下方留白
-                        ——未被子元素认领的区域点按 → 收键盘 + blur 聚焦段。原
-                        contentContainerStyle 三向 padding 全数下沉到本层（几何不变，
-                        padding 区变成可点面）。防误触机制：
-                        - Pressable tap 语义：滚动接管的手势不触发 onPress（滚动手感
-                          中不误收键盘），长按/横滑等被子元素认领的手势同样到不了本层；
-                        - dismissKeyboard 空引用闸（BlockEditorHandle）：无聚焦段空点
-                          零动作；引用同步清空，双击第二击短路（防连点抖动）；
-                        - 子元素认领优先：输入框本体/媒体块/音频卡/⋯微钮/deck 点按带
-                          各自消费，零影响；块操作卡/重命名卡/选择器/录音/拍摄等浮层
-                          在屏根后渲染、层级恒在本层之上（不抢）；+ 浮钮 z-10 悬浮于
-                          本层之上；报头在 ScrollView 之外（报头点击无动作，保持）。
-                        触摸面零 className（房规：css-interop 按压 observable 不进
-                        手势窗口）；无障碍不挂 role（背景装饰层，非交互语义）。 */}
-                    <Pressable
-                        onPress={() => editorRef.current?.dismissKeyboard()}
-                        style={{
-                            // 画布顶部留白 16dp：叠加报头 pb-2(8dp) 后，报头→首段净间距
-                            // 24dp（EDITOR_RHYTHM.mastheadToFirstBlock；360dp 小屏到平板
-                            // 同值，间距体系不随屏宽变化）
-                            paddingTop: 16,
-                            paddingHorizontal: 24,
-                            paddingBottom: insets.bottom + 96,
-                        }}
+                    {/* 画布空白收键层（#K2，垫高层 CanvasDismissLayer）：键盘动态垫高
+                        在层内收口（useKeyboardCanvasBottomPadding）——键盘打开且窗口
+                        未被系统收缩（Android 问题机型）时放大底部垫高，末段聚焦才有
+                        足够滚动余量顶到键盘上方最佳位置；其余分支（iOS KAV 模式 /
+                        adjustResize 正常机型 / web）恒等静态基线，防双重垫高。
+                        静止态（键盘收起）paddingBottom 恒 = CANVAS_BOTTOM_BASE_INSET
+                        路径，布局与旧版逐 dp 一致；+ 浮钮 z-10 悬浮语义不变。
+                        重渲隔离：键盘事件只重渲本层的 style，canvasContent（children
+                        直传 + 引用稳定）零重渲——媒体堆/音频卡/TextBlock 不被键盘
+                        生命周期波及。tap 语义/防误触/子元素认领/触摸面零 className
+                        等层内契约见组件注。 */}
+                    <CanvasDismissLayer
+                        bottomBaseline={insets.bottom + CANVAS_BOTTOM_BASE_INSET}
+                        onPress={dismissCanvasKeyboard}
                     >
-                        {/* 阅读列：桌面端行长 ≤80 字符（可读性口径）；媒体块与正文同列宽对齐。
-                            onRequestActionBlock 恒挂接（条件置空显式化 #3）：只读关断在编辑器
-                            源头把门（微钮只按 editable 渲染、媒体块 onBlockAction 同口径），
-                            本回调仅被可编辑路径触达；undefined↔fn 翻转没有可观察收益，只增加
-                            状态翻转时的重配置窗口 */}
-                        <View className="mx-auto w-full max-w-[620px]">
-                            <BlockEditor
-                                ref={editorRef}
-                                blocks={blocks}
-                                mediaById={mediaById}
-                                editable={editable}
-                                focusTextId={focusTextId}
-                                canvas={canvas}
-                                onChange={setBlocks}
-                                onFocusText={() => setFocusTextId(null)}
-                                onBlurText={() => {
-                                    if (journal && isEditable(journal.status)) {
-                                        void store
-                                            .getState()
-                                            .saveJournalBlocks(journal.id, blocks)
-                                            .then((saved: unknown) => {
-                                                // 新契约 Promise<boolean>：失败（false）不更新已保存时间，
-                                                // 「已保存 HH:MM」只反映真实落库；失败文案由 error 横幅展示
-                                                if (saved !== false) setSavedAt(Date.now());
-                                            })
-                                            .catch(() => {
-                                                // store 内部已落 error 文案；这里防 unhandled rejection
-                                            });
-                                    }
-                                }}
-                                onRequestActionBlock={setActionBlockId}
-                            />
-                        </View>
-                    </Pressable>
+                        {canvasContent}
+                    </CanvasDismissLayer>
                 </ScrollView>
 
                 {/* 罗盘 + 号（#1：底部工具坞清空，只留一枚 + 浮钮）：右手拇指区，
@@ -867,9 +889,69 @@ export function JournalEditScreen({
 }
 
 /**
+ * 画布空白收键层（#K2）+ 键盘动态垫高（滚动余量组）：ScrollView 的唯一内容
+ * 子——块间 gap、内容区 padding、报头下方留白，未被子元素认领的区域点按 →
+ * 收键盘 + blur 聚焦段；原 contentContainerStyle 三向 padding 全数下沉到本层
+ * （几何不变，padding 区变成可点面）。
+ *
+ * 键盘动态垫高（本轮修复面）：paddingBottom = useKeyboardCanvasBottomPadding(
+ * bottomBaseline)——键盘打开且窗口未被 adjustResize 收缩（Android 问题机型）
+ * 时放大到 max(键盘高 + 24 呼吸, 静态基线)，末段聚焦永远有足够滚动余量把
+ * 光标行顶到键盘上方最佳位置；键盘收起立即回静态基线。生效分支矩阵与防
+ * 双重垫高判定见 editor.useKeyboardCanvasBottomPadding 注；垫高一次性 style
+ * 变更不动画（Animated native driver 不支持 padding 布局属性，且增量区被
+ * 键盘覆盖，跳变不可见）。
+ *
+ * 重渲隔离（选型：键盘状态收进本叶子组件而非屏根）：memo + children 直传 +
+ * 稳定 onPress/bottomBaseline——键盘弹出/收起只重渲本层自身 style，children
+ * 子树经引用相等 bail-out 零重渲（媒体堆/音频卡/TextBlock 零波及）。
+ *
+ * 防误触机制（原 Pressable 契约原样保留）：
+ * - Pressable tap 语义：滚动接管的手势不触发 onPress（滚动手感中不误收键盘），
+ *   长按/横滑等被子元素认领的手势同样到不了本层；
+ * - dismissKeyboard 空引用闸（BlockEditorHandle）：无聚焦段空点零动作；引用
+ *   同步清空，双击第二击短路（防连点抖动）；
+ * - 子元素认领优先：输入框本体/媒体块/音频卡/⋯微钮/deck 点按带各自消费，
+ *   零影响；块操作卡/重命名卡/选择器/录音/拍摄等浮层在屏根后渲染、层级恒
+ *   在本层之上（不抢）；+ 浮钮 z-10 悬浮于本层之上；报头在 ScrollView 之外
+ *   （报头点击无动作，保持）。
+ * 触摸面零 className（房规：css-interop 按压 observable 不进手势窗口）；无障碍
+ * 不挂 role（背景装饰层，非交互语义）。卸载零副作用：垫高 hook 摘订阅 +
+ * 键盘追踪引用计数 −1（定位器/屏层共担，次序无关），不动保存通道。
+ */
+const CanvasDismissLayer = memo(function CanvasDismissLayer({
+    bottomBaseline,
+    onPress,
+    children,
+}: {
+    /** 底部垫高静态基线（insets.bottom + CANVAS_BOTTOM_BASE_INSET）：动态垫高
+     *  的下限与回退值（键盘收起 / 非生效分支恒返回本值）。 */
+    bottomBaseline: number;
+    onPress(): void;
+    children: React.ReactNode;
+}) {
+    const paddingBottom = useKeyboardCanvasBottomPadding(bottomBaseline);
+    return (
+        <Pressable
+            onPress={onPress}
+            style={{
+                // 画布顶部留白 16dp：叠加报头 pb-2(8dp) 后，报头→首段净间距
+                // 24dp（EDITOR_RHYTHM.mastheadToFirstBlock；360dp 小屏到平板
+                // 同值，间距体系不随屏宽变化）
+                paddingTop: 16,
+                paddingHorizontal: 24,
+                paddingBottom,
+            }}
+        >
+            {children}
+        </Pressable>
+    );
+});
+
+/**
  * 块操作卡（上移/下移/删除，浮层居中弹出）：屏根条件渲染（禁 RN Modal），
  * 深色 scrim + 居中卡片；Android 返回键关闭。媒体块经长按/双击（组件内
- * useBlockActionGestures 平台分派）、文本块经聚焦态 ⋯ 微钮进入。
+ * useBlockActionGestures 平台分派）、文本块经聚焦态 ⋯ 钮进入。
  */
 function BlockActionCard({
     index,
