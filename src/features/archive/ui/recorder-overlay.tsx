@@ -120,6 +120,7 @@ export function RecordingOverlay({
     elapsedSec,
     metering,
     isRecording,
+    stopping = false,
     ownerHint,
     onClose,
     onStop,
@@ -132,6 +133,9 @@ export function RecordingOverlay({
     /** 是否已真正开录（停止钮门控：prepare 未完成禁用——Android 未 start 即
      *  stop 会产出无效文件，不可落库）。 */
     isRecording: boolean;
+    /** 停止/保存链路在途（全局会话 stopping 相位投影）：停止钮给「停止中…」
+     *  在途反馈、停止/取消钮禁用——双护栏兜底下必有界，不静默吞点按。 */
+    stopping?: boolean;
     /** 归属提示（owner 笔记展示名；归属铁律的可视化——跨页面停止时用户能
      *  看到产物去向）。null = 不展示。 */
     ownerHint?: string | null;
@@ -191,34 +195,38 @@ export function RecordingOverlay({
                     <VoiceBars elapsedSec={elapsedSec} metering={metering} />
 
                     {/* 操作区：取消 / 停止。两钮视觉盒均 ≥44 且相距 24dp ≥ 2×0（不传 hitSlop），
-                        命中区不重叠。停止钮以 isRecording 门控（准备阶段禁用，视觉 40% 降透明）：
-                        prepare 完成前「停止」会得到一个无效录音文件（Android MediaRecorder 未
-                        start 即 stop 抛错）——禁用期触摸穿透到不接管点击的 scrim，无副作用 */}
+                        命中区不重叠。停止钮以 isRecording/stopping 门控（准备阶段禁用——
+                        prepare 完成前「停止」会得到一个无效录音文件（Android MediaRecorder
+                        未 start 即 stop 抛错）；停止在途禁用 + 「停止中…」在途反馈，护栏
+                        兜底下窗口有界）——禁用期触摸穿透到不接管点击的 scrim，无副作用 */}
                     <View className="mt-8 flex-row items-center justify-center" style={{ gap: 24 }}>
-                        <BouncyPressable onPress={onCancel} scaleTo={0.9}>
+                        <BouncyPressable onPress={onCancel} scaleTo={0.9} disabled={stopping}>
                             <View
-                                className="h-11 items-center justify-center rounded-control px-6"
+                                className={`h-11 items-center justify-center rounded-control px-6 ${
+                                    stopping ? 'opacity-40' : ''
+                                }`}
                                 style={{ backgroundColor: '#FFFFFF1A' }}
                                 accessibilityRole="button"
                                 accessibilityLabel="取消录音"
+                                accessibilityState={{ disabled: stopping }}
                             >
                                 <Text className="text-[14px] font-medium text-white">取消</Text>
                             </View>
                         </BouncyPressable>
-                        <BouncyPressable onPress={onStop} scaleTo={0.9} disabled={!isRecording}>
+                        <BouncyPressable onPress={onStop} scaleTo={0.9} disabled={!isRecording || stopping}>
                             <View
                                 className={`h-11 items-center justify-center rounded-control px-6 ${
-                                    isRecording ? '' : 'opacity-40'
+                                    isRecording && !stopping ? '' : 'opacity-40'
                                 }`}
                                 style={{ backgroundColor: palette.primaryBtn }}
                                 accessibilityRole="button"
                                 accessibilityLabel="停止录音"
-                                accessibilityState={{ disabled: !isRecording }}
+                                accessibilityState={{ disabled: !isRecording || stopping, busy: stopping }}
                             >
                                 {/* 纯文字钮（用户口径：录音 UI 不留图标）；px-6 与取消钮
                                     同宽口径，两字几何稳定 */}
                                 <Text className="text-[14px] font-semibold" style={{ color: palette.onPrimaryBtn }}>
-                                    停止
+                                    {stopping ? '停止中…' : '停止'}
                                 </Text>
                             </View>
                         </BouncyPressable>

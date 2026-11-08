@@ -35,10 +35,13 @@ import { camera } from '@/core/camera';
  * 相册，产物仍归属发起笔记）；视频录制无时长上限（#10）；web 能力边界不变
  * （recordAsync 无 web 实现，视频档隐藏，全局相机会在 web 仅承担拍照）。
  *
- * 产物与取消全部经 props 上收全局编排（onProduct → persistCaptureProduct
- * 按 ownerJournalId 落库 / onDiscarded·onClosed → 会话收场）；外部停止
- * （完成收笔编排）经 registerHardware 登记的 stop() 桥——停录后等待
- * recordAsync resolve（5s 护栏）把产物交回编排层，避免双驱动。
+ * 停止链路（会话级，**不依赖覆盖层挂载状态**）：停止编排（等待/护栏/落库）
+ * 全在 recording-session（会话级停止桥 + 停录 5s/落库 30s 双护栏）——本组件
+ * 经 registerHardware 只登记 ref 绑定的原生停录/取消句柄（隐形保活槽态的
+ * CameraView 同样可达，控制行/覆盖层卡片整段卸载后停止照常工作），并经
+ * onProduct（拍照/快门停录/外部停录/系统收尾统一回流口）/onRecordFailed
+ * （recordAsync reject 回执）把事实交回会话层分派；快门停止/取消钮只是
+ * 调用编排（onStopRequest/onCancelRequest），不持有停止等待逻辑。
  */
 
 export interface CameraCapture {
@@ -48,11 +51,13 @@ export interface CameraCapture {
     height: number | null;
 }
 
-/** 全局会话的相机硬件句柄（本组件登记、recording-session 编排层消费）。 */
+/** 全局会话的相机硬件句柄（本组件登记、recording-session 编排层消费）。
+ *  句柄只做 ref 绑定的原生调用；等待/护栏/落库在会话层（停止链路头注）。 */
 export interface CameraCaptureHardware {
-    /** 外部停止：停录并等待产物（5s 护栏兜底；未开录返回 uri null）。 */
-    stop(): Promise<{ uri: string | null }>;
-    /** 外部取消：停录并丢弃。 */
+    /** 原生停录句柄：停掉原生录制，返回是否真有录制在停（false = 取景/
+     *  未开录态，无产物——调用方按无产物收场）。 */
+    stopRecording(): boolean;
+    /** 原生取消句柄：标记丢弃并停录（产物回流后被会话层丢弃，不入库）。 */
     cancel(): void;
 }
 
@@ -62,20 +67,20 @@ export function isVideoCaptureSupported(): boolean {
 
 /** 隐形保活槽几何：1×1dp 贴根层级右下缘（absolute + opacity 0，不挤占布局）。 */
 const KEEP_ALIVE_SIZE = 1;
-/** 外部停止的收尾护栏（ms）：stopRecording 后 recordAsync 未 resolve 的极端
- *  时序下放弃等待（产物无法追回，不让收笔编排无限挂起）。 */
-const STOP_RESOLVE_TIMEOUT_MS = 5000;
 
 export function CameraCaptureOverlay({
     initialMode = 'photo',
     minimized,
+    stopPending,
     ownerHint,
     registerHardware,
     onRecordStart,
     onTick,
     onProduct,
+    onRecordFailed,
+    onStopRequest,
+    onCancelRequest,
     onClosed,
-    onDiscarded,
     onMinimize,
     onLibraryFallback,
 }: {
@@ -83,20 +88,30 @@ export function CameraCaptureOverlay({
     initialMode?: 'photo' | 'video';
     /** 收起态（全局会话最小化）：CameraView 收进隐形保活槽，录制继续。 */
     minimized: boolean;
+    /** 停止/取消在途（全局会话 stopping 相位投影）：快门/取消/重录/模式切换
+     *  全部闸住，快门给在途 spinner——护栏兜底下必有界，不静默吞点按。 */
+    stopPending: boolean;
     /** 归属提示（owner 笔记展示名，录制中展示「停止后保存到 X」）。 */
     ownerHint: string | null;
-    /** 向全局会话登记硬件句柄（外部停止/取消的桥；卸载时登记 null）。 */
+    /** 向全局会话登记硬件句柄（ref 绑定的原生停录/取消句柄；卸载时登记 null）。
+     *  停止编排已上收会话层——本组件不持有停止等待逻辑（停止链路头注）。 */
     registerHardware: (handlers: CameraCaptureHardware | null) => void;
     /** 开录回执（快门进入录制态）：全局会话 phase → recording。 */
     onRecordStart: () => void;
     /** 录制秒数上收（1s 节拍）：全局 chip / + 菜单状态行计时。 */
     onTick: (elapsedSec: number) => void;
-    /** 产物（拍照即完成；视频 = 手动停止后 resolve）——编排层按归属落库。 */
+    /** 产物回流（拍照即完成；视频 = 快门停止/外部停止/系统收尾后 resolve）——
+     *  会话层按停止桥/归属落库统一分派（避免双驱动的分派口径在会话层）。 */
     onProduct: (capture: CameraCapture) => void;
+    /** 录像链路异常回执（recordAsync reject）：会话层结算停止等待/回收相位。 */
+    onRecordFailed: () => void;
+    /** 快门停止（录制中再按快门）：经全局编排 stopCaptureSession（会话级停止
+     *  桥 + 双护栏），最小化后重开停止同样成立。 */
+    onStopRequest: () => void;
+    /** 取消录像（覆盖层内取消钮）：经全局编排 cancelCaptureSession（停录丢弃）。 */
+    onCancelRequest: () => void;
     /** 未录制时关闭会话（X/返回键；无落库义务）。 */
     onClosed: () => void;
-    /** 取消录像：停录并丢弃（覆盖层内取消钮）。 */
-    onDiscarded: () => void;
     /** 录制中收起（X/返回键）：CameraView 进隐形保活槽，录制继续。 */
     onMinimize: () => void;
     /** 相册导入兜底（权限拒绝态入口；全局编排收场会话 + 相册选取仍归 owner）。 */
@@ -118,24 +133,31 @@ export function CameraCaptureOverlay({
     const [settingsHint, setSettingsHint] = useState(false);
     const cameraRef = useRef<CameraView>(null);
     // recordAsync 的 promise 在 stopRecording() 时才 resolve——pending 存 ref，
-    // 停止/取消/外部停止三条收尾链路共用
+    // 停止/取消/外部停止共用（也作重录闸：上一段录像 promise 在途时拒绝重开）
     const recordingRef = useRef(false);
     const recordPromiseRef = useRef<Promise<{ uri: string } | undefined> | null>(null);
     // 快门互斥 ref（「启动中」+「录制中」两态的锁）：capturePhoto/beginRecording
     // 的守卫读 ref 不读 state（deps 收口为 [] 的稳定回调，state 会陈旧）；
     // capturing state 仅服务未来 UI 态
     const capturingRef = useRef(false);
-    // 外部停止桥（registerHardware.stop 的 resolver）：recordAsync resolve 时
-    // 若在途，产物交回编排层而非本地 onProduct（避免双驱动）
-    const externalStopRef = useRef<((uri: string | null) => void) | null>(null);
-    // 收尾路标：discard = 停录后丢弃；ended = 会话已终结（防重复收尾）
+    // 丢弃路标（取消钮/外部取消）：停录产物不入库，静默——会话由编排层
+    // cancelCaptureSession 收场，本组件只保证回流不误入落库通道
     const discardRef = useRef(false);
+    // 收尾路标：ended = 会话已出产物/终结（拍照后防重复快门）
     const endedRef = useRef(false);
+    // 停止/取消在途镜像（异步链守卫读 ref 不读 props——props 会陈旧）：
+    // stopping 相位窗口内拒绝重录/重停/再拍，护栏兜底下窗口有界
+    const stopPendingRef = useRef(stopPending);
+    stopPendingRef.current = stopPending;
     // 回调 ref 镜像（异步链跨渲染存活时读最新闭包）
     const onProductRef = useRef(onProduct);
     onProductRef.current = onProduct;
-    const onDiscardedRef = useRef(onDiscarded);
-    onDiscardedRef.current = onDiscarded;
+    const onRecordFailedRef = useRef(onRecordFailed);
+    onRecordFailedRef.current = onRecordFailed;
+    const onStopRequestRef = useRef(onStopRequest);
+    onStopRequestRef.current = onStopRequest;
+    const onCancelRequestRef = useRef(onCancelRequest);
+    onCancelRequestRef.current = onCancelRequest;
     const onRecordStartRef = useRef(onRecordStart);
     onRecordStartRef.current = onRecordStart;
     const onTickRef = useRef(onTick);
@@ -186,7 +208,7 @@ export function CameraCaptureOverlay({
     };
 
     const capturePhoto = useCallback(async () => {
-        if (capturingRef.current || recordingRef.current) return;
+        if (capturingRef.current || recordingRef.current || stopPendingRef.current) return;
         capturingRef.current = true;
         setCapturing(true);
         try {
@@ -216,11 +238,15 @@ export function CameraCaptureOverlay({
 
     /**
      * 录像主链：麦克风权限 → recordAsync（不传 maxDuration，#10 无上限）→
-     * resolve 后按路标分派：externalStop 在途 = 产物交回编排层（外部停止桥）/
-     * discard = onDiscarded（取消）/ 其余 = onProduct（真停止 → 归属落库）。
+     * resolve 后产物统一经 onProduct 回流会话层分派（停止在途 = 停止桥结算 /
+     * 其余 = 按归属落库；discard 路标 = 取消丢弃，静默）——本组件不做停止
+     * 等待与双驱动分派（会话级停止桥，见文件头注）。
      */
     const beginRecording = useCallback(async () => {
-        if (capturingRef.current || recordingRef.current) return;
+        // 守卫链：快门互斥（启动中/录制中）+ 停止在途（stopping 相位窗口拒绝
+        // 重录）+ 上一段录像 promise 在途（极端时序下拒绝叠开第二段录制）
+        if (capturingRef.current || recordingRef.current || stopPendingRef.current) return;
+        if (recordPromiseRef.current) return;
         capturingRef.current = true;
         setCapturing(true);
         try {
@@ -247,18 +273,12 @@ export function CameraCaptureOverlay({
             recordPromiseRef.current = null;
             recordingRef.current = false;
             setRecording(false);
-            // 外部停止在途（完成收笔编排 / 外部 stopCaptureSession）：产物交回
-            // 编排层，不进本地回调（双驱动防线）
-            if (externalStopRef.current) {
-                externalStopRef.current(result?.uri ?? null);
-                return;
-            }
-            if (discardRef.current) {
-                onDiscardedRef.current();
-                return;
-            }
+            // 取消丢弃：产物不入库且静默（会话已被 cancelCaptureSession 收场）
+            if (discardRef.current) return;
             if (result?.uri) {
                 endedRef.current = true;
+                // 产物统一回流会话层：停止在途 → 停止桥结算；否则按归属落库
+                // （拍照/系统收尾同口径，防串会话的 token 分派在会话层）
                 onProductRef.current({ kind: 'video', uri: result.uri, width: null, height: null });
             } else {
                 // resolve 空产物（取景器被系统停掉等）：可见可重试
@@ -268,15 +288,15 @@ export function CameraCaptureOverlay({
             // 中断场景：录像 promise 被打断（recordAsync reject，如相机被系统回收）
             // ——不复位 recording 会让界面永久停在「录制中」红块且 stopRecording
             // 永远等不到 resolve；finally 只复位 capturing，录制态必须在 catch 归零。
-            // 收尾路标优先：外部停止/取消路径的 reject 不当失败提示
             recordingRef.current = false;
+            recordPromiseRef.current = null;
             setRecording(false);
-            if (externalStopRef.current) {
-                externalStopRef.current(null);
-                return;
-            }
-            if (discardRef.current) onDiscardedRef.current();
-            else setShutterError('录制失败，请重试。');
+            // 取消路径：丢弃语义静默（会话已被 cancelCaptureSession 收场）
+            if (discardRef.current) return;
+            // 异常回执会话层：停止在途 → 立即结算停止等待（护栏不必空转 5s）；
+            // 否则回收 recording 相位（不留僵尸 chip/状态行）。本地给可重试提示
+            onRecordFailedRef.current();
+            setShutterError('录制失败，请重试。');
         } finally {
             capturingRef.current = false;
             setCapturing(false);
@@ -284,78 +304,59 @@ export function CameraCaptureOverlay({
     }, []);
 
     const onShutterPress = useCallback(() => {
-        if (permission !== 'granted' || endedRef.current) return;
+        // 停止/取消在途闸：stopping 相位窗口内拒绝重停/重录/拍照（有界窗口）
+        if (permission !== 'granted' || endedRef.current || stopPendingRef.current) return;
         setShutterError(null); // 重试即清上次失败提示
         if (mode === 'photo') {
             void capturePhoto();
             return;
         }
         if (recordingRef.current) {
-            // 录制中再按快门 = 真停止（resolve → onProduct → 归属落库）。必须先于
-            // capturing 守卫（#6 根因，见旧注）：recordAsync await 期间
-            // capturing 恒为 true，先查会把停止路径整段吞掉
-            recordingRef.current = false;
-            cameraRef.current?.stopRecording();
+            // 录制中再按快门 = 真停止：统一走全局编排（会话级停止桥 + 双护栏），
+            // 产物经 recordAsync continuation 回流会话层结算——最小化后重开
+            // 停止同样成立。必须先于 capturing 守卫（#6 根因，见旧注）：
+            // recordAsync await 期间 capturing 恒为 true，先查会把停止路径吞掉
+            onStopRequestRef.current();
             return;
         }
         void beginRecording();
     }, [permission, mode, capturePhoto, beginRecording]);
 
-    /** 取消录像（覆盖层内取消钮）：停录并丢弃。 */
+    /** 取消录像（覆盖层内取消钮）：经全局编排停录并丢弃（会话级，护栏兜底）。 */
     const cancelRecording = useCallback(() => {
-        if (!recordingRef.current) return;
-        discardRef.current = true;
-        recordingRef.current = false;
-        cameraRef.current?.stopRecording();
+        if (!recordingRef.current || stopPendingRef.current) return;
+        onCancelRequestRef.current();
     }, []);
 
-    /**
-     * 外部停止（全局编排层经 registerHardware 调用；完成收笔等同步链路）：
-     * 停录并等待 recordAsync resolve（5s 护栏）——resolve 后 beginRecording
-     * 的 continuation 经 externalStopRef 把产物交回本 promise。
-     */
-    const requestExternalStop = useCallback((): Promise<{ uri: string | null }> => {
-        return new Promise((resolve) => {
-            let settled = false;
-            const finish = (uri: string | null) => {
-                if (settled) return;
-                settled = true;
-                externalStopRef.current = null;
-                resolve({ uri });
-            };
-            if (!recordingRef.current) {
-                // 未开录（取景/拍照态）：无产物收场
-                finish(null);
-                return;
-            }
-            externalStopRef.current = finish;
-            recordingRef.current = false;
-            try {
-                cameraRef.current?.stopRecording();
-            } catch {
-                // 相机已被系统回收：走 5s 护栏收场（产物无法追回）
-            }
-            setTimeout(() => finish(null), STOP_RESOLVE_TIMEOUT_MS);
-        });
-    }, []);
-
-    /** 外部取消（编排层 cancelCaptureSession）：停录并丢弃。 */
-    const requestExternalCancel = useCallback(() => {
-        if (!recordingRef.current) return;
-        discardRef.current = true;
-        recordingRef.current = false;
-        try {
-            cameraRef.current?.stopRecording();
-        } catch {
-            // 相机已释放：丢弃路径无产物可追
-        }
-    }, []);
-
-    // 硬件句柄登记（全局编排的停止/取消桥）；卸载（会话终结）时摘除
+    // 硬件句柄登记（会话级停止桥的原生调用端；卸载（会话终结）时摘除）：
+    // 句柄只绑 ref——隐形保活槽态的 CameraView 同样可达，停止链路不依赖覆盖
+    // 层 chrome（控制行/覆盖层卡片可整段卸载，最小化后停止照常工作）
     useEffect(() => {
-        registerHardware({ stop: requestExternalStop, cancel: requestExternalCancel });
+        registerHardware({
+            stopRecording: () => {
+                const wasRecording = recordingRef.current;
+                recordingRef.current = false;
+                if (!wasRecording) return false;
+                try {
+                    cameraRef.current?.stopRecording();
+                } catch {
+                    // 相机已被系统回收：无产物可停——会话层护栏兜底收场
+                }
+                return true;
+            },
+            cancel: () => {
+                if (!recordingRef.current) return;
+                discardRef.current = true;
+                recordingRef.current = false;
+                try {
+                    cameraRef.current?.stopRecording();
+                } catch {
+                    // 相机已释放：丢弃路径无产物可追
+                }
+            },
+        });
         return () => registerHardware(null);
-    }, [registerHardware, requestExternalStop, requestExternalCancel]);
+    }, [registerHardware]);
 
     // Android 返回键（仅全屏态接管）：录制中 = 收起（后台继续）；未录制 =
     // 关闭会话。收起态不注册（回落屏层 handler：导航自由，会话继续后台）
@@ -479,13 +480,13 @@ export function CameraCaptureOverlay({
                             <ModeChip
                                 label="拍照"
                                 active={mode === 'photo'}
-                                disabled={recording}
+                                disabled={recording || stopPending}
                                 onPress={() => setMode('photo')}
                             />
                             <ModeChip
                                 label="视频"
                                 active={mode === 'video'}
-                                disabled={recording}
+                                disabled={recording || stopPending}
                                 onPress={() => setMode('video')}
                             />
                         </View>
@@ -512,16 +513,22 @@ export function CameraCaptureOverlay({
                             />
 
                             {/* 快门大圆钮：拍照=白圆点；视频录制态=红方块停止 + 外环转红
-                                （录制态一眼可辨，不靠文字）。#6 修复：onShutterPress 恒非空，
-                                录制态失效根因在 capturing 守卫顺序（见其注） */}
-                            <BouncyPressable onPress={onShutterPress} scaleTo={0.92}>
+                                （录制态一眼可辨，不靠文字）；停止在途=spinner（stopping
+                                相位窗口有界，在途反馈不静默）。#6 修复：onShutterPress 恒
+                                非空，录制态失效根因在 capturing 守卫顺序（见其注） */}
+                            <BouncyPressable onPress={onShutterPress} scaleTo={0.92} disabled={stopPending}>
                                 <View
                                     className="h-16 w-16 items-center justify-center rounded-full"
                                     style={{ borderWidth: 3, borderColor: recording ? '#DC4A5E80' : '#FFFFFF66' }}
                                     accessibilityRole="button"
-                                    accessibilityLabel={mode === 'photo' ? '拍照' : recording ? '停止录制' : '开始录制'}
+                                    accessibilityLabel={
+                                        mode === 'photo' ? '拍照' : recording ? '停止录制' : '开始录制'
+                                    }
+                                    accessibilityState={{ busy: stopPending }}
                                 >
-                                    {recording ? (
+                                    {stopPending ? (
+                                        <ActivityIndicator color="#FFFFFF" />
+                                    ) : recording ? (
                                         <View className="h-5 w-5 rounded-[3px] bg-[#DC4A5E]" />
                                     ) : (
                                         <View
@@ -533,11 +540,12 @@ export function CameraCaptureOverlay({
                             </BouncyPressable>
 
                             {recording ? (
-                                <BouncyPressable onPress={cancelRecording} scaleTo={0.9}>
+                                <BouncyPressable onPress={cancelRecording} scaleTo={0.9} disabled={stopPending}>
                                     <View
                                         className="h-11 w-11 items-center justify-center rounded-full bg-white/10"
                                         accessibilityRole="button"
                                         accessibilityLabel="取消录制并丢弃"
+                                        accessibilityState={{ disabled: stopPending }}
                                     >
                                         <LucideTrash size={20} color="#FFFFFF" strokeWidth={1.9} />
                                     </View>
