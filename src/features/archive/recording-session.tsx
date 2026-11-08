@@ -64,9 +64,16 @@ import {
  * 先挂产物等待槽（videoStopIntake），再经硬件句柄（stopRecording，绑
  * CameraView ref）触发原生停录，覆盖层只是 UI 消费方（控制行可整段卸载，
  * 最小化保活槽态的 ref 照常可达，产物经 onProduct 回流会话层结算）。
- * 双护栏兜底：停录 5s + 落库 30s——任何路径不得把会话永久留在 stopping
- * （真机 bug 口径：stopping 滞留 = 相位闸锁死 minimize/restore/cancel，
- * 用户被困在录制卡里且其他功能全部不可点）。护栏超时强制收场（错误上浮
+ * 停止语义两段式（用户口径：点停止 = 关窗即返回，保存后台自动完成）：
+ * **硬件停录段**（5s 护栏——拿到产物文件或超时失败；这一步必须同步等，否则
+ * 不知道有无产物）完成后**立即终结 UI 会话**（卡片 ~160ms 淡出关闭、chip
+ * 消失，无 spinner 停留）；**落库段转后台**（30s 护栏保留，任务注册进会话级
+ * 后台落库注册表，收敛时横幅反馈「已保存到笔记」/保存失败文案）。后台落库
+ * 期间允许立即开新会话（落库是 IO+DB、录制是相机/麦克风，零资源冲突；
+ * persisting 相位只作收笔等待痕迹，不渲染任何 UI）。「完成收笔」经
+ * stopCaptureSession 等待同归属后台任务 allSettled 再收笔（FAB 等待口径
+ * 保留——这是收笔动作，不是录制 UI）。双护栏兜底：停录 5s + 落库 30s，任何
+ * 路径不得把会话永久留在 stopping/persisting。护栏超时强制收场（错误上浮
  * 「停止超时」）并为已落盘的迟到产物开 15s 抢救窗口（尽力按原归属入库，
  * 过窗/失败给明确丢弃提示，绝不静默）；sessionToken（startedAt）防串会话，
  * 迟到产物绝不误归属新会话。
@@ -77,7 +84,13 @@ import {
 /* ------------------------------------------------------------------ */
 
 export type CaptureKind = 'audio' | 'video';
-export type CapturePhase = 'idle' | 'preparing' | 'recording' | 'stopping';
+/**
+ * 会话相位：
+ * - stopping = 硬件停录段在途（卡片淡出关闭中，5s 护栏兜底）；
+ * - persisting = UI 会话已终结、落库在后台（零 UI；kind/owner/startedAt 仅作
+ *   收笔等待与防串会话的痕迹，新会话可立即发起）。
+ */
+export type CapturePhase = 'idle' | 'preparing' | 'recording' | 'stopping' | 'persisting';
 
 interface RecordingSessionState {
     /** 会话种类：null = 空闲（一次至多一个采集会话——录音/录像互斥）。 */
@@ -215,6 +228,7 @@ function surfaceSessionError(message: string): void {
 
 /** 会话终结（内部）：状态清零；error 非空时保留在会话状态上（spec 字段）。 */
 function endCaptureSession(error: string | null): void {
+    cancelUiSessionClose(); // 收尾卫生：终结即作废在途的淡出收尾调度（幂等）
     useRecordingSessionStore.setState({
         kind: null,
         phase: 'idle',
@@ -234,10 +248,36 @@ function failSession(message: string): void {
     endCaptureSession(message);
 }
 
+/** 停止/取消在途（硬件停录段 + 后台落库期）：minimize/restore/mark/tick/cancel/clear 一律不响应。 */
+function isSessionSettling(phase: CapturePhase): boolean {
+    return phase === 'stopping' || phase === 'persisting';
+}
+
 /**
- * 发起会话（屏层 + 菜单入口）：已有会话 → 拒绝并给 reason（可见反馈）。
- * ownerJournalId 必须是发起时编辑上下文的 journal id——编辑屏经 ensureJournal
- * 保证写前有 id（journal state 就绪才渲染 + FAB），此处兜底空 id 拒绝。
+ * UI 会话终结的后台落库相位（persisting）：卡片/覆盖层/chip 已随淡出全部
+ * 消失（宿主按相位不渲染采集 UI，CameraView/录音机随卸载释放——产物已
+ * 到手，卸载即停不再伤及录制）；kind/ownerJournalId/startedAt 仅作落库期
+ * 痕迹保留——「完成收笔」据此路由进 stopCaptureSession 的等待分支（防
+ * 「停后立即收笔」以旧快照封存笔记的丢块竞态），新会话可立即发起
+ * （startCaptureSession 对 persisting 放行，begin 原子顶替痕迹）。
+ */
+function enterPersistingPhase(): void {
+    useRecordingSessionStore.setState({
+        phase: 'persisting',
+        overlayOpen: false,
+        elapsedSec: 0,
+        metering: undefined,
+        ownerLabel: null,
+    });
+}
+
+/**
+ * 发起会话（屏层 + 菜单入口）：已有会话 → 拒绝并给 reason（可见反馈）；
+ * **persisting（后台落库期）放行**——落库是 IO+DB、新录制是相机/麦克风，
+ * 零资源冲突，begin() 原子顶替痕迹，旧会话的后台任务经注册表独立收敛
+ * （token 防串）。ownerJournalId 必须是发起时编辑上下文的 journal id——编辑
+ * 屏经 ensureJournal 保证写前有 id（journal state 就绪才渲染 + FAB），此处
+ * 兜底空 id 拒绝。
  */
 export function startCaptureSession(
     kind: CaptureKind,
@@ -246,7 +286,7 @@ export function startCaptureSession(
 ): CaptureStartOutcome {
     if (!ownerJournalId) return { ok: false, reason: '笔记尚未就绪，稍后再试。' };
     const state = useRecordingSessionStore.getState();
-    if (state.kind) {
+    if (state.kind && state.phase !== 'persisting') {
         const busy =
             state.kind === 'audio' ? '录音' : state.phase === 'recording' ? '录像' : '相机';
         return { ok: false, reason: `已有${busy}在进行中（素材将保存到发起的笔记），不能同时开始。` };
@@ -262,7 +302,7 @@ export function startCaptureSession(
 }
 
 /* ------------------------------------------------------------------ */
-/* 停止链路（会话级停止桥 + 双护栏）：等待/护栏/落库全在会话层，          */
+/* 停止链路（会话级停止桥 + 双护栏）：等待/护栏/落库编排全在会话层，      */
 /* 覆盖层只是句柄宿主与 UI 消费方——最小化保活槽态停止照常工作            */
 /* ------------------------------------------------------------------ */
 
@@ -272,9 +312,13 @@ const STOP_RESOLVE_TIMEOUT_MS = 5000;
  *  CameraView 强制收尾触发——文件实际已落盘），仍按原归属尽力入库；过窗
  *  给明确丢弃提示，绝不静默。 */
 const SALVAGE_WINDOW_MS = 15000;
-/** 落库护栏（ms）：本地存储/DB 异常挂死时先收场会话并给明确口径（落库链
+/** 落库护栏（ms）：本地存储/DB 异常挂死时先收场任务并给明确口径（落库链
  *  仍在后台继续，完成后媒体自然出现在笔记中，失败由 store 具体文案上浮）。 */
 const PERSIST_GUARD_TIMEOUT_MS = 30000;
+/** UI 收尾淡出缓冲（ms）：硬件停录段完成、产物去向已定后，等卡片淡出
+ *  （覆盖层自驱动 ~160ms，见 camera-overlay/recorder-overlay）落地再切换
+ *  相位/卸载——杜绝「半透明卡片瞬间消失」穿帮。落库任务注册不等缓冲。 */
+const UI_CLOSE_FADE_MS = 180;
 
 /** 停录产物等待槽：stopCaptureSession 挂上，覆盖层产物经 onProduct 回流结算。 */
 interface VideoStopIntake {
@@ -464,27 +508,234 @@ async function salvageLateProduct(input: {
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* 后台落库任务注册表（会话级独立注册，口径对齐编辑页 pendingUploadsRef） */
+/* ------------------------------------------------------------------ */
+
 /**
- * 停止会话（真停止 → 归属落库）：硬件停录（会话级句柄，不依赖覆盖层挂载
- * 状态——最小化保活槽态同样可达）→ attachJournalMedia（媒体行）→ persist
- * 事件（owner 屏本地合并）→ appendMediaBlockToJournal（DB 级追加，产物落回
- * ownerJournalId——无论当前哪个页面/哪个编辑器在前台、owner 屏是否挂载）。
- * 全链双护栏（停录 5s + 落库 30s）兜底：任何路径不得把会话永久留在 stopping。
- * 返回 outcome 供「完成收笔」等同步链路判定。
+ * 停止/拍照/相册兜底产物的落库一律后台化（用户口径：关窗即返回，保存自动
+ * 完成）：任务注册进本进程内注册表（Map，任务收敛自摘除——与编辑页
+ * pendingUploadsRef 同构。不复用其实例：那是屏组件内部的 useRef，会话层是
+ * 跨页面根层级宿主，无法触达屏内注册表，取舍见报告）。「完成收笔」经
+ * stopCaptureSession（persisting 相位分支 / 停止路径尾部）对同归属任务
+ * allSettled，等待口径与屏内上传一致。任务本体不触碰会话状态（幂等闸由
+ * 收尾协调器的 token 比对承担）。
+ */
+interface BackgroundPersistTask {
+    ownerJournalId: string;
+    promise: Promise<CaptureStopOutcome>;
+}
+
+const backgroundPersists = new Map<number, BackgroundPersistTask>();
+let backgroundPersistSeq = 0;
+
+/** 落库成功横幅（复用既有 store.error 横幅通道——域内唯一全局反馈位）。 */
+function persistSuccessBanner(mediaKind: JournalMediaKind): string {
+    return mediaKind === 'video'
+        ? '视频已保存到笔记'
+        : mediaKind === 'audio'
+            ? '音频已保存'
+            : '图片已保存到笔记';
+}
+
+/** 同归属后台落库是否仍有在途任务（收尾协调的终结条件之一）。 */
+function hasInflightPersists(ownerJournalId: string): boolean {
+    for (const task of backgroundPersists.values()) {
+        if (task.ownerJournalId === ownerJournalId) return true;
+    }
+    return false;
+}
+
+/**
+ * 等待同归属后台落库全部收敛（allSettled——单任务失败互不影响）：任一失败
+ * 即回传该失败结果（收笔链据此中止，避免丢产物封存笔记）；全部成功回传
+ * ok。任务 promise 已在注册处 catch 归一，rejected 分支纯防御。
+ */
+async function waitForOwnerPersists(
+    ownerJournalId: string,
+    kind: CaptureKind,
+): Promise<CaptureStopOutcome> {
+    const tasks = Array.from(backgroundPersists.values()).filter(
+        (task) => task.ownerJournalId === ownerJournalId,
+    );
+    if (tasks.length === 0) return { ok: true, ownerJournalId, kind };
+    const results = await Promise.allSettled(tasks.map((task) => task.promise));
+    for (const result of results) {
+        const outcome =
+            result.status === 'fulfilled'
+                ? result.value
+                : { ok: false as const, message: toMessage(result.reason) };
+        if (!outcome.ok) return outcome;
+    }
+    return { ok: true, ownerJournalId, kind };
+}
+
+/**
+ * 注册后台落库任务（不等待——返回任务 promise 供收笔链按需 await）：落库
+ * 核心 + 30s 护栏（挂死兜底：先给「保存超时」口径收场任务，底层链继续跑、
+ * 成功后补横幅）+ 结果横幅（成功 = 「已保存到笔记」系文案；失败 = 保存失败
+ * 文案，store 侧 attach/append 已给出更具体错误时不覆盖）。任务收敛自摘除
+ * 并触发 UI 收尾协调（tryCloseUiSession）。
+ */
+function persistCaptureProduct(
+    input: {
+        ownerJournalId: string;
+        sessionKind: CaptureKind;
+        mediaKind: JournalMediaKind;
+        uri: string;
+        width: number | null;
+        height: number | null;
+        durationMs?: number;
+    },
+    sessionToken: number | null,
+): Promise<CaptureStopOutcome> {
+    const taskId = ++backgroundPersistSeq;
+    const errorBefore = useArchiveStore.getState().error;
+    const promise = (async (): Promise<CaptureStopOutcome> => {
+        // 落库护栏：竞速 30s，超时先收场任务（底层落库链继续）
+        let persistGuardTimer: ReturnType<typeof setTimeout> | null = null;
+        const underlying = persistMediaToJournal(input);
+        const raced = await Promise.race([
+            underlying,
+            new Promise<'timeout'>((resolve) => {
+                persistGuardTimer = setTimeout(() => resolve('timeout'), PERSIST_GUARD_TIMEOUT_MS);
+            }),
+        ]);
+        // 竞速清理：落库先完成时撤掉护栏（迟到触发会弹假「保存超时」横幅）
+        if (persistGuardTimer) clearTimeout(persistGuardTimer);
+        if (raced === 'timeout') {
+            surfaceSessionError('素材保存超时，仍在后台继续保存，请稍后在笔记中确认。');
+            // 护栏后的孤儿链：仍可能成功落库——成功时补成功横幅（与超时口径呼应）
+            void underlying
+                .then((late) => {
+                    if (late.ok) surfaceSessionError(persistSuccessBanner(input.mediaKind));
+                })
+                .catch(() => undefined);
+            return { ok: false, message: '素材保存超时，请稍后在笔记中确认。' };
+        }
+        if (raced.ok) {
+            surfaceSessionError(persistSuccessBanner(input.mediaKind));
+        } else if (useArchiveStore.getState().error === errorBefore) {
+            // 失败横幅：store 侧（attach/append）已给出更具体文案时不覆盖
+            surfaceSessionError(raced.message || '保存失败');
+        }
+        return raced;
+    })()
+        .catch((caught) => ({ ok: false as const, message: `保存失败：${toMessage(caught)}` }))
+        .finally(() => {
+            // 任务收敛即自摘除（pendingUploadsRef 口径）+ 触发 UI 收尾协调
+            backgroundPersists.delete(taskId);
+            tryCloseUiSession();
+        });
+    backgroundPersists.set(taskId, { ownerJournalId: input.ownerJournalId, promise });
+    return promise;
+}
+
+/* ------------------------------------------------------------------ */
+/* UI 会话收尾协调（淡出缓冲 × 后台任务收敛，双条件才终结）               */
+/* ------------------------------------------------------------------ */
+
+interface UiSessionClose {
+    ownerJournalId: string;
+    /** 发起收尾的代会话令牌（startedAt）：被新会话顶替/终结即作废。 */
+    sessionToken: number;
+    /** 终结时写入会话状态的错误（失败收场口径；null = 干净收场）。 */
+    endError: string | null;
+    fadeDone: boolean;
+    timer: ReturnType<typeof setTimeout>;
+}
+
+let uiSessionClose: UiSessionClose | null = null;
+
+/**
+ * 调度 UI 会话收尾（**必须在硬件停录段完成、产物去向已定之后调用**——录像
+ * 产品的 CameraView 必须存活到产物回流，绝不能提前）：等卡片淡出落地后，
+ * 若同归属后台落库仍在跑则转入 persisting 相位（UI 已全部消失、允许立即开
+ * 新会话），否则直接终结会话。淡出期间会话保持 stopping（重入/新会话闸
+ * 照常），落库任务注册不等缓冲（立即开始）。
+ */
+function scheduleUiSessionClose(
+    ownerJournalId: string,
+    sessionToken: number,
+    endError: string | null,
+): void {
+    cancelUiSessionClose(); // 单例：同代会话重复调度幂等
+    const close: UiSessionClose = {
+        ownerJournalId,
+        sessionToken,
+        endError,
+        fadeDone: false,
+        timer: setTimeout(() => {
+            if (uiSessionClose !== close) return;
+            close.fadeDone = true;
+            tryCloseUiSession();
+        }, UI_CLOSE_FADE_MS),
+    };
+    uiSessionClose = close;
+}
+
+function cancelUiSessionClose(): void {
+    if (!uiSessionClose) return;
+    if (uiSessionClose.timer) clearTimeout(uiSessionClose.timer);
+    uiSessionClose = null;
+}
+
+/**
+ * 收尾尝试（三条件才终结：淡出完成 + 同归属任务全部收敛 + 仍是本代会话）。
+ * 时机入口两处：淡出计时器到点 / 落库任务收敛（finally），谁后到谁触发判定。
+ */
+function tryCloseUiSession(): void {
+    const close = uiSessionClose;
+    if (!close || !close.fadeDone) return;
+    const state = useRecordingSessionStore.getState();
+    if (state.startedAt !== close.sessionToken) {
+        // 会话已被新会话顶替/终结：本代收尾作废（新会话自行管理生命周期）
+        cancelUiSessionClose();
+        return;
+    }
+    if (hasInflightPersists(close.ownerJournalId)) {
+        // 落库仍在后台：UI 已随淡出消失，会话转 persisting（仅 stopping 可
+        // 进——preparing/recording 说明已被新会话顶替，绝不误伤）
+        if (state.phase === 'stopping') enterPersistingPhase();
+        return;
+    }
+    cancelUiSessionClose();
+    endCaptureSession(close.endError);
+}
+
+/** 停止路径失败收场：文案上浮 + UI 会话按淡出缓冲终结（卡片不瞬移，横幅即反馈）。 */
+function failStopSession(message: string, ownerJournalId: string, sessionToken: number): void {
+    surfaceSessionError(message);
+    scheduleUiSessionClose(ownerJournalId, sessionToken, message);
+}
+
+/**
+ * 停止会话（两段式：硬件停录 → UI 终结 → 落库后台化）：硬件停录段（会话级
+ * 句柄，不依赖覆盖层挂载状态——最小化保活槽态同样可达；5s 护栏）完成即终结
+ * UI 会话（卡片淡出关闭、chip 消失，无 spinner 停留）；有产物时落库立即转
+ * 后台任务注册表（30s 护栏），收敛时横幅反馈。后台落库期间新会话可立即
+ * 发起。返回 promise 在**同归属全部后台落库收敛后**才 resolve（收笔链据此
+ * 判定中止并保证不丢块；快门路径 void 调用不受影响）。
  */
 export async function stopCaptureSession(): Promise<CaptureStopOutcome> {
     const state = useRecordingSessionStore.getState();
     if (!state.kind || !state.ownerJournalId || state.startedAt == null) {
         return { ok: false, message: '当前没有进行中的录制会话。' };
     }
-    if (state.phase === 'stopping') {
-        // 可见反馈（不静默）：停止已在途且有界（双护栏），拒绝重入
-        surfaceSessionError('正在停止录制，请稍候。');
-        return { ok: false, message: '正在停止录制，请稍候。' };
-    }
     const kind = state.kind;
     const ownerJournalId = state.ownerJournalId;
     const startedAt = state.startedAt;
+    if (state.phase === 'persisting') {
+        // 落库后台期的停止（「停后立即收笔」的路径）：硬件已无可停——等待
+        // 该笔记归属的全部后台落库任务收敛并回传聚合结果（persist 事件/
+        // DB 追加既有链在任务内完成，等待保证收笔保存必带媒体块）
+        return waitForOwnerPersists(ownerJournalId, kind);
+    }
+    if (state.phase === 'stopping') {
+        // 可见反馈（不静默）：硬件停录在途且有界（5s 护栏），拒绝重入
+        surfaceSessionError('正在停止录制，请稍候。');
+        return { ok: false, message: '正在停止录制，请稍候。' };
+    }
     const audioStop = kind === 'audio' ? captureHardware.audio?.stop : undefined;
     const videoStopRecording = kind === 'video' ? captureHardware.video?.stopRecording : undefined;
     if (kind === 'audio' ? !audioStop : !videoStopRecording) {
@@ -515,78 +766,53 @@ export async function stopCaptureSession(): Promise<CaptureStopOutcome> {
         }
     } catch (caught) {
         const message = `停止录制失败：${toMessage(caught)}`;
-        failSession(message);
+        failStopSession(message, ownerJournalId, startedAt);
         return { ok: false, message };
     }
     if ('error' in product) {
-        failSession(product.error);
+        failStopSession(product.error, ownerJournalId, startedAt);
         return { ok: false, message: product.error };
     }
     if (!product.uri) {
         if (wasRecording) {
-            failSession('录制未能生成文件，素材没有保存。');
+            failStopSession('录制未能生成文件，素材没有保存。', ownerJournalId, startedAt);
             return { ok: false, message: '录制未能生成文件，素材没有保存。' };
         }
-        // 未真正开录（prepare/取景阶段被收场）：无产物、不阻塞调用方
-        endCaptureSession(null);
+        // 未真正开录（prepare/取景阶段被收场）：无产物、无落库义务、不阻塞
+        // 调用方——按淡出缓冲终结
+        scheduleUiSessionClose(ownerJournalId, startedAt, null);
         return { ok: true, ownerJournalId, kind };
     }
-    return persistCaptureProduct({
-        ownerJournalId,
-        sessionKind: kind,
-        mediaKind: kind,
-        uri: product.uri,
-        // 硬件停录产物无尺寸（音频不适用；视频 recordAsync 不回尺寸——与旧
-        // 屏层口径一致）；拍照产物走 handleCameraProduct（带尺寸）
-        width: null,
-        height: null,
-        durationMs: product.durationMs,
-    });
+    // 有产物：落库立即转后台任务（不等淡出），UI 会话按淡出缓冲终结——
+    // 用户口径「关窗即返回，保存自动完成」。收笔等同步链路需要真实落库
+    // 结果判定中止：等待同归属全部后台任务收敛（allSettled）后回传。
+    void persistCaptureProduct(
+        {
+            ownerJournalId,
+            sessionKind: kind,
+            mediaKind: kind,
+            uri: product.uri,
+            // 硬件停录产物无尺寸（音频不适用；视频 recordAsync 不回尺寸——
+            // 与旧屏层口径一致）；拍照产物走 handleCameraProduct（带尺寸）
+            width: null,
+            height: null,
+            durationMs: product.durationMs,
+        },
+        startedAt,
+    );
+    scheduleUiSessionClose(ownerJournalId, startedAt, null);
+    return waitForOwnerPersists(ownerJournalId, kind);
 }
 
-/**
- * 产物持久化（会话包装）：落库核心 + 落库护栏（挂死兜底）+ 会话终结（幂等
- * 闸——仅当仍是发起时的那个会话才收场，迟到链/新会话零干扰）。
- */
-async function persistCaptureProduct(input: {
-    ownerJournalId: string;
-    sessionKind: CaptureKind;
-    mediaKind: JournalMediaKind;
-    uri: string;
-    width: number | null;
-    height: number | null;
-    durationMs?: number;
-}): Promise<CaptureStopOutcome> {
-    useRecordingSessionStore.setState({ phase: 'stopping' });
-    const startedAt = useRecordingSessionStore.getState().startedAt;
-    // 落库护栏：本地存储/DB 异常挂死时先收场（错误上浮 + 相位释放），落库链
-    // 继续在后台跑——完成后媒体自然出现在笔记中，失败由 store 具体文案上浮
-    let persistGuardTimer: ReturnType<typeof setTimeout> | null = null;
-    const outcome = await Promise.race([
-        persistMediaToJournal(input),
-        new Promise<CaptureStopOutcome>((resolve) => {
-            persistGuardTimer = setTimeout(() => {
-                surfaceSessionError('素材保存超时，仍在后台继续保存，请稍后在笔记中确认。');
-                resolve({ ok: false, message: '素材保存超时，请稍后在笔记中确认。' });
-            }, PERSIST_GUARD_TIMEOUT_MS);
-        }),
-    ]);
-    // 竞速清理：落库先完成时撤掉护栏（迟到触发会弹假「保存超时」横幅）
-    if (persistGuardTimer) clearTimeout(persistGuardTimer);
-    // 会话终结幂等闸：startedAt 是 begin() 每次会话的唯一令牌，被新会话顶替
-    // 或已收场（null）时绝不触碰会话状态
-    if (useRecordingSessionStore.getState().startedAt === startedAt) {
-        endCaptureSession(outcome.ok ? null : outcome.message);
-    }
-    return outcome;
-}
-
-/** 取消会话（丢弃）：硬件停录丢弃，无落库义务；取消护栏兜底（挂死不滞留
- *  stopping——丢弃路径尽力而为，硬件随控制器卸载释放）。 */
+/** 取消会话（丢弃）：硬件停录丢弃，无落库义务；卡片同样走淡出关闭语言
+ *  （stopping 相位驱动，与停止一致）；取消护栏兜底（挂死不滞留——丢弃路径
+ *  尽力而为，硬件随控制器卸载释放）。 */
 export async function cancelCaptureSession(): Promise<void> {
     const state = useRecordingSessionStore.getState();
-    if (!state.kind || state.phase === 'stopping') return;
+    if (!state.kind || isSessionSettling(state.phase)) return;
     const hardware = captureHardware[state.kind];
+    const ownerJournalId = state.ownerJournalId;
+    const startedAt = state.startedAt;
     useRecordingSessionStore.setState({ phase: 'stopping' });
     let cancelGuardTimer: ReturnType<typeof setTimeout> | null = null;
     try {
@@ -602,41 +828,47 @@ export async function cancelCaptureSession(): Promise<void> {
         // 竞速清理：取消先完成时撤掉护栏
         if (cancelGuardTimer) clearTimeout(cancelGuardTimer);
     }
-    endCaptureSession(null);
+    // 丢弃收场按淡出缓冲终结（无任务在途，淡出落地即终结）；痕迹缺失时
+    // 防御性立即终结
+    if (ownerJournalId && startedAt != null) {
+        scheduleUiSessionClose(ownerJournalId, startedAt, null);
+    } else {
+        endCaptureSession(null);
+    }
 }
 
-/** 会话收场（相机视图内部已自行停录/无产物后的纯状态清理；stopping 中忽略）。 */
+/** 会话收场（相机视图内部已自行停录/无产物后的纯状态清理；收尾期忽略）。 */
 export function clearCaptureSession(): void {
     const state = useRecordingSessionStore.getState();
-    if (!state.kind || state.phase === 'stopping') return;
+    if (!state.kind || isSessionSettling(state.phase)) return;
     endCaptureSession(null);
 }
 
 /** 收起覆盖层（录音/录像继续后台执行，chip 承接）。 */
 export function minimizeCaptureOverlay(): void {
     const state = useRecordingSessionStore.getState();
-    if (!state.kind || state.phase === 'stopping') return;
+    if (!state.kind || isSessionSettling(state.phase)) return;
     state.setOverlayOpen(false);
 }
 
-/** 重开覆盖层（任意页面；会话状态一直在，重开零重启动）。 */
+/** 重开覆盖层（任意页面；会话状态一直在，重开零重启动；收尾期已无 UI 可重开）。 */
 export function restoreCaptureOverlay(): void {
     const state = useRecordingSessionStore.getState();
-    if (!state.kind || state.phase === 'stopping') return;
+    if (!state.kind || isSessionSettling(state.phase)) return;
     state.setOverlayOpen(true);
 }
 
 /** 开录回执（录音 prepare+record 完成 / 相机快门进入录制态）。 */
 export function markCaptureRecording(): void {
     const state = useRecordingSessionStore.getState();
-    if (!state.kind || state.phase === 'stopping') return;
+    if (!state.kind || isSessionSettling(state.phase)) return;
     state.setPhase('recording');
 }
 
-/** 进度上收（录音 120ms / 录像 1s 节拍；stopping 后忽略迟到 tick）。 */
+/** 进度上收（录音 120ms / 录像 1s 节拍；收尾期忽略迟到 tick）。 */
 export function tickCaptureProgress(elapsedSec: number, metering?: number): void {
     const state = useRecordingSessionStore.getState();
-    if (!state.kind || state.phase === 'stopping') return;
+    if (!state.kind || isSessionSettling(state.phase)) return;
     state.tick(elapsedSec, metering);
 }
 
@@ -656,7 +888,8 @@ function registerCameraHardware(handlers: CameraCaptureHardware | null): void {
  * - 停录等待在途且同代 → 产物交回 stopCaptureSession 的等待槽（停止桥结算）；
  * - 抢救窗口在途且同代 → 护栏超时后的迟到产物尽力入库（素材已落盘）；
  * - 非同代（会话已终结/被新会话顶替）→ 明确丢弃提示，绝不误归属新会话；
- * - 同代且无停止在途 → 自发性产物（拍照/系统收尾）直接按归属落库。
+ * - 同代且无停止在途 → 自发性产物（拍照/系统收尾）：先入 stopping（卡片
+ *   淡出驱动），落库转后台任务注册表 + 收尾协调终结（与停止同口径）。
  */
 function handleCameraProduct(capture: CameraCapture, sessionToken: number | null): void {
     const intake = videoStopIntake;
@@ -677,19 +910,34 @@ function handleCameraProduct(capture: CameraCapture, sessionToken: number | null
         return;
     }
     const state = useRecordingSessionStore.getState();
-    if (state.kind !== 'video' || state.startedAt !== sessionToken || !state.ownerJournalId) {
+    if (
+        state.kind !== 'video' ||
+        state.startedAt !== sessionToken ||
+        state.startedAt == null ||
+        !state.ownerJournalId
+    ) {
         // 非当前会话的迟到产物：素材未入库，明确反馈（不静默）
         if (sessionToken != null) surfaceSessionError('迟到的录像素材未能保存。');
         return;
     }
-    void persistCaptureProduct({
-        ownerJournalId: state.ownerJournalId,
-        sessionKind: 'video',
-        mediaKind: capture.kind,
-        uri: capture.uri,
-        width: capture.width,
-        height: capture.height,
-    });
+    // 自发性产物（拍照即完成/系统收尾）：先入 stopping（卡片淡出驱动），落库
+    // 立即转后台任务，UI 会话按淡出缓冲终结——与停止同口径（关窗即返回，
+    // 横幅在任务收敛时反馈）
+    const ownerJournalId = state.ownerJournalId;
+    const startedAt = state.startedAt;
+    useRecordingSessionStore.setState({ phase: 'stopping' });
+    void persistCaptureProduct(
+        {
+            ownerJournalId,
+            sessionKind: 'video',
+            mediaKind: capture.kind,
+            uri: capture.uri,
+            width: capture.width,
+            height: capture.height,
+        },
+        startedAt,
+    );
+    scheduleUiSessionClose(ownerJournalId, startedAt, null);
 }
 
 /**
@@ -737,14 +985,20 @@ export async function requestCaptureLibraryFallback(): Promise<void> {
         });
         if (result.canceled || result.assets.length === 0) return;
         const asset = result.assets[0];
-        await persistCaptureProduct({
-            ownerJournalId,
-            sessionKind: 'video',
-            mediaKind: 'image',
-            uri: asset.uri,
-            width: asset.width ?? null,
-            height: asset.height ?? null,
-        });
+        // 相册兜底产物仍归 ownerJournalId（归属铁律不因兜底通道改变）；落库
+        // 后台化同停止口径：注册任务即返回，横幅在任务收敛时给出（会话已
+        // 收场，token 传 null——任务不触碰会话状态）
+        void persistCaptureProduct(
+            {
+                ownerJournalId,
+                sessionKind: 'video',
+                mediaKind: 'image',
+                uri: asset.uri,
+                width: asset.width ?? null,
+                height: asset.height ?? null,
+            },
+            null,
+        );
     } catch (caught) {
         useArchiveStore.setState({ error: `相册导入失败：${toMessage(caught)}` });
     } finally {
@@ -761,8 +1015,9 @@ export async function requestCaptureLibraryFallback(): Promise<void> {
  * 与 120ms 轮询状态，挂载即 prepare + record；覆盖层展开时渲染
  * RecordingOverlay（纯视图），收起时渲染 null（进度照常上收，chip 由宿主
  * 渲染）。停止/取消经全局编排（stopCaptureSession/cancelCaptureSession）→
- * 硬件句柄 → 归属落库链（编排层带 5s 停录护栏 + 30s 落库护栏——stop 挂死
- * 也不滞留 stopping，迟到产物走抢救入库）。
+ * 硬件句柄 → 落库后台化（编排层带 5s 停录护栏 + 30s 落库护栏——stop 挂死
+ * 也不滞留 stopping，迟到产物走抢救入库）：停止 = 卡片淡出关闭 + 落库后台
+ * 自动完成（横幅反馈），本控制器在 persisting 相位随宿主卸载、录音机释放。
  *
  * 竞态防线（沿用旧口径）：prepare 未完成时停止钮禁用（Android MediaRecorder
  * 未 start 即 stop 产出无效文件）；stop/uri 读取全体 try 包裹（控制器在
@@ -771,8 +1026,8 @@ export async function requestCaptureLibraryFallback(): Promise<void> {
  */
 function AudioCaptureController({ ownerHint }: { ownerHint: string | null }) {
     const overlayOpen = useRecordingSessionStore((s) => s.overlayOpen);
-    // stopping 相位投影（停止/保存链路在途）：覆盖层停止/取消钮禁用 + 「停止
-    // 中…」在途反馈——双护栏兜底下必有界，重入由编排层拒绝并上浮提示
+    // stopping 相位投影（硬件停录段在途）：驱动卡片淡出关闭 + 停止/取消钮
+    // 触摸闸（无 spinner/在途文案——关窗即反馈，双护栏兜底下必有界）
     const stopping = useRecordingSessionStore((s) => s.phase) === 'stopping';
     // HIGH_QUALITY 预设（.m4a）+ 打开 metering（声纹条真数据）；web 走
     // MediaRecorder（audio/webm，落库时按字节头核对扩展名——store 既有口径）
@@ -902,8 +1157,9 @@ function chipBottomInset(pathname: string, bottomInset: number): number {
 /**
  * 全局录制会话宿主：根层级条件渲染三件套——录音控制器（hook 常驻）、拍摄
  * 会话（CameraView 常驻：展开 = 全屏取景卡 / 最小化 = 隐形保活槽，stop/cancel
- * 后随会话卸载）、收起态悬浮 chip（任意页面重开入口）。空闲（kind null）时
- * 整体渲染 null，零布局挤占、零监听成本。
+ * 后随会话卸载）、收起态悬浮 chip（任意页面重开入口）。空闲（kind null）与
+ * persisting（UI 会话已终结、落库在后台——采集 UI 整体不渲染，CameraView/
+ * 录音机随卸载释放，产物已到手）时渲染 null/空，零布局挤占、零监听成本。
  */
 export function RecordingSessionHost() {
     const kind = useRecordingSessionStore((s) => s.kind);
@@ -919,11 +1175,16 @@ export function RecordingSessionHost() {
     const pathname = usePathname();
 
     if (!kind) return null;
+    // persisting = UI 会话已终结（后台落库中）：采集 UI 全部不渲染（零 UI、
+    // 允许立即开新会话）；stopping = 淡出关闭中，覆盖层仍挂载（自驱动淡出）
+    const captureUiAlive = phase !== 'persisting';
 
     return (
         <>
-            {kind === 'audio' ? <AudioCaptureController ownerHint={ownerLabel} /> : null}
-            {kind === 'video' ? (
+            {kind === 'audio' && captureUiAlive ? (
+                <AudioCaptureController ownerHint={ownerLabel} />
+            ) : null}
+            {kind === 'video' && captureUiAlive ? (
                 <CameraCaptureOverlay
                     initialMode={cameraMode}
                     minimized={!overlayOpen}

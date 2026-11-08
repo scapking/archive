@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     ActivityIndicator,
+    Animated,
     BackHandler,
+    Easing,
     Linking,
     Platform,
     StyleSheet,
@@ -12,6 +14,7 @@ import { CameraView } from 'expo-camera';
 import { BouncyPressable, LucideCamera, LucideImage, LucideTrash } from '@/core/icons';
 import { SwitchCameraIcon } from './editor-icons';
 import { CloseButton } from './close-button';
+import { useReduceMotionRef } from './recorder-overlay';
 import { camera } from '@/core/camera';
 
 /**
@@ -35,13 +38,16 @@ import { camera } from '@/core/camera';
  * 相册，产物仍归属发起笔记）；视频录制无时长上限（#10）；web 能力边界不变
  * （recordAsync 无 web 实现，视频档隐藏，全局相机会在 web 仅承担拍照）。
  *
- * 停止链路（会话级，**不依赖覆盖层挂载状态**）：停止编排（等待/护栏/落库）
- * 全在 recording-session（会话级停止桥 + 停录 5s/落库 30s 双护栏）——本组件
- * 经 registerHardware 只登记 ref 绑定的原生停录/取消句柄（隐形保活槽态的
- * CameraView 同样可达，控制行/覆盖层卡片整段卸载后停止照常工作），并经
- * onProduct（拍照/快门停录/外部停录/系统收尾统一回流口）/onRecordFailed
- * （recordAsync reject 回执）把事实交回会话层分派；快门停止/取消钮只是
- * 调用编排（onStopRequest/onCancelRequest），不持有停止等待逻辑。
+ * 停止链路（会话级，**不依赖覆盖层挂载状态**）：停止编排（等待/护栏/落库
+ * 后台化）全在 recording-session（会话级停止桥 + 停录 5s/落库 30s 双护栏）
+ * ——本组件经 registerHardware 只登记 ref 绑定的原生停录/取消句柄（隐形
+ * 保活槽态的 CameraView 同样可达，控制行/覆盖层卡片整段卸载后停止照常
+ * 工作），并经 onProduct（拍照/快门停录/外部停录/系统收尾统一回流口）/
+ * onRecordFailed（recordAsync reject 回执）把事实交回会话层分派；快门停止/
+ * 取消钮只是调用编排（onStopRequest/onCancelRequest），不持有停止等待逻辑。
+ * 停止/取消的 UI 反馈 = 整卡 ~160ms 淡出关闭（RN Animated opacity，stopPending
+ * 相位投影驱动）——无 spinner 停留（关窗即返回，落库后台自动完成，结果
+ * 由横幅反馈）；CameraView 必须存活到产物回流，卸载时机由会话层收尾协调。
  */
 
 export interface CameraCapture {
@@ -88,8 +94,9 @@ export function CameraCaptureOverlay({
     initialMode?: 'photo' | 'video';
     /** 收起态（全局会话最小化）：CameraView 收进隐形保活槽，录制继续。 */
     minimized: boolean;
-    /** 停止/取消在途（全局会话 stopping 相位投影）：快门/取消/重录/模式切换
-     *  全部闸住，快门给在途 spinner——护栏兜底下必有界，不静默吞点按。 */
+    /** 停止/取消在途（全局会话 stopping 相位投影）：整卡 ~160ms 淡出关闭 +
+     *  触摸整体释放，快门/取消/重录/模式切换经 stopPendingRef 逻辑闸住——
+     *  无 spinner/禁用态编排（关窗即反馈；护栏兜底下窗口有界）。 */
     stopPending: boolean;
     /** 归属提示（owner 笔记展示名，录制中展示「停止后保存到 X」）。 */
     ownerHint: string | null;
@@ -149,6 +156,21 @@ export function CameraCaptureOverlay({
     // stopping 相位窗口内拒绝重录/重停/再拍，护栏兜底下窗口有界
     const stopPendingRef = useRef(stopPending);
     stopPendingRef.current = stopPending;
+    // 关闭淡出（停止/取消驱动，stopPending 相位投影）：整卡 ~160ms 淡出后随
+    // 会话卸载——无 spinner 停留（关窗即反馈，落库后台自动完成）；「减弱动
+    // 态」降级为瞬时关闭（时长 0）。CameraView 存活到产物回流，卸载时机由
+    // 会话层收尾协调（淡出只是视觉，不提前卸载）
+    const reduceMotionRef = useReduceMotionRef();
+    const fade = useRef(new Animated.Value(1)).current;
+    useEffect(() => {
+        if (!stopPending) return;
+        Animated.timing(fade, {
+            toValue: 0,
+            duration: reduceMotionRef.current ? 0 : 160,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+        }).start();
+    }, [stopPending, fade, reduceMotionRef]);
     // 回调 ref 镜像（异步链跨渲染存活时读最新闭包）
     const onProductRef = useRef(onProduct);
     onProductRef.current = onProduct;
@@ -412,7 +434,10 @@ export function CameraCaptureOverlay({
     ).padStart(2, '0')}`;
 
     return (
-        <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
+        <Animated.View
+            pointerEvents={stopPending ? 'none' : 'box-none'}
+            style={[StyleSheet.absoluteFill, { opacity: fade }]}
+        >
             {/* 全屏 scrim（仅全屏态）：压暗日记画布，不接管点击（拍摄误触关闭
                 代价高），出口只有关闭钮；收起态整层卸载，画布/导航零阻塞 */}
             {!minimized ? (
@@ -513,9 +538,10 @@ export function CameraCaptureOverlay({
                             />
 
                             {/* 快门大圆钮：拍照=白圆点；视频录制态=红方块停止 + 外环转红
-                                （录制态一眼可辨，不靠文字）；停止在途=spinner（stopping
-                                相位窗口有界，在途反馈不静默）。#6 修复：onShutterPress 恒
-                                非空，录制态失效根因在 capturing 守卫顺序（见其注） */}
+                                （录制态一眼可辨，不靠文字）；停止在途无 spinner——整卡
+                                淡出关闭即反馈（spinner 无宿主，关窗即返回）。#6 修复：
+                                onShutterPress 恒非空，录制态失效根因在 capturing 守卫
+                                顺序（见其注） */}
                             <BouncyPressable onPress={onShutterPress} scaleTo={0.92} disabled={stopPending}>
                                 <View
                                     className="h-16 w-16 items-center justify-center rounded-full"
@@ -524,11 +550,9 @@ export function CameraCaptureOverlay({
                                     accessibilityLabel={
                                         mode === 'photo' ? '拍照' : recording ? '停止录制' : '开始录制'
                                     }
-                                    accessibilityState={{ busy: stopPending }}
+                                    accessibilityState={{ disabled: stopPending }}
                                 >
-                                    {stopPending ? (
-                                        <ActivityIndicator color="#FFFFFF" />
-                                    ) : recording ? (
+                                    {recording ? (
                                         <View className="h-5 w-5 rounded-[3px] bg-[#DC4A5E]" />
                                     ) : (
                                         <View
@@ -664,7 +688,7 @@ export function CameraCaptureOverlay({
                     </View>
                 )
             ) : null}
-        </View>
+        </Animated.View>
     );
 }
 

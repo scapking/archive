@@ -21,8 +21,9 @@ import { usePalette } from './theme';
  *   features/archive/recording-session.tsx（根层级挂载，跨页面后台录制 +
  *   归属铁律的宿主）——本文件只保留两个纯 props 驱动的视图：
  * - **RecordingOverlay（展开态视图）**：卡片式浮层（#8，与拍摄卡同一套容器
- *   语言），自身零录音状态——停止 = 真停止落库（全局编排 → 归属 owner 笔记）；
- *   取消 = 丢弃（仅覆盖层内提供）；X / 返回键 = 收起并继续后台录音。
+ *   语言），自身零录音状态——停止 = 卡片 ~160ms 淡出关闭 + 落库转后台自动
+ *   完成（横幅反馈，无 spinner 停留）；取消 = 丢弃（仅覆盖层内提供，同样
+ *   淡出关闭）；X / 返回键 = 收起并继续后台录音。
  * - **RecordingChip（收起态视图）**：根层级悬浮计时胶囊（h-9 36dp 圆角胶囊，
  *   hitSlop 4 凑 44 命中），「● 录音中 0:32」，点按重开覆盖层（计时/声纹/
  *   录制态无缝恢复——状态一直在全局会话层）。
@@ -33,6 +34,29 @@ import { usePalette } from './theme';
  * 浏览器不回 metering）。条列动画只动 transform（scaleY），不动高度。
  * 计时/电平的轮询节拍（120ms）在全局控制器内，视图只随 props 重渲。
  */
+
+/** 系统「减弱动态」探测（ref 形态，动画时长决策用）：true 时淡入/淡出退化
+ *  为瞬时（时长 0）。订阅随卸载摘除；API 缺失（老内核）保守按未开启。 */
+export function useReduceMotionRef() {
+    const reduceMotionRef = useRef(false);
+    useEffect(() => {
+        let cancelled = false;
+        AccessibilityInfo.isReduceMotionEnabled
+            ?.()
+            .then((enabled) => {
+                if (!cancelled) reduceMotionRef.current = !!enabled;
+            })
+            .catch(() => undefined);
+        const subscription = AccessibilityInfo.addEventListener?.('reduceMotionChanged', (enabled) => {
+            reduceMotionRef.current = !!enabled;
+        });
+        return () => {
+            cancelled = true;
+            subscription?.remove();
+        };
+    }, []);
+    return reduceMotionRef;
+}
 
 /** 声纹条列数与几何（奇数条中轴对称，视觉重心居中）。 */
 const BAR_COUNT = 25;
@@ -114,7 +138,8 @@ function VoiceBars({
 /**
  * 录音覆盖层（纯视图，条件渲染，禁 RN Modal）：深色 scrim + 居中录音卡。
  * 关闭语言语义（后台继续模型）：卡头 X 与 Android 返回键 = **收起并继续
- * 后台录音**；真停止 = 停止钮，丢弃 = 取消钮（仅覆盖层内）。
+ * 后台录音**；真停止 = 停止钮（卡片 ~160ms 淡出关闭，落库后台自动完成），
+ * 丢弃 = 取消钮（仅覆盖层内，同样淡出关闭）。
  */
 export function RecordingOverlay({
     elapsedSec,
@@ -133,22 +158,37 @@ export function RecordingOverlay({
     /** 是否已真正开录（停止钮门控：prepare 未完成禁用——Android 未 start 即
      *  stop 会产出无效文件，不可落库）。 */
     isRecording: boolean;
-    /** 停止/保存链路在途（全局会话 stopping 相位投影）：停止钮给「停止中…」
-     *  在途反馈、停止/取消钮禁用——双护栏兜底下必有界，不静默吞点按。 */
+    /** 停止/取消在途（全局会话 stopping 相位投影）：整卡 ~160ms 淡出关闭
+     *  （RN Animated opacity）+ 交互整体释放——不做 spinner/在途文案停留
+     *  （用户口径：关窗即返回，保存后台自动完成），落库结果由横幅反馈。 */
     stopping?: boolean;
     /** 归属提示（owner 笔记展示名；归属铁律的可视化——跨页面停止时用户能
      *  看到产物去向）。null = 不展示。 */
     ownerHint?: string | null;
     /** 收起覆盖层（录音继续后台执行，chip 承接）。 */
     onClose: () => void;
-    /** 真停止并落库（全局编排 → 归属 ownerJournalId）。 */
+    /** 真停止（全局编排 → 卡片淡出关闭 + 落库后台化 → 归属 ownerJournalId）。 */
     onStop: () => void;
     /** 停止并丢弃（仅覆盖层内入口）。 */
     onCancel: () => void;
 }) {
     const palette = usePalette();
+    // 关闭淡出（停止/取消驱动，stopping 相位）：整卡 ~160ms 淡出后随会话
+    // 卸载——无 spinner 停留；「减弱动态」降级为瞬时关闭（时长 0）
+    const reduceMotionRef = useReduceMotionRef();
+    const fade = useRef(new Animated.Value(1)).current;
+    useEffect(() => {
+        if (!stopping) return;
+        Animated.timing(fade, {
+            toValue: 0,
+            duration: reduceMotionRef.current ? 0 : 160,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+        }).start();
+    }, [stopping, fade, reduceMotionRef]);
     // Android 返回键 = 收起（后台继续模型：返回不再等于丢弃——丢弃代价高，
-    // 出口收敛到覆盖层内的取消钮）
+    // 出口收敛到覆盖层内的取消钮）；收尾期（stopping）返回被编排层闸掉，
+    // 160ms 窗口内吞掉即可
     useEffect(() => {
         const sub = BackHandler.addEventListener('hardwareBackPress', () => {
             onClose();
@@ -158,7 +198,11 @@ export function RecordingOverlay({
     }, [onClose]);
 
     return (
-        <View className="absolute inset-0 z-50 bg-ink-scrim dark:bg-inkd-scrim">
+        <Animated.View
+            className="absolute inset-0 z-50 bg-ink-scrim dark:bg-inkd-scrim"
+            pointerEvents={stopping ? 'none' : 'auto'}
+            style={{ opacity: fade }}
+        >
             {/* scrim 不接管点击（录音误触丢弃代价高），出口 = 收起钮/取消钮/返回键 */}
             <View className="flex-1 items-center justify-center px-6">
                 {/* 录音卡（深底卡，与拍摄卡同容器语言：rounded-card + 集中控制行）。
@@ -195,16 +239,15 @@ export function RecordingOverlay({
                     <VoiceBars elapsedSec={elapsedSec} metering={metering} />
 
                     {/* 操作区：取消 / 停止。两钮视觉盒均 ≥44 且相距 24dp ≥ 2×0（不传 hitSlop），
-                        命中区不重叠。停止钮以 isRecording/stopping 门控（准备阶段禁用——
-                        prepare 完成前「停止」会得到一个无效录音文件（Android MediaRecorder
-                        未 start 即 stop 抛错）；停止在途禁用 + 「停止中…」在途反馈，护栏
-                        兜底下窗口有界）——禁用期触摸穿透到不接管点击的 scrim，无副作用 */}
+                        命中区不重叠。停止钮以 isRecording 门控（准备阶段禁用——prepare 完成
+                        前「停止」会得到一个无效录音文件（Android MediaRecorder 未 start 即
+                        stop 抛错）；停止/取消钮保留 stopping 触摸闸（护栏兜底下窗口有界，
+                        防淡出窗口内重入），在途反馈 = 整卡淡出关闭本身，无 spinner/文案切换
+                        ——禁用期触摸穿透到不接管点击的 scrim，无副作用 */}
                     <View className="mt-8 flex-row items-center justify-center" style={{ gap: 24 }}>
                         <BouncyPressable onPress={onCancel} scaleTo={0.9} disabled={stopping}>
                             <View
-                                className={`h-11 items-center justify-center rounded-control px-6 ${
-                                    stopping ? 'opacity-40' : ''
-                                }`}
+                                className="h-11 items-center justify-center rounded-control px-6"
                                 style={{ backgroundColor: '#FFFFFF1A' }}
                                 accessibilityRole="button"
                                 accessibilityLabel="取消录音"
@@ -216,24 +259,24 @@ export function RecordingOverlay({
                         <BouncyPressable onPress={onStop} scaleTo={0.9} disabled={!isRecording || stopping}>
                             <View
                                 className={`h-11 items-center justify-center rounded-control px-6 ${
-                                    isRecording && !stopping ? '' : 'opacity-40'
+                                    isRecording ? '' : 'opacity-40'
                                 }`}
                                 style={{ backgroundColor: palette.primaryBtn }}
                                 accessibilityRole="button"
                                 accessibilityLabel="停止录音"
-                                accessibilityState={{ disabled: !isRecording || stopping, busy: stopping }}
+                                accessibilityState={{ disabled: !isRecording || stopping }}
                             >
                                 {/* 纯文字钮（用户口径：录音 UI 不留图标）；px-6 与取消钮
                                     同宽口径，两字几何稳定 */}
                                 <Text className="text-[14px] font-semibold" style={{ color: palette.onPrimaryBtn }}>
-                                    {stopping ? '停止中…' : '停止'}
+                                    停止
                                 </Text>
                             </View>
                         </BouncyPressable>
                     </View>
                 </View>
             </View>
-        </View>
+        </Animated.View>
     );
 }
 
@@ -259,23 +302,10 @@ export function RecordingChip({
 }) {
     const palette = usePalette();
     const appear = useRef(new Animated.Value(0)).current;
-    // 系统「减弱动态」降级（editor.tsx MediaDeckStack 同口径惯例）：跳过上浮
-    // 位移、淡入退化为瞬时出现（时长 0）——chip 是常驻导航级元素，位移编排
-    // 对前庭敏感用户是纯噪声；订阅随卸载摘除
-    const reduceMotionRef = useRef(false);
-    useEffect(() => {
-        let cancelled = false;
-        AccessibilityInfo.isReduceMotionEnabled?.().then((enabled) => {
-            if (!cancelled) reduceMotionRef.current = !!enabled;
-        }).catch(() => undefined);
-        const subscription = AccessibilityInfo.addEventListener?.('reduceMotionChanged', (enabled) => {
-            reduceMotionRef.current = !!enabled;
-        });
-        return () => {
-            cancelled = true;
-            subscription?.remove();
-        };
-    }, []);
+    // 系统「减弱动态」降级（useReduceMotionRef 同口径）：跳过上浮位移、淡入
+    // 退化为瞬时出现（时长 0）——chip 是常驻导航级元素，位移编排对前庭敏感
+    // 用户是纯噪声
+    const reduceMotionRef = useReduceMotionRef();
     useEffect(() => {
         Animated.timing(appear, {
             toValue: 1,
