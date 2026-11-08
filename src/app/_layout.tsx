@@ -4,7 +4,11 @@ import { AppState, Linking, Platform, Pressable, Text, View } from 'react-native
 import { Stack, useRouter, useNavigationContainerRef } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { applyThemePref, getPalette, useEffectiveTheme, useArchiveStore, type ThemePref } from '@/features/archive';
+// Android E2E 冷启自愈（同 last-route/store 深路径直连先例——域 barrel index.ts
+// 不在本次允许改动清单内）：等价调 Me 切换链的 native 生效点但不切主题
+import { reapplyAndroidEdgeToEdge } from '@/features/archive/ui/theme';
 // 上一次界面缓存（R8 深路径直连：域 barrel index.ts 不在本次允许改动清单内）
 import {
     consumeLastRoute,
@@ -70,6 +74,11 @@ export default function RootLayout() {
     const ready = useArchiveStore((s) => s.ready);
     const loadAll = useArchiveStore((s) => s.loadAll);
     const theme = useEffectiveTheme();
+    // Android E2E 自愈探测用 bottom inset（ref 镜像：effect 闭包恒读当前值，
+    // 与下方 themeRef 同法；600ms 探测点在首帧布局 + SafeAreaProvider 测量完成后）。
+    const insets = useSafeAreaInsets();
+    const insetsBottomRef = useRef(insets.bottom);
+    insetsBottomRef.current = insets.bottom;
     // expo-router 模块级单例 ref（= 挂在 NavigationContainer 上的同一个对象）：
     // 跨挂载稳定，仅用于订阅 state 变化事件（不消费 .current，无渲染依赖）
     const navigationRef = useNavigationContainerRef();
@@ -80,6 +89,36 @@ export default function RootLayout() {
         if (!ready) void loadAll();
         applyThemePref(archiveConfig.get()['ui.theme'] as ThemePref);
     }, [ready, loadAll]);
+
+    useEffect(() => {
+        // Android edge-to-edge 冷启自愈（2026-11-09 真机：冷启内容止步于导航栏
+        // 上方，Me 切一次主题才恢复）：冷启 E2E 生效全押 react-native-edge-to-edge
+        // 插件 onHostResume 的派发时序（RN 核心 updateEdgeToEdgeFeatureFlag 仅
+        // Android 15+ 自动启用），派发错过即无 E2E。修复 = 挂载后直接补调
+        // RNEdgeToEdge.onColorSchemeChange()——原生实现就是插件 applyEdgeToEdge
+        // （setDecorFitsSystemWindows(false) 等，EdgeToEdgeModuleImpl.kt:64-117），
+        // 与 Me 切主题后 Activity 重建链路最终执行的动作完全等价，但不切主题、
+        // 不触发重建、无闪屏、幂等可重入。两道保险：
+        // ①挂载后一拍无条件补调（等价 Me 切换链 native 生效点，错过派发即补）；
+        // ②600ms insets 稳定点条件补调：E2E 下手势条/三键导航的 bottom inset 必
+        //   >0，decorFits=true（非 E2E）时 insets 被窗口消费恒 =0 → bottom===0
+        //   判定①未生效。误判面（写明前提）：全屏隐藏导航栏的设备/应用 E2E 且
+        //   bottom=0——本项目常驻导航栏不属此类，且误判后果只是多一次幂等
+        //   applyEdgeToEdge，无害。两次调用均为冷启一次性定时器（无监听订阅、
+        //   无循环重入，Fast Refresh 重挂载重复执行也因幂等无害）；与用户 600ms
+        //   窗口内手动切主题无竞态：onColorSchemeChange 与主题无耦合（导航栏
+        //   按钮深浅由原生按当前 uiMode 自取），用户切主题伴随的重建链路本就会
+        //   重跑 applyEdgeToEdge，幂等叠加。
+        if (Platform.OS !== 'android') return;
+        const immediate = setTimeout(() => reapplyAndroidEdgeToEdge(), 0);
+        const probe = setTimeout(() => {
+            if (insetsBottomRef.current === 0) reapplyAndroidEdgeToEdge();
+        }, 600);
+        return () => {
+            clearTimeout(immediate);
+            clearTimeout(probe);
+        };
+    }, []);
 
     useEffect(() => {
         // 启动孤儿媒体文件 GC（上传中断恢复）：冷启 sweep 至多一次（单飞闸门在
