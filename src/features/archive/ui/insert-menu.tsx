@@ -101,8 +101,8 @@ export function InsertMenu({
     /** 行配置：web 能力边界内裁剪（录音 MediaRecorder 缺失 / 视频 recordAsync 无 web 实现）。
      *  行序：相册取材两行 → 采集三行（录音/拍照/拍视频）→ 添加输入框 → 完成收笔。 */
     const rows: Array<{ action: InsertAction; icon: React.ReactNode; title: string; hint: string }> = [
-        { action: 'library-image', icon: <LucideImage size={20} strokeWidth={1.9} />, title: '相册图片', hint: '从图库选取' },
-        { action: 'library-video', icon: <ImagePlayIcon size={20} strokeWidth={1.9} />, title: '相册视频', hint: '从图库选取' },
+        { action: 'library-image', icon: <LucideImage size={20} strokeWidth={1.9} />, title: '相册图片', hint: '从图库选取，可多选' },
+        { action: 'library-video', icon: <ImagePlayIcon size={20} strokeWidth={1.9} />, title: '相册视频', hint: '从图库选取，可多选' },
         ...(isRecordingSupported()
             ? [{ action: 'record' as const, icon: <LucideMic size={20} strokeWidth={1.9} />, title: '录音', hint: '声纹即时记录' }]
             : []),

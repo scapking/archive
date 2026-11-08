@@ -612,7 +612,16 @@ export function JournalEditScreen({
      * 兜底链；离开编辑屏不再中止录制（跨页面后台继续是会话的一等语义）。
      */
 
-    /** 相册通道：权限 → 选图/选视频 → 统一插入流（doAttach 同步返回，后台并行）。 */
+    /**
+     * 相册通道（多选，2026-11）：权限 → 批量选图/选视频 → 按选取顺序逐张
+     * 插入流（doAttach 同步插 pending 占位即返回，后台异步并行上传）。图片
+     * 与视频通道都开 allowsMultipleSelection，多选上限 = 入口处先算好的剩余
+     * 配额（图片 = 九图配额与全媒体双闸取小；视频 = 全媒体闸），经
+     * selectionLimit 传给系统 picker（到量即不可再选）；部分环境（老版
+     * Android 选择器/web）不严格执行 selectionLimit，返回超出部分在插入侧
+     * 预裁掉并提示已插数量——doAttach 内逐张配额守卫仍是权威兜底（选取
+     * 期间后台拍摄会话可能并发落库，入口快照会过期）。
+     */
     const pick = async (kind: 'image' | 'video') => {
         const row = journalRef.current;
         if (!row || !isEditable(row.status)) return;
@@ -630,14 +639,64 @@ export function JournalEditScreen({
                     return;
                 }
             }
+            // 剩余配额快照（多选上限）：媒体总量含在途 pending 占位（同为
+            // t:'media' 天然计入）；图片配额 = 已就绪图片 + 在途图片任务数
+            //（微信九图口径，canInsertImages 同一判定）。媒体闸先判（图片
+            // 也受 MAX_MEDIA 约束，两道闸都过才放行）
+            const mediaCount = blocksRef.current.filter((block) => block.t === 'media').length;
+            const mediaSlots = MAX_MEDIA - mediaCount;
+            if (mediaSlots <= 0) {
+                store.setState({ error: `本篇媒体最多 ${MAX_MEDIA} 个。` });
+                return;
+            }
+            let selectionLimit: number;
+            if (kind === 'image') {
+                let pendingImages = 0;
+                for (const entry of pendingUploadsRef.current.values()) {
+                    if (entry.kind === 'image') pendingImages += 1;
+                }
+                const imageCount =
+                    countImageBlocks(
+                        blocksRef.current,
+                        (mediaId) => mediaById.get(mediaId)?.kind === 'image',
+                    ) + pendingImages;
+                const imageSlots = JOURNAL_IMAGE_LIMIT - imageCount;
+                if (imageSlots <= 0) {
+                    store.setState({ error: `图片最多 ${JOURNAL_IMAGE_LIMIT} 张。` });
+                    return;
+                }
+                selectionLimit = Math.min(imageSlots, mediaSlots);
+            } else {
+                selectionLimit = mediaSlots;
+            }
             const result = await imagePicker.launchImageLibraryAsync({
                 mediaTypes: [kind === 'video' ? 'videos' : 'images'],
+                // 多选（图片/视频通道都开）：上限 = 剩余配额；orderedSelection
+                // （iOS 15+）= 序号角标 + 严格按选取顺序返回，Android/web 忽略
+                allowsMultipleSelection: true,
+                selectionLimit,
+                orderedSelection: true,
                 quality: 1,
                 exif: false,
             });
             if (result.canceled || result.assets.length === 0) return;
-            const asset = result.assets[0];
-            doAttach(kind, asset.uri, asset.width ?? null, asset.height ?? null);
+            // picked 顺序 = 插入顺序：assets 按选取序逐张同步插 pending 占位
+            //（各自独立后台任务并行上传，占位块各挂各的进度）；超出剩余配额
+            // 的尾部裁掉（selectionLimit 不被严格执行的环境兜底），提示已插
+            // 数量而非静默吞掉
+            const allowed = result.assets.slice(0, selectionLimit);
+            for (const asset of allowed) {
+                doAttach(kind, asset.uri, asset.width ?? null, asset.height ?? null);
+            }
+            const overflow = result.assets.length - allowed.length;
+            if (overflow > 0) {
+                store.setState({
+                    error:
+                        kind === 'image'
+                            ? `已插入 ${allowed.length} 张，其余 ${overflow} 张超出图片上限（${JOURNAL_IMAGE_LIMIT} 张）。`
+                            : `已插入 ${allowed.length} 个，其余 ${overflow} 个超出媒体上限（${MAX_MEDIA} 个）。`,
+                });
+            }
         } catch (caught) {
             store.setState({
                 error: `${kind === 'video' ? '视频' : '图片'}选取失败：${caught instanceof Error ? caught.message : String(caught)}`,
