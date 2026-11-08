@@ -67,8 +67,10 @@ import { PENDING_MEDIA_ID } from '../db';
  *   照片」的形状语法——轴向平行直条会被读作边框/chrome，v2/v3/v5 三版
  *   可读性翻车的同源根因；4dp raised 垫边 + 前卡 1px hairline 相框描边
  *   （照片 mat 装裱惯例）保证白底/同色照片在浅色页上的楔缘可辨，表面
- *   分层全靠 tone step，无阴影无渐变；露边层圆角挂卡体本体 rounded-card16，
- *   随缩放/位移/倾斜保持，不被容器裁成直角——见 DeckBackCard 注）；
+ *   分层全靠 tone step，无阴影无渐变；露边层圆角挂卡体本体 rounded-card16
+ *   （inline 同值双保险 + 内层媒体同值自挂——Android 旋转位形下不依赖父
+ *   裁切，见 DECK_CARD_RADIUS / DeckBackCard 注），随缩放/位移/倾斜保持，
+ *   不被容器裁成直角）；
  *   3 张起左右都有，2 张时只有右侧（左相纸空缺）；视频堆卡体差异（堆叠
  *   机制与图片堆完全同一套，见 MediaDeckStack 注）：前卡 = 封面态（paused
  *   首帧 + 中央播放钮，点前卡 = 全屏播放、长按 = 操作卡），**性能红线：
@@ -508,6 +510,21 @@ const DECK_FRONT_WIDTH_RATIO = 0.66;
 const DECK_CARD_HEIGHT = 420;
 
 /**
+ * 堆卡卡体圆角（dp）：rounded-card 16 档（tailwind 半径令牌，见
+ * tailwind.config.js borderRadius.card）的 inline 双保险值——四种堆卡卡体
+ * （图片前卡 / 图片露边层 / 视频前卡 / 视频占位卡）的圆角声明收口于此常量：
+ * className rounded-card 与 inline borderRadius 同值并存（父层双保险），内层
+ * 媒体元素（Image/VideoView/占位 View）再自挂同值圆角（内层兜底）。
+ * 为何内层必须自挂：露边层卡体处于 ±4° 旋转 + 0.96 缩放的 AnimatedSlot
+ * 位形下，Android（Fabric）对「旋转祖先内子内容」的 overflow-hidden 圆角
+ * 裁切会失灵——内层 cover 内容「顶穿」父圆角渲染成直角（用户反馈的第二层
+ * 堆卡直角缘即此病）；内层自挂圆角后可见性不依赖父裁切、随位形保持。iOS
+ * 裁切可靠，同值内层圆角与父 outline 几何重合，无视觉差。不新增半径档位
+ * （16 = rounded-card 既有档）。
+ */
+const DECK_CARD_RADIUS = 16;
+
+/**
  * 中卡最小宽下限（dp）：列宽 × 66% 在手机窄列（正文列 272~363dp 常见）会
  * 跌破 240，堆卡被压得过窄失去体量——下限钳到 240 保证窄列堆卡仍占列宽
  * 大半（312dp 列卡宽 240 = 77%）。与上限（列宽 − 2×花瓣余量）冲突时上限
@@ -542,8 +559,10 @@ const DECK_BACK_OPACITY = 0.85;
  *  页上也有 tone 可依（taste-skill app-screens：表面靠 tone step 分层，
  *  不靠线不靠阴影；#13 无描边口径的延伸——垫边是填充 tone 不是 border）。
  *  2 → 4 为分离度强化档：2dp 在同色照片 + 浅色页组合下垫边窄到不可辨，
- *  4dp 与相纸装裱的常规留白档一致（照片 mat 惯例）。外层 rounded-card
- *  overflow-hidden 裁切，内图零圆角（不新增半径档位）。 */
+ *  4dp 与相纸装裱的常规留白档一致（照片 mat 惯例）。圆角 = 卡体本体
+ *  rounded-card + inline 同值双保险（DECK_CARD_RADIUS），内图同值自挂
+ *  （Android 旋转位形下不依赖父裁切，见 DECK_CARD_RADIUS 注；不新增
+ *  半径档位）。 */
 const DECK_MAT = 4;
 /** 计数行（12px 字配 18dp 行，2dp 网格）与楔形带的呼吸缝：计数行锚定在
  *  楔形带之下（几何核算见 MediaDeckStack 注），不与相纸楔形重叠。 */
@@ -596,7 +615,10 @@ const DECK_REDUCED_FADE_MS = 160;
  * cover 精确填满卡体（裁切部分放弃）——v10 的 contain「卡即图」随自适应
  * 画幅一并撤销（contain 在固定盒下必然留边，是「有一些图片没真正占满」
  * 的直接病灶）；卡体 bg-ink-raised 保留为加载/失败占位底（mat 卡纸语言，
- * cover 恒满铺后不再有留边区）。交互链 = 既有口径：点按 → requestViewer
+ * cover 恒满铺后不再有留边区）。圆角双保险（四种堆卡统一口径）：卡体本体
+ * rounded-card + inline DECK_CARD_RADIUS 同值并存，内层 Image 同值自挂
+ * ——内层可见性不依赖父 overflow-hidden 裁切（Android 最稳，见
+ * DECK_CARD_RADIUS 注）。交互链 = 既有口径：点按 → requestViewer
  * 全屏（键盘先收）、长按/桌面双击 → onBlockAction 操作卡
  * （useBlockActionGestures 单点收口）。横滑拖拽不在此层——PanResponder
  * 挂在宿主手势面 wrapper（见 MediaDeckStack 注：父级方向锁认领后
@@ -653,13 +675,20 @@ function DeckFrontCard({
                 级 chrome 无关（#13 清除的是卡片级描边；照片边缘定界属照片本体
                 惯例）。分离度强化件之一：相近色调的前后卡叠放时，hairline 在
                 前卡边缘给出精确轮廓（垫边 tone 与压暗都随图色漂移，唯描边恒
-                定）。cover 恒满铺固定盒（v11），raised 底只在加载/失败态可见。 */}
+                定）。cover 恒满铺固定盒（v11），raised 底只在加载/失败态可见。
+                圆角双保险（Android）：卡体本体 rounded-card + inline
+                DECK_CARD_RADIUS 同值并存，内层 Image 同值自挂——内层可见性
+                不依赖父 overflow-hidden 裁切（见 DECK_CARD_RADIUS 注）。 */}
             <View
                 className="overflow-hidden rounded-card border border-ink-border bg-ink-raised dark:border-inkd-border dark:bg-inkd-raised"
-                style={{ width, height }}
+                style={{ width, height, borderRadius: DECK_CARD_RADIUS }}
             >
                 {ready ? (
-                    <Image source={{ uri }} style={{ width, height }} resizeMode="cover" />
+                    <Image
+                        source={{ uri }}
+                        style={{ width, height, borderRadius: DECK_CARD_RADIUS }}
+                        resizeMode="cover"
+                    />
                 ) : status === 'missing' ? (
                     <View className="flex-1 items-center justify-center gap-1.5">
                         <LucideImage size={20} strokeWidth={1.9} color={palette.muted} />
@@ -685,17 +714,22 @@ function DeckFrontCard({
  * 三版可读性翻车的修复面）要的是「图内容在场」，不是完整缩略；contain
  * 在固定盒下必然留边，楔形露出区只剩垫底色，整段语义不成立）。v10 的
  * 「前卡 contain / 露边层 cover 分轨」随自适应画幅一并收拢为同轨 cover。
- * **露边层圆角不变量（卡体本体挂 rounded-card16）**：圆角挂在后卡自身的
- * View 上，transform（微缩/下移/倾斜）作用于已带圆角的层——圆角随缩放/
- * 位移/倾斜保持（RN 的 borderRadius 属层自身绘制，先圆角后变换），不被
- * 任何容器 overflow-hidden 裁成直角缘；容器 overflow-hidden 只承担列缘
- * 出血裁切（横滑出卡/楔形越缘），几何上露出区距容器底缘 ≥ 缝 + 计数行
- * ≈ 20dp（见 MediaDeckStack 几何注），底缘圆角完整呈现，与中卡圆角
- * 同档（rounded-card 16）。
+ * **露边层圆角不变量（卡体本体挂 rounded-card16 + inline 同值双保险）**：
+ * 圆角挂在后卡自身的 View 上（className rounded-card 与 inline
+ * DECK_CARD_RADIUS 同值并存），transform（微缩/下移/倾斜）作用于已带圆角
+ * 的层——圆角随缩放/位移/倾斜保持（RN 的 borderRadius 属层自身绘制，先
+ * 圆角后变换），不被任何容器 overflow-hidden 裁成直角缘；容器
+ * overflow-hidden 只承担列缘出血裁切（横滑出卡/楔形越缘），几何上露出区
+ * 距容器底缘 ≥ 缝 + 计数行 ≈ 20dp（见 MediaDeckStack 几何注），底缘圆角
+ * 完整呈现，与中卡圆角同档（rounded-card 16）。内层 Image 同值自挂圆角
+ * （Android 双保险）：露边层处于 ±4° 旋转 + 0.96 缩放位形下，Android 对
+ * 旋转祖先内的子内容圆角裁切会失灵——内图 cover「顶穿」父圆角呈直角
+ * （第二层堆卡直角缘的病灶），内图自挂后圆角可见性不依赖父裁切（见
+ * DECK_CARD_RADIUS 注）。
  * 4dp raised 垫边（DECK_MAT）= 相纸的「纸缘」tone step：白底照片的楔缘
  * 在浅色页上也可辨（taste-skill：表面分层靠 tone step 不靠线；#13 无描边
- * 口径的延伸——垫边是容器底色透出，不是 border 线）；外层 rounded-card
- * overflow-hidden 裁切，内图零圆角（不新增半径档位）。
+ * 口径的延伸——垫边是容器底色透出，不是 border 线）；不新增半径档位
+ * （16 = rounded-card 既有档）。
  * 零交互纯视觉，无按压体：点按命中由宿主的底缘楔形带点按体承担（视觉面
  * 与命中面分离——双按压体叠命中区只会互相抢）；图片未就绪时保持 raised
  * 占位底（楔形带放不下失败文案，加载态即垫边色）。
@@ -713,12 +747,17 @@ function DeckBackCard({
     return (
         <View
             className="overflow-hidden rounded-card bg-ink-raised dark:bg-inkd-raised"
-            style={{ width, height, padding: DECK_MAT }}
+            style={{ width, height, padding: DECK_MAT, borderRadius: DECK_CARD_RADIUS }}
         >
             {status === 'ready' && uri ? (
                 <Image
                     source={{ uri }}
-                    style={{ width: width - DECK_MAT * 2, height: height - DECK_MAT * 2 }}
+                    style={{
+                        width: width - DECK_MAT * 2,
+                        height: height - DECK_MAT * 2,
+                        // 内层同值圆角双保险（Android 旋转位形下不依赖父裁切）
+                        borderRadius: DECK_CARD_RADIUS,
+                    }}
                     resizeMode="cover"
                 />
             ) : null}
@@ -810,18 +849,29 @@ function DeckVideoFrontCard({
                 mat 描边 + raised 占位底（见 DeckFrontCard 注描边语义段） */}
             <View
                 className="overflow-hidden rounded-card border border-ink-border bg-ink-raised dark:border-inkd-border dark:bg-inkd-raised"
-                style={{ width, height }}
+                style={{ width, height, borderRadius: DECK_CARD_RADIUS }}
             >
                 {ready ? (
                     <>
                         {/* 封面帧：paused 首帧，nativeControls=false；触摸层 =
-                            core RN View 包装（pointerEvents="none"，#2b 见组件注） */}
-                        <View className="flex-1" pointerEvents="none">
+                            core RN View 包装（pointerEvents="none"，#2b 见组件注）；
+                            包装层再兜 overflow-hidden + 同值圆角（VideoView 是
+                            平台视图，Android 对其外溢内容的裁切最不稳——见
+                            DECK_CARD_RADIUS 注），VideoView 本体同值自挂 */}
+                        <View
+                            className="flex-1"
+                            pointerEvents="none"
+                            style={{ overflow: 'hidden', borderRadius: DECK_CARD_RADIUS }}
+                        >
                             <VideoView
                                 player={player}
                                 nativeControls={false}
                                 contentFit="cover"
-                                style={{ flex: 1, backgroundColor: palette.raised }}
+                                style={{
+                                    flex: 1,
+                                    backgroundColor: palette.raised,
+                                    borderRadius: DECK_CARD_RADIUS,
+                                }}
                                 allowsPictureInPicture={false}
                             />
                         </View>
@@ -861,10 +911,12 @@ function DeckVideoFrontCard({
  * 对位细节：占位钮与前卡真实封面态的钮**同位同尺寸**——收口换张时占位卡
  * 归中 → 前卡重挂（新 player 首帧就绪前同为 raised 底），钮像素恒位，
  * 「揭开 → 实体化」读感连续，无钮位跳变。
- * 圆角不变量与 DeckBackCard 同款（露边层铁律）：rounded-card16 挂卡体本体，
- * transform 后依然保持，不被容器裁成直角；mat 垫边同 DECK_MAT（视频占位
- * 面与垫边同 tone——垫边承担「纸缘」语义于图堆，视频堆楔形以形状语法
- * （倾斜 + 圆角）分层，tone 差由 raised vs 页底承担）。
+ * 圆角不变量与 DeckBackCard 同款（露边层铁律）：rounded-card16 挂卡体本体
+ * （className + inline DECK_CARD_RADIUS 同值双保险），transform 后依然保持，
+ * 不被容器裁成直角；内层占位 View 同值圆角 + overflow-hidden（Android
+ * 双保险与图堆同口径，见 DECK_CARD_RADIUS 注）；mat 垫边同 DECK_MAT（视频
+ * 占位面与垫边同 tone——垫边承担「纸缘」语义于图堆，视频堆楔形以形状
+ * 语法（倾斜 + 圆角）分层，tone 差由 raised vs 页底承担）。
  * 零交互、零媒体状态订阅（不挂 useFileUrlState——露边层连 url 状态都不背，
  * 楔形带放不下失败文案，媒体缺失态由前卡在归中后呈现）。
  */
@@ -872,9 +924,14 @@ function DeckVideoBackCard({ width, height }: { width: number; height: number })
     return (
         <View
             className="overflow-hidden rounded-card bg-ink-raised dark:bg-inkd-raised"
-            style={{ width, height, padding: DECK_MAT }}
+            style={{ width, height, padding: DECK_MAT, borderRadius: DECK_CARD_RADIUS }}
         >
-            <View className="flex-1 items-center justify-center">
+            {/* 内层同值圆角 + overflow-hidden 双保险（Android 与图堆同口径，
+                占位面随卡体圆角保持，见 DECK_CARD_RADIUS 注） */}
+            <View
+                className="flex-1 items-center justify-center"
+                style={{ overflow: 'hidden', borderRadius: DECK_CARD_RADIUS }}
+            >
                 <View className="h-12 w-12 items-center justify-center rounded-full bg-black/40">
                     <LucidePlay size={20} color="#FFFFFF" strokeWidth={2.2} />
                 </View>
@@ -906,8 +963,10 @@ function DeckVideoBackCard({ width, height }: { width: number; height: number })
  * 几何（组容器 relative overflow-hidden，宽 = 列宽 onLayout 量取，高 =
  * 中卡高 + 相纸楔形带 + 计数行；overflow-hidden 是横滑与楔形「部分可见」
  * 的实现基础——楔形越出容器缘的部分与滑出的出卡都被列缘裁切，不出血到
- * 画布留白；露边层圆角不靠容器：rounded-card16 挂卡体本体、随 transform
- * 保持，露出区距容器底缘 ≥ 缝 + 计数行 ≈ 20dp 不会被裁成直角）：
+ * 画布留白；露边层圆角不靠容器：rounded-card16 挂卡体本体（inline 同值
+ * 双保险）+ 内层媒体同值自挂（Android 旋转位形下不依赖父裁切，见
+ * DECK_CARD_RADIUS 注）、随 transform 保持，露出区距容器底缘 ≥ 缝 + 计数
+ * 行 ≈ 20dp 不会被裁成直角）：
  *   中卡（v11 固定画幅，用户裁决「直接固定长度宽度以及最低宽度长度，固定
  *       长度」）：宽 C = clamp(列宽 × 66%, 240 下限, 列宽 − 2×16 花瓣余量)，
  *       高 = DECK_CARD_HEIGHT 420 固定（三槽同固定 frame，居中 frame left =
