@@ -4,7 +4,6 @@ import { useAudioRecorder, useAudioRecorderState, RecordingPresets } from 'expo-
 import { usePathname } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { create } from 'zustand';
-import { imagePicker } from '@/core/image-picker';
 import { useArchiveStore, aggregateSaveProgress } from './store';
 import { usePalette } from './ui/theme';
 import type { JournalMediaKind } from './db';
@@ -471,7 +470,7 @@ async function persistMediaToJournal(input: {
         .getState()
         .attachJournalMedia(input.ownerJournalId, input.mediaKind, input.uri, input.width, input.height, {
             // 录像/录音产物 = cache 临时件 → move 直迁（原件移走零残留）；
-            // 拍照/相册兜底产物为 image，不走 move 分支
+            // 拍照产物为 image，不走 move 分支（相册兜底通道已删，纯化轮）
             taskId: input.taskId,
             moveSource: true,
             onProgress: input.onProgress,
@@ -533,7 +532,7 @@ async function salvageLateProduct(input: {
 /* ------------------------------------------------------------------ */
 
 /**
- * 停止/拍照/相册兜底产物的落库一律后台化（用户口径：关窗即返回，保存自动
+ * 停止/拍照产物的落库一律后台化（用户口径：关窗即返回，保存自动
  * 完成）：任务注册进本进程内注册表（Map，任务收敛自摘除——与编辑页
  * pendingUploadsRef 同构。不复用其实例：那是屏组件内部的 useRef，会话层是
  * 跨页面根层级宿主，无法触达屏内注册表，取舍见报告）。「完成收笔」经
@@ -1001,53 +1000,10 @@ function handleVideoRecordFailed(): void {
 }
 
 /**
- * 相册导入兜底（相机权限拒绝态的「从相册导入」）：先收场相机会话（无产物），
- * 再在根层级拉起相册选取，产物仍按会话归属（ownerJournalId）DB 级落库——
- * 归属铁律不因兜底通道改变（绝不落当前页面的笔记）。
+ * （相册导入兜底已删，2026-11-09 纯化轮）：用户口径「相机内只有纯拍照/视频」
+ * ——权限拒绝态出口收敛为重试/系统设置，相册取材只走 + 菜单既有
+ * library-image 行（屏层自有上传链，不经过相机），本模块不再持有兜底编排。
  */
-let libraryFallbackInFlight = false;
-
-export async function requestCaptureLibraryFallback(): Promise<void> {
-    const ownerJournalId = useRecordingSessionStore.getState().ownerJournalId;
-    if (!ownerJournalId || libraryFallbackInFlight) return;
-    libraryFallbackInFlight = true;
-    try {
-        await cancelCaptureSession();
-        const permission = await imagePicker.getMediaLibraryPermissionAsync();
-        if (!permission.granted) {
-            const requested = await imagePicker.requestMediaLibraryPermissionAsync();
-            if (!requested.granted) {
-                useArchiveStore.setState({ error: '没有相册权限，去系统设置里开一下。' });
-                return;
-            }
-        }
-        const result = await imagePicker.launchImageLibraryAsync({
-            mediaTypes: ['images'],
-            quality: 1,
-            exif: false,
-        });
-        if (result.canceled || result.assets.length === 0) return;
-        const asset = result.assets[0];
-        // 相册兜底产物仍归 ownerJournalId（归属铁律不因兜底通道改变）；落库
-        // 后台化同停止口径：注册任务即返回，横幅在任务收敛时给出（会话已
-        // 收场，token 传 null——任务不触碰会话状态）
-        void persistCaptureProduct(
-            {
-                ownerJournalId,
-                sessionKind: 'video',
-                mediaKind: 'image',
-                uri: asset.uri,
-                width: asset.width ?? null,
-                height: asset.height ?? null,
-            },
-            null,
-        );
-    } catch (caught) {
-        useArchiveStore.setState({ error: `相册导入失败：${toMessage(caught)}` });
-    } finally {
-        libraryFallbackInFlight = false;
-    }
-}
 
 /* ------------------------------------------------------------------ */
 /* 录音控制器（原屏层 AudioRecordingSession 上收；hook 实例挂根层级）     */
@@ -1275,10 +1231,8 @@ export function RecordingSessionHost() {
                     onProduct={(capture) => handleCameraProduct(capture, startedAt)}
                     onRecordFailed={handleVideoRecordFailed}
                     onStopRequest={() => void stopCaptureSession()}
-                    onCancelRequest={() => void cancelCaptureSession()}
                     onClosed={clearCaptureSession}
                     onMinimize={minimizeCaptureOverlay}
-                    onLibraryFallback={() => void requestCaptureLibraryFallback()}
                 />
             ) : null}
             {/* 收起态承接面（phase recording 才出现——prepare 窗口不闪空 chip）：
