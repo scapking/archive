@@ -116,9 +116,17 @@ function ownSegments(route: RouteLike): string[] | null {
                 own.push(item);
             }
         } else if (part.startsWith('[') && part.endsWith(']')) {
-            // 动态段 params 缺失 → 该路由跳过 = 无效路径（不可重建）
+            // 动态段 params 缺失 → 该路由跳过 = 无效路径（不可重建）；
+            // params 值含字面 '['/']'（崩溃期脏状态产物）同样判无效——恢复到
+            // 这类「id 是垃圾」的路径会命中死路页而非 404，无法路由级自愈。
             const value = params[part.slice(1, -1)];
-            if (typeof value === 'string' && value !== '') own.push(value);
+            if (
+                typeof value === 'string' &&
+                value !== '' &&
+                !value.includes('[') &&
+                !value.includes(']')
+            )
+                own.push(value);
             else if (typeof value === 'number' && Number.isFinite(value)) own.push(String(value));
             else return null;
         } else {
@@ -187,9 +195,15 @@ export function isRestorablePath(path: unknown): path is string {
     if (typeof path !== 'string' || !path.startsWith('/') || path.length === 0) return false;
     if (path === '/viewer' || path.startsWith('/viewer/')) return false;
     if (path === '/') return true;
-    // 去掉根 '/' 后逐段校验：空段 / 首尾含空白段 / '+' 段一律拒绝
+    // 去掉根 '/' 后逐段校验：空段 / 首尾含空白段 / '+' 段 / 含字面 '[' ']'
+    // （崩溃期脏状态产物的「垃圾 id」路径，恢复它只会命中死路页）一律拒绝
     return !path.slice(1).split('/').some(
-        (segment) => segment === '' || segment.trim() !== segment || segment.startsWith('+'),
+        (segment) =>
+            segment === '' ||
+            segment.trim() !== segment ||
+            segment.startsWith('+') ||
+            segment.includes('[') ||
+            segment.includes(']'),
     );
 }
 

@@ -251,7 +251,7 @@ export default function RootLayout() {
         // ready 检测用轮询 getCurrentRoute：EventMapCore 没有 ready 事件可订阅
         // （焦点外只有 focus/blur/state/removePrevented），而 useRootNavigationState
         // 会让 RootLayout 随每次导航状态变化重渲——仓库此前已为此特意选了事件
-        // 订阅路径，这里沿用零重渲方案。10ms × 200 次 ≈ 2s 上限：超时放弃恢复
+        // 订阅路径，这里沿用零重渲方案。20ms × 400 次 ≈ 8s 上限（覆盖自愈双翻的重建窗口，慢设备不误超时）：超时放弃恢复
         // （只少一次增强，保存闸门照常放行）。
         //
         // boot 门控顺延（Android）：恢复必须等 bootReady=true（自愈链收口）后
@@ -300,6 +300,16 @@ export default function RootLayout() {
                 // typedRoutes 的路径联合类型是构建期生成，运行期动态路径无法静态收窄；
                 // saved 已过 isRestorablePath 运行时守卫，此处仅做类型放行。
                 router.replace(saved as Parameters<typeof router.replace>[0]);
+                // 404 自愈回退：若 saved 仍命中 +not-found（历史脏缓存等静态守卫
+                // 意外的残余），500ms 后核实一次并回落首页——死路不困人。正常命中
+                // 目标屏时该核实为 no-op。
+                setTimeout(() => {
+                    if (cancelled) return;
+                    const path = pathFromNavigationState(navigationRef.current?.getRootState());
+                    if (path === '/+not-found' || path === null) {
+                        router.replace('/');
+                    }
+                }, 500);
                 // 恢复 replace 完成 = 周期收口（持久标志置位 + 保存门同步开启）：
                 // 此后 replace 触发的 state 事件把恢复目标正常写回缓存，播种路径
                 // 已被收口前的门控丢弃，不会被其覆盖。
@@ -319,13 +329,13 @@ export default function RootLayout() {
                 void tryRestore();
                 return;
             }
-            if (++polls >= 200) {
+            if (++polls >= 400) {
                 lastRouteRestoreDone = true;
                 // 轮询超时放弃恢复：周期按超时口径收口（保存门放行后续真实导航）
                 markLastRouteBootCompleted();
                 return;
             }
-            pollTimer = setTimeout(tick, 10);
+            pollTimer = setTimeout(tick, 20);
         };
         pollTimer = setTimeout(tick, 0);
         return () => {
