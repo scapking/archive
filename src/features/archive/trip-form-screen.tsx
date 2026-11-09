@@ -314,10 +314,15 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
 
     const removeVideo = async () => {
         if (!trip) return;
-        setVideoKey(null); // 乐观摘预览（成功路径即时反馈，行为不变）
+        // 乐观摘预览（成功路径即时反馈，行为不变）；失败回滚必须用**删除前的本地
+        // 值**而非 trip.video_key——trip 是路由壳挂载时的一次性快照，本会话内刚
+        // attach 的视频只存在于 videoKey state（trip.video_key 仍为 null），修前
+        // 回滚会把刚选的视频抹成 null（预览没了、库里还在的半更新态）
+        const prevKey = videoKey;
+        setVideoKey(null);
         const ok = await updateTrip(trip.id, { videoKey: null });
         // 失败回滚预览：防「界面删了、数据还在」的半更新态（失败文案经 store.error 上浮）
-        if (!ok) setVideoKey(trip.video_key ?? null);
+        if (!ok) setVideoKey(prevKey);
     };
 
     const remove = async () => {

@@ -6,7 +6,7 @@ import { usePalette } from './theme';
 import { useFileUrlState } from './use-file-url';
 
 /**
- * ProfileAvatar：个人头像的唯一呈现组件（Me 页顶部消费）。
+ * ProfileAvatar：个人头像的唯一呈现组件（Me 页标题行消费）。
  *
  * 数据契约：`fileKey` 是 file-storage key（'profile/avatar.jpg'，config 'ui.avatar'
  * 持久化）；null / '' = 未设置头像。呈现三态（useFileUrlState 口径，与媒体块一致）：
@@ -19,11 +19,12 @@ import { useFileUrlState } from './use-file-url';
  * 视觉口径：rounded-full + 1px ink-border（圆底在 base 画布上的边缘定义，
  * 双主题 token 成对）+ raised 底；无边框规范 #13 管卡片级描边，圆形头像的
  * 1px 轮廓属元素级边界（同 TripBadge 的 border），不在清除之列。
- * 尺寸由调用方定（Me 页 68dp，64-72 档），点击行为（选图上传）不由本组件负责。
+ * 尺寸由调用方定（Me 页 44dp，40-48 档——小头像融入标题行，不做大头像块），
+ * 点击行为（选图上传）不由本组件负责。
  */
 export function ProfileAvatar({
     fileKey,
-    size = 68,
+    size = 44,
 }: {
     /** file-storage key；null = 未设置头像（直接渲染占位，不走解析）。 */
     fileKey: string | null;

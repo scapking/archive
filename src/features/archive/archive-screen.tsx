@@ -12,6 +12,10 @@ import {
     LucidePlay,
 } from '@/core/icons';
 import { useArchiveRevision, useArchiveStore } from './store';
+// 数据版本中立层（屏层消费同 me-screen 直连 notify 的先例反向）：deck 数据的
+// 刷新信号除 store revision 外还有屏层直连 db 广播的中立计数（计划增/勾/删），
+// 两者任一前进都要求 deck 重载（见下方 revision 驱动 loadAll 注）。
+import { useDataRevision } from './data-revision';
 import { getJournalByDate, listTripMediaByTrip } from './db';
 import {
     formatDateGroupLabel,
@@ -97,6 +101,7 @@ export function ArchiveScreen() {
     const metrics = useArchiveStore((s) => s.metrics);
     const loadAll = useArchiveStore((s) => s.loadAll);
     const revision = useArchiveRevision();
+    const dataRevision = useDataRevision();
     const chooserTint = usePalette().secondary;
 
     const [todayJournal, setTodayJournal] = useState<JournalRow | null>(null);
@@ -145,6 +150,25 @@ export function ArchiveScreen() {
     // 刚结束）；trips[0] 只按 start_date DESC，存在进行中行程时会显示错对象。
     // useMemo：trips 引用不变不重算（#15 deck 数据组装防重渲）
     const deckTrip = useMemo(() => pickDeckTrip(trips), [trips]);
+
+    // 数据版本驱动重载（2026-11-11 反馈四「调整行程天数后首页卡片仍是旧的」根因修复）：
+    // deck 卡的行程数据通道 = store.trips（区间/天数/journalDays/plansTotal 全在其中），
+    // 它只在 loadAll 内重建，而 loadAll 仅被行程 CRUD（create/update/deleteTrip）与
+    // deleteJournal 调用——其余 bump 数据版本的 mutation（saveJournalBlocks/reopenJournal、
+    // 行程详情屏直连 db 的计划增/勾/删等）之后 store.trips 滞留旧值，首页卡片的
+    // 「已写 X/Y 天」「计划完成 X/Y」随之不同步。store 的 revision 本就是它自述的
+    // 「行程详情等自持状态的界面据此重载」信号（store.ts mutation 约定），archive
+    // 首页作为 deck 数据的自持消费面同样按它重载：**任一版本号（store revision /
+    // data-revision 中立计数）前进即重跑 loadAll**，保证 trip 更新后卡片的区间/天数/
+    // 封面全部同步最新（封面复验走下方既有 listTripMediaByTrip + 同值短路，不回退
+    // 不闪烁；todayJournal effect 原样复用）。成本注记：行程 CRUD 的 mutation 自带
+    // 一次 loadAll，同一事件会幂等双载（SQLite ms 级）——换取「任何 mutation 后
+    // deck 恒新」的单一保证，不在 store 层加刷新白名单（store.ts 不在本轮改动
+    // 权限内）。revision/dataRevision = 0 是启动基线，首轮加载仍由上方 !ready
+    // effect 独占，避免挂载即双载。
+    useEffect(() => {
+        if (revision > 0 || dataRevision > 0) void loadAll();
+    }, [revision, dataRevision, loadAll]);
 
     // 行程封面查询：行程 id 或数据版本变化时重查（#15）；revision 参与依赖是
     // 因为 attachTripMedia 等 mutation 只 bump revision 不 reload trips，首图

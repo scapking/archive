@@ -26,6 +26,10 @@ import { tintIcon } from './ui/editor-icons';
 // 域内深取；ui/index.ts 出口扩充时收口（同 editor-icons / close-button 先例）。
 import { FieldInput } from './ui/field-input';
 import * as db from './db';
+// 屏层直连 db 的数据变化广播（同 me-screen 头像先例）：计划增/勾/删走屏层直连
+// db 的轻量行级取径，落库后经中立层 notifyDataRevision 广播（use-file-url 等
+// 订阅者复验失效；store mutation 则由 store 内部转发，两条通道同源不漂移）。
+import { notifyDataRevision } from './data-revision';
 import { useArchiveRevision, useArchiveStore } from './store';
 import {
     dayDiff,
@@ -90,6 +94,12 @@ import { DeadEndView } from './journal-edit-screen';
  *   失焦时非空即提交、空则收起，防「点确认钮先 blur」竞态丢字；提交成功/
  *   失焦/Android 返回均收起）。受控于屏级 planAddingDate（FlatList extraData
  *   驱动重渲）；背景卡进输入模式时临时降级渲染文字卡形态；
+ * - **计划长按删除（2026-11-11 反馈三）**：计划行（未锁定）长按 → 删除操作卡
+ *   （scrim + 居中卡，同范式；卡内预览计划原文）→ 直接删（db.softDeleteDayPlan
+ *   软删，屏层直连 db 不经 store——轻量行级取径，同本屏 insertDayPlan 的既有
+ *   变体）+ 屏级横幅可见反馈（4s 自动消退）+ notifyDataRevision 中立层广播；
+ *   与勾选点按并存（Pressability 长按触发后不补发 onPress）；计划增/勾/删均
+ *   广播数据版本，首页 deck 的计划完成度统计不再滞留旧值；
  * - 锁定（#7）：isTripLocked（已结束）→ 卡片只读（勾选禁用、无添加计划、无
  *   长按操作卡、点卡只读浏览），保持既有锁定轻提示；
  *   store.setTripDayBackground / clearTripDayBackground 均兜底拒绝。
@@ -107,6 +117,30 @@ interface DayCardData {
     mediaCount: number;
     /** 日卡背景媒体行（无指针 / 指针悬挂 → null = 文字卡）。 */
     background: db.TripMediaRow | null;
+}
+
+/**
+ * db 行逐字段浅比较（DayCardData 恒等复用的比较基元）：reload 每次查询都产出
+ * 全新行对象（引用必不同），DayCard（memo）要跳过「数据没变的日」就必须按值
+ * 比较。行结构全部为原始类型列（schema 约定），键集长度 + 逐键 === 即全等；
+ * null 与 null 相等（无日记/无背景），仅一侧 null 不等（内容出现/消失）。
+ */
+function sameDbRow<T extends object>(a: T | null, b: T | null): boolean {
+    if (a === b) return true;
+    if (a == null || b == null) return false;
+    const aKeys = Object.keys(a);
+    if (aKeys.length !== Object.keys(b).length) return false;
+    const aRecord = a as Record<string, unknown>;
+    const bRecord = b as Record<string, unknown>;
+    return aKeys.every((key) => aRecord[key] === bRecord[key]);
+}
+
+/** 计划行列表全等（长度恒等 + 逐行 sameDbRow）：勾选/新增/删除只动目标日，
+ *  其余日的 plans 内容不变 → 沿用旧引用，整列重渲就此收口到单卡。 */
+function samePlanList(a: db.DayPlanRow[], b: db.DayPlanRow[]): boolean {
+    if (a === b) return true;
+    if (a.length !== b.length) return false;
+    return a.every((plan, index) => sameDbRow(plan, b[index]));
 }
 
 /** 日卡操作词表（长按操作卡；仅未锁定可达）。 */
@@ -196,6 +230,87 @@ function DayActionCard({
 }
 
 /**
+ * 计划操作卡（长按计划行 → scrim + 居中卡，范式同 DayActionCard / 首页 chooser，
+ * 禁 RN Modal 条件渲染）：单动作「删除计划」（negative）。
+ * - 卡头直接以「删除这条计划？」开题 + 计划原文预览：长按目标行在视觉上没有
+ *   选中态，删的是什么必须说在卡里（预览 = surface 井 + 计划行同字号 14px）；
+ * - 无二次确认步：计划是低频轻量条目、随时可重新添加，确认步的成本高于误删
+ *   成本（软删落库 + 屏级横幅可见反馈，见 runDeletePlan 取舍注）；
+ * - 危险语义全部走 negative 色（icon/题文），行结构与其余操作卡行同语言
+ *   （icon 容器 40×40 raised 底 + 题 + hint），颜色只上语义不上装饰。
+ */
+function PlanActionCard({
+    content,
+    onClose,
+    onDelete,
+}: {
+    content: string;
+    onClose: () => void;
+    onDelete: () => void;
+}) {
+    const palette = usePalette();
+
+    // 打开即收键盘（长按可能发生在内联输入态旁）；Android 返回键关闭
+    //（替代 Modal onRequestClose 语义，同 DayActionCard）
+    useEffect(() => {
+        Keyboard.dismiss();
+    }, []);
+    useEffect(() => {
+        const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+            onClose();
+            return true;
+        });
+        return () => sub.remove();
+    }, [onClose]);
+
+    return (
+        <View className="absolute inset-0 z-50">
+            <Pressable
+                className="flex-1 items-center justify-center bg-ink-scrim px-10 dark:bg-inkd-scrim"
+                onPress={onClose}
+                accessibilityLabel="关闭计划操作"
+            >
+                {/* 卡体拦截冒泡：点卡不关（同 DayActionCard / chooser 卡体结构） */}
+                <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-5 dark:bg-inkd-base">
+                    <View className="flex-row items-center justify-between">
+                        <Text className="text-[15px] font-semibold text-ink-text dark:text-inkd-text">
+                            删除这条计划？
+                        </Text>
+                        {/* 44 视觉盒：左邻题文字非按压体，右缘贴卡内边距，无重叠核算项 */}
+                        <CloseButton onPress={onClose} />
+                    </View>
+                    <View className="mt-3 rounded-control bg-ink-surface p-3 dark:bg-inkd-surface">
+                        <Text className="text-[14px] text-ink-text dark:text-inkd-text">{content}</Text>
+                    </View>
+                    {/* 删除行（negative）：行高 ~64 ≥44，不传 hitSlop（0），卡内无相邻
+                        命中元素（上下为留白），命中区 == 视觉盒 */}
+                    <View className="mt-4">
+                        <BouncyPressable onPress={onDelete} scaleTo={0.97}>
+                            <View className="flex-row items-center gap-3 rounded-control bg-ink-surface p-3 dark:bg-inkd-surface">
+                                <View
+                                    pointerEvents="none"
+                                    className="h-10 w-10 items-center justify-center rounded-control bg-ink-raised dark:bg-inkd-raised"
+                                >
+                                    <LucideTrash size={20} strokeWidth={1.9} color={palette.negative} />
+                                </View>
+                                <View className="flex-1">
+                                    <Text className="text-[15px] font-medium text-ink-negative dark:text-inkd-negative">
+                                        删除计划
+                                    </Text>
+                                    <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">
+                                        删除后可在当天重新添加
+                                    </Text>
+                                </View>
+                            </View>
+                        </BouncyPressable>
+                    </View>
+                </Pressable>
+            </Pressable>
+        </View>
+    );
+}
+
+/**
  * 逐日卡片（列表主体，memo）：文字卡（日期 + 目标 + 摘要）/ 背景卡（纯图）双形态。
  * 点卡 → 该日笔记页（未锁定 write/[date]，锁定走 /journal/[id] 只读）；
  * 长按（web 桌面双击）→ 日卡操作卡（onRequestAction，仅未锁定）。
@@ -209,6 +324,7 @@ const DayCard = memo(function DayCard({
     planAdding,
     onChanged,
     onRequestAction,
+    onRequestPlanDelete,
     onPlanAddingDone,
 }: {
     tripId: string;
@@ -218,6 +334,9 @@ const DayCard = memo(function DayCard({
     planAdding: boolean;
     onChanged(): void;
     onRequestAction(date: string): void;
+    /** 长按计划行 → 删除操作卡（屏级 PlanActionCard；仅未锁定可达，锁定态
+     *  计划行是非按压 View，入口天然不存在）。 */
+    onRequestPlanDelete(plan: db.DayPlanRow): void;
     /** 退出内联输入模式（提交成功 / 失焦收起 / Android 返回取消，统一收口）。 */
     onPlanAddingDone(): void;
 }) {
@@ -298,6 +417,9 @@ const DayCard = memo(function DayCard({
             Keyboard.dismiss();
             onPlanAddingDone();
             onChanged();
+            // 中立层广播（屏层直连 db 取径的配套）：archive 首页 deck 的计划完成度
+            // 统计据此重载（首页卡不再滞留旧计划数），use-file-url 等订阅者复验
+            notifyDataRevision();
         } catch (caught) {
             // 失败可见：crypto/db 抛错（如 web 非安全上下文）不能静默吞掉，draft 保留不丢输入
             setActionError(`计划添加失败：${caught instanceof Error ? caught.message : String(caught)}`);
@@ -311,6 +433,8 @@ const DayCard = memo(function DayCard({
             await db.setDayPlanDone(plan.id, plan.done === 0);
             setActionError(null);
             onChanged();
+            // 中立层广播（同 submitPlan）：计划完成度变化上浮到首页 deck 统计
+            notifyDataRevision();
         } catch (caught) {
             // 勾选态由父级 reload 数据派生（非乐观更新），失败无需回滚本地状态，但要可见报错
             setActionError(`计划状态更新失败：${caught instanceof Error ? caught.message : String(caught)}`);
@@ -413,6 +537,11 @@ const DayCard = memo(function DayCard({
                             <Pressable
                                 key={plan.id}
                                 onPress={() => void togglePlan(plan)}
+                                // 长按 → 删除操作卡（PlanActionCard，屏级单件）：与勾选
+                                // 点按并存于同一 Pressable——Pressability 语义长按触发后
+                                // 本次松手不补发 onPress，勾选与删除天然二选一；行本体
+                                // min-h-11（44）即命中盒，长按目标区与勾选区一致
+                                onLongPress={() => onRequestPlanDelete(plan)}
                                 // 按压反馈补齐（一致性收敛轮）：勾选态非乐观更新（落库后
                                 // reload 才变），行本体给 active 底色即时反馈，语言同
                                 // Me/搜索行卡（active:bg-ink-raised）
@@ -549,6 +678,10 @@ export function TripDetailScreen() {
     const [trip, setTrip] = useState<ReturnType<typeof decorateTrip> | null>(null);
     const [dayCards, setDayCards] = useState<DayCardData[]>([]);
     const [locked, setLocked] = useState(false);
+    // dayCards 镜像（reload 内最新值）：①恒等复用比较的基准；②openDayAction
+    // 免依赖读取——回调身份不随 dayCards 变化（修前 useCallback 依赖 dayCards，
+    // 每次重载都换新引用，DayCard（memo）被击穿、勾选/删除一 plans 行整列重渲）
+    const dayCardsRef = useRef<DayCardData[]>([]);
 
     // 背景设置流守卫（相册 picker 异步窗口防重入；无常驻指示器——picker 自带 UI）
     const [busy, setBusy] = useState(false);
@@ -557,6 +690,19 @@ export function TripDetailScreen() {
     // 内联添加计划流：操作卡选「添加计划」→ 该日期卡进入输入模式
     //（受控 date → DayCard planAdding prop；FlatList extraData 驱动重渲）
     const [planAddingDate, setPlanAddingDate] = useState<string | null>(null);
+    // 计划删除流：长按计划行 → 操作卡（id + 计划原文，卡内预览删的是什么）
+    const [planAction, setPlanAction] = useState<{ id: string; content: string } | null>(null);
+    // 删除可见反馈横幅（软删+可见反馈口径）：ListHeader 呈现，at 供自动消退
+    // effect 精确复位（连删两条同文计划时计时器也能正确重启）
+    const [deleteNotice, setDeleteNotice] = useState<{ text: string; at: number } | null>(null);
+
+    // 删除横幅自动消退（4s）：删除是即时完成态，横幅是「发生了什么」的一次性
+    // 确认而非常驻状态（DeadEndView 6s 自动返回同类的轻量定时收口）
+    useEffect(() => {
+        if (!deleteNotice) return;
+        const timer = setTimeout(() => setDeleteNotice(null), 4000);
+        return () => clearTimeout(timer);
+    }, [deleteNotice]);
 
     const reload = useCallback(async () => {
         if (typeof id !== 'string') {
@@ -617,16 +763,31 @@ export function TripDetailScreen() {
                 days = [...dateSet].sort();
             }
             const start = row.start_date;
-            setDayCards(
-                days.map((localDate) => ({
-                    localDate,
-                    dayNo: Math.max(1, dayDiff(start, localDate) + 1),
-                    plans: plansByDate.get(localDate) ?? [],
-                    journal: journalsByDate.get(localDate)?.[0] ?? null,
-                    mediaCount: mediaCountByDate.get(localDate) ?? 0,
-                    background: backgrounds.get(localDate) ?? null,
-                })),
-            );
+            // DayCardData 恒等复用（#15：计划勾选/删除/添加只重渲目标日）：db 行每次
+            // 查询都是新引用，逐字段全等的日沿用旧对象引用——DayCard（memo）据此
+            // 跳过未变日的重渲；行程日期变化经 dayNo/骨架 keys 差异自然失效，不吞更新
+            const prevByDate = new Map(dayCardsRef.current.map((card) => [card.localDate, card]));
+            const nextCards: DayCardData[] = days.map((localDate) => {
+                const plans = plansByDate.get(localDate) ?? [];
+                const journal = journalsByDate.get(localDate)?.[0] ?? null;
+                const mediaCount = mediaCountByDate.get(localDate) ?? 0;
+                const background = backgrounds.get(localDate) ?? null;
+                const dayNo = Math.max(1, dayDiff(start, localDate) + 1);
+                const prev = prevByDate.get(localDate);
+                if (
+                    prev &&
+                    prev.dayNo === dayNo &&
+                    prev.mediaCount === mediaCount &&
+                    samePlanList(prev.plans, plans) &&
+                    sameDbRow(prev.journal, journal) &&
+                    sameDbRow(prev.background, background)
+                ) {
+                    return prev;
+                }
+                return { localDate, dayNo, plans, journal, mediaCount, background };
+            });
+            dayCardsRef.current = nextCards;
+            setDayCards(nextCards);
             // 时间线摘除背景图的旧逻辑随媒体时间线退役；trip_media 行仅剩日卡
             // 背景（getTripDayBackgroundsByTrip）与 deck 封面（屏外消费）两个出口
             setLocked(isTripLocked(row, today));
@@ -646,15 +807,51 @@ export function TripDetailScreen() {
 
     // ── 日卡背景流（长按操作卡 → 相册选图 / 直接清除）──
 
-    /** 长按日卡 → 操作卡；hasBackground 取打开时刻的卡片数据（决定清除行显隐）。 */
-    const openDayAction = useCallback(
-        (date: string) => {
-            setDayAction({
-                date,
-                hasBackground: dayCards.some((card) => card.localDate === date && card.background != null),
-            });
+    /**
+     * 长按日卡 → 操作卡；hasBackground 取打开时刻的卡片数据（决定清除行显隐）。
+     * 数据经 dayCardsRef 镜像读取（行为与修前一致：恒为打开时刻的最新卡数据），
+     * 回调身份恒定——openDayAction 传给每张 DayCard，若随 dayCards 重载换引用，
+     * DayCard（memo）会被击穿（计划勾选整列重渲的根因之一，已修）。
+     */
+    const openDayAction = useCallback((date: string) => {
+        setDayAction({
+            date,
+            hasBackground: dayCardsRef.current.some(
+                (card) => card.localDate === date && card.background != null,
+            ),
+        });
+    }, []);
+
+    /** 长按计划行 → 删除操作卡（屏级单件；回调恒定，同 openDayAction 稳定性口径）。 */
+    const requestPlanDelete = useCallback((plan: db.DayPlanRow) => {
+        setPlanAction({ id: plan.id, content: plan.content });
+    }, []);
+
+    /**
+     * 删除计划：**直接删 + 横幅，无二次确认步**（取舍：计划是低频轻量条目、
+     * 随时可在当天重新添加，确认步的打断成本高于误删成本；软删落库 + 屏级
+     * 横幅可见反馈，不采用「可撤销」——撤销需引入行复活通道，成本不匹配）。
+     * 落库 = 屏层直连 db.softDeleteDayPlan（软删域约定，轻量行级操作不经
+     * store——同本屏 insertDayPlan / setDayPlanDone 的既有取径变体）；
+     * 刷新 = onChanged 本屏列表重载（同计划添加/勾选通道）+
+     * notifyDataRevision 中立层广播（首页 deck 统计、use-file-url 等订阅者
+     * 复验；store mutation 的广播由 store 内部转发，两条通道同源）。
+     * 失败走 store.error 通道（同背景设置/清除失败口径），行未删不弹横幅。
+     */
+    const runDeletePlan = useCallback(
+        async (planId: string, content: string) => {
+            try {
+                await db.softDeleteDayPlan(planId, Date.now());
+                setDeleteNotice({ text: `已删除计划「${content}」`, at: Date.now() });
+                void reload();
+                notifyDataRevision();
+            } catch (caught) {
+                useArchiveStore.setState({
+                    error: `计划删除失败：${caught instanceof Error ? caught.message : String(caught)}`,
+                });
+            }
         },
-        [dayCards],
+        [reload],
     );
 
     /** 设置背景：权限 → 选图 → store.setTripDayBackground（成功 revision 自动 reload）。 */
@@ -707,6 +904,26 @@ export function TripDetailScreen() {
 
     /** 退出内联添加计划（DayCard 提交成功 / 失焦收起 / Android 返回，统一收口）。 */
     const finishPlanAdding = useCallback(() => setPlanAddingDate(null), []);
+
+    // 行渲染收口（useCallback 恒定）：配合 DayCardData 恒等复用 + 全稳定回调，
+    // 计划勾选/删除/添加后 DayCard（memo）只重渲数据变化的单卡——修前 renderItem
+    // 内联新建 + openDayAction 随 dayCards 换引用，每次重载整列重渲（已修）。
+    // trip 未就绪时占位空串（仅影响类型完备性，此时列表不渲染任何行）。
+    const renderDayCard = useCallback(
+        ({ item }: { item: DayCardData }) => (
+            <DayCard
+                tripId={trip?.id ?? ''}
+                data={item}
+                locked={locked}
+                planAdding={planAddingDate === item.localDate}
+                onChanged={reload}
+                onRequestAction={openDayAction}
+                onRequestPlanDelete={requestPlanDelete}
+                onPlanAddingDone={finishPlanAdding}
+            />
+        ),
+        [trip?.id, locked, planAddingDate, reload, openDayAction, requestPlanDelete, finishPlanAdding],
+    );
 
     if (loading) return <LoadingView />;
 
@@ -832,6 +1049,14 @@ export function TripDetailScreen() {
                                     {storeError}
                                 </Text>
                             ) : null}
+                            {/* 计划删除成功横幅（软删+可见反馈口径，4s 自动消退，
+                                见 deleteNotice）：与 storeError 同槽位分行，中性
+                                secondary 色——完成态确认不是错误也不是行动邀请 */}
+                            {deleteNotice ? (
+                                <Text className="mb-2 text-[12px] text-ink-secondary dark:text-inkd-secondary">
+                                    {deleteNotice.text}
+                                </Text>
+                            ) : null}
                             {/* 逐日区头：日卡列的开场白（open 无固定分母不报天数） */}
                             <View className="mb-2.5 mt-1 flex-row items-baseline">
                                 <Text className="text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
@@ -848,17 +1073,7 @@ export function TripDetailScreen() {
                             </View>
                         </View>
                     }
-                    renderItem={({ item }) => (
-                        <DayCard
-                            tripId={trip.id}
-                            data={item}
-                            locked={locked}
-                            planAdding={planAddingDate === item.localDate}
-                            onChanged={reload}
-                            onRequestAction={openDayAction}
-                            onPlanAddingDone={finishPlanAdding}
-                        />
-                    )}
+                    renderItem={renderDayCard}
                     contentContainerStyle={{
                         paddingHorizontal: 24,
                         paddingBottom: insets.bottom + 32,
@@ -892,6 +1107,19 @@ export function TripDetailScreen() {
                         }
                         setDayAction(null);
                         router.push(`/trip/${trip.id}/write/${dayAction.date}`);
+                    }}
+                />
+            ) : null}
+            {/* 覆盖层（条件渲染，禁 Modal）：计划删除操作卡（长按计划行入口）——
+                与日卡操作卡互斥可达（scrim 盖屏时另一入口不可触） */}
+            {planAction ? (
+                <PlanActionCard
+                    content={planAction.content}
+                    onClose={() => setPlanAction(null)}
+                    onDelete={() => {
+                        const { id, content } = planAction;
+                        setPlanAction(null);
+                        void runDeletePlan(id, content);
                     }}
                 />
             ) : null}

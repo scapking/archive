@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactElement } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -27,14 +27,25 @@ import { LineChart, LoadingView, StatusChip, useEffectiveTheme, usePalette, useT
     key 由存储协议限定段内字符（profile/avatar.jpg 合法），改 ext 会留下旧文件孤儿。 */
 const AVATAR_FILE_KEY = 'profile/avatar.jpg';
 
-/** 头像落盘边长（正方形 px）：68dp@3x ≈ 204 已够显示，512 留缩放余量且 JPEG 后体积可控。 */
+/** 头像落盘边长（正方形 px）：44dp@3x ≈ 132 已够标题行显示，512 留放大查看与
+    未来展示尺寸上调的余量，JPEG 后体积可控。 */
 const AVATAR_PIXELS = 512;
 
 /**
- * Me：头像与身份（UID）、曲线与指标、搜索入口、行程完成度（含事件入口）、主题偏好。
+ * Me：身份行（44dp 小头像融入原 Me 标题行 + UID 弱化角注）、指标合卡（KPI 2×2 +
+ * 30 天曲线）、我的内容组（搜索 / 事件 / 行程列表）、主题偏好。
  * 本屏唯一问题："我坚持得怎么样，东西在哪？"
- * KPI 手机端 2 列网格（app-screens §12：四列挤压是禁手），数值 tabular-nums。
- * 内联检索区已独立成 /search 页（DEV.md #5），此处只留一张入口卡。
+ *
+ * 信息收敛口径（区块审计后的取舍，功能一项不丢）：
+ * - 指标：4 格 KPI + 曲线卡（原 5 个视觉块）并作一张 surface 卡，2 列网格不变
+ *   （app-screens §12：四列挤压是禁手），列/行 hairline 走 ink-border（元素级
+ *   边界，卡片级描边仍按 #13 清除），数值 tabular-nums；
+ * - 内容：搜索卡 + 事件卡 + 独立「行程」区（原 3 块）归并为一组「我的内容」行组
+ *   卡，行解剖统一（入口行 48dp 单行，行程行保留两行信息密度），副题行删除
+ *   （题名自释，a11y label 保留完整描述）；
+ * - 层级：身份行 → 指标合卡 → 我的内容组 → 外观；区块间距统一 24（mt-6）；
+ * - 关于/版本：审计确认本页无此区块，不新增（无需折叠）。
+ * 内联检索区已独立成 /search 页（DEV.md #5），此处只留组内一行入口。
  */
 export function MeScreen() {
     const router = useRouter();
@@ -158,10 +169,10 @@ export function MeScreen() {
         <View className="flex-1 bg-ink-base dark:bg-inkd-base">
             <View style={{ paddingTop: insets.top }} className="flex-1">
                 <View className="px-6 pb-1 pt-2">
-                    {/* 身份区：头像（点击换）+ 标题/连续天数 + UID */}
-                    <View className="flex-row items-center gap-4">
-                        {/* 头像 68dp 即命中盒（≥44，Pressable hitSlop 0，右邻文本非按压体）；
-                            按压反馈走 active: 体系（与 trip-form 图标格同口径） */}
+                    {/* 身份行：原 Me 标题行（题 + 连续天数）左融 44dp 小头像（点击换，
+                        相册选图 → 覆盖写 profile/avatar.jpg 交互保留）；UID 弱化为
+                        右侧短码角注（短码 + 复制，不占独立区块） */}
+                    <View className="flex-row items-center gap-3">
                         <Pressable
                             onPress={() => void pickAvatar()}
                             className="active:opacity-80"
@@ -169,40 +180,47 @@ export function MeScreen() {
                             accessibilityLabel={avatarKey ? '更换头像' : '设置头像'}
                             accessibilityState={{ busy: avatarBusy }}
                         >
-                            <ProfileAvatar fileKey={avatarKey || null} size={68} />
+                            {/* 头像 44dp 即命中盒（≥44，Pressable hitSlop 0）；右侧
+                                文本列非按压体，无命中重叠核算项。按压反馈走 active:
+                                体系（与 trip-form 图标格同口径） */}
+                            <ProfileAvatar fileKey={avatarKey || null} size={44} />
                         </Pressable>
                         <View className="min-w-0 flex-1">
-                            <Text className="text-[20px] font-semibold text-ink-text dark:text-inkd-text">Me</Text>
+                            <Text className="text-[20px] font-semibold text-ink-text dark:text-inkd-text">
+                                Me
+                            </Text>
                             <Text
                                 className="mt-1 text-[13px] text-ink-secondary dark:text-inkd-secondary"
                                 style={{ fontVariant: ['tabular-nums'] }}
                             >
                                 {metrics.streak > 0 ? `连续 ${metrics.streak} 天，别断` : '从今天开始连续记录'}
                             </Text>
-                            {uid ? (
-                                <Pressable
-                                    onPress={() => void copyUid()}
-                                    // 11px 角注行（视觉 ~14px 高）+ hitSlop 纵向 15 → 44 等效命中；
-                                    // 横向 8：上下紧邻的标题/连续天数/错误文案均非按压体，外扩无重叠核算项
-                                    hitSlop={{ top: 15, bottom: 15, left: 8, right: 8 }}
-                                    className="mt-0.5 flex-row items-center gap-1.5 self-start"
-                                    accessibilityRole="button"
-                                    accessibilityLabel="复制设备 UID"
-                                >
-                                    <Text
-                                        className="text-[11px] text-ink-muted dark:text-inkd-muted"
-                                        style={{ fontVariant: ['tabular-nums'] }}
-                                    >
-                                        {/* 展示短版前 8 位（commit-hash 惯例：显示短、复制全——
-                                            完整 UUID 才是有效标识，config 里存的是完整值） */}
-                                        UID {uid.slice(0, 8)}
-                                    </Text>
-                                    {uidCopied ? (
-                                        <LucideCheck size={12} strokeWidth={2} color={palette.accent} />
-                                    ) : null}
-                                </Pressable>
-                            ) : null}
                         </View>
+                        {uid ? (
+                            <Pressable
+                                onPress={() => void copyUid()}
+                                // 11px 角注（视觉 ~14px 高）+ hitSlop 纵向 15 → 44 等效
+                                // 命中；横向 8：左侧题/连续天数列（gap-3=12px）与下方
+                                // error 文案均非按压体，右侧是 px-6 空白——外扩无重叠
+                                // 核算项
+                                hitSlop={{ top: 15, bottom: 15, left: 8, right: 8 }}
+                                className="flex-row items-center gap-1"
+                                accessibilityRole="button"
+                                accessibilityLabel="复制设备 UID"
+                            >
+                                <Text
+                                    className="text-[11px] text-ink-muted dark:text-inkd-muted"
+                                    style={{ fontVariant: ['tabular-nums'] }}
+                                >
+                                    {/* 展示短版前 8 位（commit-hash 惯例：显示短、复制全——
+                                        完整 UUID 才是有效标识，config 里存的是完整值） */}
+                                    UID {uid.slice(0, 8)}
+                                </Text>
+                                {uidCopied ? (
+                                    <LucideCheck size={12} strokeWidth={2} color={palette.accent} />
+                                ) : null}
+                            </Pressable>
+                        ) : null}
                     </View>
                     {error ? (
                         <Text className="mt-1 text-[12px] text-ink-negative dark:text-inkd-negative">{error}</Text>
@@ -215,96 +233,120 @@ export function MeScreen() {
                     contentContainerStyle={{ paddingHorizontal: 24, paddingBottom: insets.bottom + 32 }}
                     keyboardShouldPersistTaps="handled"
                 >
-                    {/* 指标：2 列网格（4 格 → 2×2） */}
-                    <View className="mt-3 gap-2">
-                        <View className="flex-row gap-2">
+                    {/* 指标合卡：4 格 KPI + 30 天曲线并作一张 surface 卡（原 5 个视觉块
+                        → 1）。2 列网格（app-screens §12：四列挤压是禁手），列/行分隔
+                        hairline 走 ink-border（元素级边界，同 TripBadge border 口径；
+                        卡片级描边仍按 #13 清除，tone 分层靠 surface-on-base） */}
+                    <View className="mt-3 overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface">
+                        <View className="flex-row">
                             <MetricCell value={`${metrics.streak}`} unit="天" label="连续记录" />
+                            <View className="w-px bg-ink-border dark:bg-inkd-border" />
                             <MetricCell value={`${metrics.journalDays}`} unit="天" label="写过日记" />
                         </View>
-                        <View className="flex-row gap-2">
+                        <View className="h-px bg-ink-border dark:bg-inkd-border" />
+                        <View className="flex-row">
                             <MetricCell value={formatCount(metrics.totalWords)} unit="" label="累计字数" />
+                            <View className="w-px bg-ink-border dark:bg-inkd-border" />
                             <MetricCell value={`${ongoing}/${trips.length}`} unit="" label="进行中行程" />
                         </View>
-                    </View>
-
-                    {/* 30 天曲线（#13 无边框规范收敛：卡片级描边清除，tone 分层靠 surface-on-base） */}
-                    <View className="mt-4 rounded-card bg-ink-surface p-4 dark:bg-inkd-surface">
-                        <View className="mb-1 flex-row items-center justify-between">
-                            <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
-                                最近 30 天写作量
-                            </Text>
-                            <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">
-                                字 / 天
-                            </Text>
+                        <View className="h-px bg-ink-border dark:bg-inkd-border" />
+                        <View className="px-4 py-3">
+                            <View className="mb-1 flex-row items-center justify-between">
+                                <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
+                                    最近 30 天写作量
+                                </Text>
+                                <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">
+                                    字 / 天
+                                </Text>
+                            </View>
+                            <LineChart points={metrics.curve} />
                         </View>
-                        <LineChart points={metrics.curve} />
                     </View>
 
-                    {/* 搜索入口卡（独立搜索页的 me 页入口，DEV.md #5） */}
-                    <SearchEntryCard />
-
-                    {/* 行程完成度列表（空态卡片化：对齐 deck 空态卡语言）+ 事件入口卡 */}
-                    <View className="mt-5">
+                    {/* 我的内容：搜索 / 事件 / 行程归并为一组（原 2 张入口卡 + 独立「行程」
+                        区 → 1 张行组卡）。typedRoutes：'/search'、'/events' 尚未进
+                        .expo/types 路由联合（本组不跑 Metro，字面量由 metro 启动时生成）
+                        ——`as never` 是最小妥协（never 可赋给任何联合，不产生 any 的误
+                        拓宽），类型生成后可直接删除断言。 */}
+                    <View className="mt-6">
                         <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                            行程
+                            我的内容
                         </Text>
-                        {trips.length === 0 ? (
-                            <TripsEmptyCard />
-                        ) : (
-                            <View className="gap-2">
-                                {trips.map((trip) => {
+                        <View className="overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface">
+                            <ContentEntryRow
+                                icon={<LucideSearch size={18} strokeWidth={1.9} color={palette.secondary} />}
+                                label="搜索"
+                                onPress={() => router.push('/search' as never)}
+                                accessibilityLabel="搜索笔记与行程"
+                            />
+                            <RowDivider />
+                            <ContentEntryRow
+                                icon={<LucideFlag size={18} strokeWidth={1.9} color={palette.secondary} />}
+                                label="事件"
+                                onPress={() => router.push('/events' as never)}
+                                accessibilityLabel="事件"
+                            />
+                            {trips.length === 0 ? (
+                                <Fragment>
+                                    <RowDivider />
+                                    <TripsEmptyBlock />
+                                </Fragment>
+                            ) : (
+                                trips.map((trip, index) => {
                                     const pct =
                                         trip.plansTotal > 0
                                             ? Math.round((trip.plansDone / trip.plansTotal) * 100)
                                             : null;
                                     return (
-                                        <Pressable
-                                            key={trip.id}
-                                            onPress={() =>
-                                                router.push({ pathname: '/trip/[id]', params: { id: trip.id } })
-                                            }
-                                            className="rounded-control bg-ink-surface px-4 py-3 active:bg-ink-raised dark:bg-inkd-surface dark:active:bg-inkd-raised"
-                                        >
-                                            <View className="flex-row items-center justify-between">
-                                                <Text
-                                                    numberOfLines={1}
-                                                    className="mr-3 flex-1 text-[14px] font-medium text-ink-text dark:text-inkd-text"
-                                                >
-                                                    {trip.icon ?? '🧭'} {trip.title}
-                                                </Text>
-                                                <StatusChip status={trip.status} />
-                                            </View>
-                                            <View className="mt-1.5 flex-row items-center">
-                                                <Text
-                                                    className="text-[12px] text-ink-secondary dark:text-inkd-secondary"
-                                                    style={{ fontVariant: ['tabular-nums'] }}
-                                                >
-                                                    {/* 区间文案走 formatTripSpan（持续性感知，open 行程安全：
-                                                        formatTripRange 对 'open' 会抛 RangeError）；天数与
-                                                        「已写」分母仅在固定跨度（dayCount != null）时追加，
-                                                        持续性行程不渲染假分母（参照 archive-screen 口径） */}
-                                                    {formatTripSpan(trip)}
-                                                    {trip.dayCount != null ? ` · ${trip.dayCount} 天` : ''}
-                                                    {trip.dayCount == null
-                                                        ? ` · 已写 ${trip.journalDays} 天`
-                                                        : ` · 已写 ${trip.journalDays}/${trip.dayCount} 天`}
-                                                </Text>
-                                                {pct !== null ? (
+                                        <Fragment key={trip.id}>
+                                            {/* 每条行程行前置换分隔线：首行分隔「事件」入口行，
+                                                其后行间分隔（行组卡统一行解剖的一部分） */}
+                                            <RowDivider />
+                                            <Pressable
+                                                onPress={() =>
+                                                    router.push({ pathname: '/trip/[id]', params: { id: trip.id } })
+                                                }
+                                                className="px-4 py-3 active:bg-ink-raised dark:active:bg-inkd-raised"
+                                            >
+                                                <View className="flex-row items-center justify-between">
                                                     <Text
-                                                        className="ml-auto text-[12px] text-ink-muted dark:text-inkd-muted"
+                                                        numberOfLines={1}
+                                                        className="mr-3 flex-1 text-[14px] font-medium text-ink-text dark:text-inkd-text"
+                                                    >
+                                                        {trip.icon ?? '🧭'} {trip.title}
+                                                    </Text>
+                                                    <StatusChip status={trip.status} />
+                                                </View>
+                                                <View className="mt-1.5 flex-row items-center">
+                                                    <Text
+                                                        className="text-[12px] text-ink-secondary dark:text-inkd-secondary"
                                                         style={{ fontVariant: ['tabular-nums'] }}
                                                     >
-                                                        计划 {pct}%
+                                                        {/* 区间文案走 formatTripSpan（持续性感知，open 行程安全：
+                                                            formatTripRange 对 'open' 会抛 RangeError）；天数与
+                                                            「已写」分母仅在固定跨度（dayCount != null）时追加，
+                                                            持续性行程不渲染假分母（参照 archive-screen 口径） */}
+                                                        {formatTripSpan(trip)}
+                                                        {trip.dayCount != null ? ` · ${trip.dayCount} 天` : ''}
+                                                        {trip.dayCount == null
+                                                            ? ` · 已写 ${trip.journalDays} 天`
+                                                            : ` · 已写 ${trip.journalDays}/${trip.dayCount} 天`}
                                                     </Text>
-                                                ) : null}
-                                            </View>
-                                        </Pressable>
+                                                    {pct !== null ? (
+                                                        <Text
+                                                            className="ml-auto text-[12px] text-ink-muted dark:text-inkd-muted"
+                                                            style={{ fontVariant: ['tabular-nums'] }}
+                                                        >
+                                                            计划 {pct}%
+                                                        </Text>
+                                                    ) : null}
+                                                </View>
+                                            </Pressable>
+                                        </Fragment>
                                     );
-                                })}
-                            </View>
-                        )}
-                        {/* 事件入口卡：「行程」区块下，样式对齐 SearchEntryCard 语言 */}
-                        <EventsEntryCard />
+                                })
+                            )}
+                        </View>
                     </View>
 
                     {/* 主题偏好 */}
@@ -315,9 +357,11 @@ export function MeScreen() {
     );
 }
 
+/** KPI 单元（指标合卡内的表格单元，不带自己的卡壳）：数值 20px tabular + 弱化标签。
+    密度与原 2×2 卡片网格一致（px-4 py-3），壳层成本由合卡统一承担。 */
 function MetricCell({ value, unit, label }: { value: string; unit: string; label: string }) {
     return (
-        <View className="flex-1 rounded-card bg-ink-surface px-4 py-3 dark:bg-inkd-surface">
+        <View className="flex-1 px-4 py-3">
             <Text
                 className="text-[20px] font-semibold text-ink-text dark:text-inkd-text"
                 style={{ fontVariant: ['tabular-nums'] }}
@@ -330,55 +374,58 @@ function MetricCell({ value, unit, label }: { value: string; unit: string; label
     );
 }
 
+/** 行组卡内部分隔 hairline：元素级边界（ink/border token 成对），全出血贴卡缘；
+    卡片级描边不在此列（#13 清除的是卡片外描边）。 */
+function RowDivider() {
+    return <View className="h-px bg-ink-border dark:bg-inkd-border" />;
+}
+
 /**
- * 搜索入口卡（DEV.md #5）：内联检索区独立成 /search 后的 me 页入口。
- * 整卡即命中盒（≥44px，Pressable 默认 hitSlop 0，四周无相邻命中元素）。
- *
- * typedRoutes 说明：路由类型由 metro 启动时生成到 .expo/types/router.d.ts，
- * 本组不跑 Metro，生成物尚无 '/search' 字面量——`as never` 是最小妥协
- * （never 可赋给任何联合，不产生 any 的误拓宽），类型生成后可直接删除断言。
+ * 内容入口行（搜索/事件共用行解剖）：48dp 单行 = 图标 + 题 + chevron。
+ * 副题行收敛删除（题名自释，完整描述保留在 a11y label）；整行即命中盒
+ * （h-12 ≥44，Pressable 默认 hitSlop 0），同卡相邻行以 RowDivider 分隔、
+ * 相互为非按压体，按压态无重叠核算项。
  */
-function SearchEntryCard() {
-    const router = useRouter();
+function ContentEntryRow({
+    icon,
+    label,
+    onPress,
+    accessibilityLabel,
+}: {
+    icon: ReactElement;
+    label: string;
+    onPress: () => void;
+    accessibilityLabel: string;
+}) {
     const palette = usePalette();
     return (
         <Pressable
-            onPress={() => router.push('/search' as never)}
-            className="mt-4 flex-row items-center gap-3 rounded-card bg-ink-surface px-4 py-3 active:bg-ink-raised dark:bg-inkd-surface dark:active:bg-inkd-raised"
+            onPress={onPress}
+            className="h-12 flex-row items-center gap-3 px-4 active:bg-ink-raised dark:active:bg-inkd-raised"
             accessibilityRole="button"
-            accessibilityLabel="搜索笔记与行程"
+            accessibilityLabel={accessibilityLabel}
         >
-            <View className="h-10 w-10 items-center justify-center rounded-control bg-ink-raised dark:bg-inkd-raised">
-                <LucideSearch size={18} strokeWidth={1.9} color={palette.secondary} />
-            </View>
-            <View className="min-w-0 flex-1">
-                <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
-                    搜索笔记与行程
-                </Text>
-                <Text numberOfLines={1} className="mt-0.5 text-[12px] text-ink-muted dark:text-inkd-muted">
-                    按关键词或日期，翻找写过的字与走过的路
-                </Text>
-            </View>
+            {icon}
+            <Text className="flex-1 text-[14px] font-medium text-ink-text dark:text-inkd-text">{label}</Text>
             <LucideChevronRight size={16} strokeWidth={1.9} color={palette.faint} />
         </Pressable>
     );
 }
 
 /**
- * 行程空态卡（EmptyState 文本 → 卡片化）：对齐 deck 空态 / SearchEntryCard 的
- * surface 卡语言——图标 + 一行"是什么" + 一行"怎么做" + 轻 CTA「创建行程」
- * （frontend-design：空屏是指引，不是情绪）。卡本体不可点（命中语义唯一：
- * CTA 按钮才是行动点），CTA h-11 全宽即命中盒。
+ * 行程空态（原 TripsEmptyCard 收敛为行组卡末行块）：图标行 + 一行"怎么做" +
+ * CTA「创建行程」（frontend-design：空屏是指引，不是情绪）。卡壳由行组卡承担，
+ * 本块只贡献内容；CTA h-11 全宽即命中盒，卡内四周无相邻命中元素。
+ * 按压反馈由外层 BouncyPressable 承担，内层 View 不用 active: 伪类（css-interop
+ * 会把 View 升级成 Pressable 首帧后 remount，同 EmptyState/ChooserRow 口径）。
  */
-function TripsEmptyCard() {
+function TripsEmptyBlock() {
     const router = useRouter();
     const palette = usePalette();
     return (
-        <View className="rounded-card bg-ink-surface p-4 dark:bg-inkd-surface">
+        <View className="px-4 py-3">
             <View className="flex-row items-center gap-3">
-                <View className="h-10 w-10 items-center justify-center rounded-control bg-ink-raised dark:bg-inkd-raised">
-                    <LucideCalendar size={18} strokeWidth={1.9} color={palette.secondary} />
-                </View>
+                <LucideCalendar size={18} strokeWidth={1.9} color={palette.secondary} />
                 <View className="min-w-0 flex-1">
                     <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
                         还没有行程
@@ -388,9 +435,6 @@ function TripsEmptyCard() {
                     </Text>
                 </View>
             </View>
-            {/* CTA 与说明行隔开 mt-3：按压反馈由外层 BouncyPressable 承担，内层
-                View 不用 active: 伪类（css-interop 会把 View 升级成 Pressable
-                首帧后 remount，同 EmptyState/ChooserRow 口径） */}
             <View className="mt-3">
                 <BouncyPressable onPress={() => router.push('/trip/new')} scaleTo={0.97}>
                     <View className="h-11 items-center justify-center rounded-control border border-ink-border bg-ink-base dark:border-inkd-border dark:bg-inkd-base">
@@ -404,43 +448,6 @@ function TripsEmptyCard() {
     );
 }
 
-/**
- * 事件入口卡（v6 事件实体落地，事件组接线）：View→Pressable 激活，push '/events'
- * （事件列表页已上线，角注「即将上线」退役，右侧换回 SearchEntryCard 同款
- * chevron 暗示可点）。视觉与 SearchEntryCard 同构：icon 容器 40×40 raised 底 +
- * 题 + 副行 + chevron；整卡即命中盒（≥44px，Pressable 默认 hitSlop 0，四周无
- * 相邻命中元素）。icon 换 LucideFlag（事件/工单语义标，与首页事件入口卡、
- * 插入菜单「新建事件」行同一图标语言）。
- *
- * typedRoutes：/events 尚未进 .expo/types 路由联合（事件组不跑 Metro）——
- * `as never` 最小妥协先例（本文件 SearchEntryCard 同口径），类型生成后可删除。
- */
-function EventsEntryCard() {
-    const router = useRouter();
-    const palette = usePalette();
-    return (
-        <Pressable
-            onPress={() => router.push('/events' as never)}
-            className="mt-2 flex-row items-center gap-3 rounded-card bg-ink-surface px-4 py-3 active:bg-ink-raised dark:bg-inkd-surface dark:active:bg-inkd-raised"
-            accessibilityRole="button"
-            accessibilityLabel="事件"
-        >
-            <View className="h-10 w-10 items-center justify-center rounded-control bg-ink-raised dark:bg-inkd-raised">
-                <LucideFlag size={18} strokeWidth={1.9} color={palette.secondary} />
-            </View>
-            <View className="min-w-0 flex-1">
-                <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
-                    事件
-                </Text>
-                <Text numberOfLines={1} className="mt-0.5 text-[12px] text-ink-muted dark:text-inkd-muted">
-                    要跟的事记成工单，跟到完成
-                </Text>
-            </View>
-            <LucideChevronRight size={16} strokeWidth={1.9} color={palette.faint} />
-        </Pressable>
-    );
-}
-
 /** 主题偏好：system（跟随系统）/ light（灰白）/ dark。 */
 function ThemeSection() {
     const [pref, setPref] = useThemePref();
@@ -451,7 +458,7 @@ function ThemeSection() {
         { key: 'dark', label: '深色' },
     ];
     return (
-        <View className="mt-5">
+        <View className="mt-6">
             <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
                 外观（当前 {theme === 'dark' ? '深色' : '浅色'}）
             </Text>

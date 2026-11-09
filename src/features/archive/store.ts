@@ -45,6 +45,7 @@ import {
 import {
     EVENT_DESCRIPTION_MAX,
     EVENT_HANDLED_BY_MAX,
+    EVENT_TITLE_MAX,
     decorateEvent,
     isEventStatus,
     isEventSubjectKind,
@@ -279,7 +280,9 @@ interface ArchiveStore {
      */
     updateEventBlocks(eventId: string, blocks: JournalBlock[]): Promise<boolean>;
     /**
-     * 事件元信息更新（status/handledBy/subject 对/description/gps，均可选）：
+     * 事件元信息更新（title/status/handledBy/subject 对/description/gps，均可选）：
+     * - title（设置卡改名）：trim 后必填非空、上限 EVENT_TITLE_MAX（与创建同源
+     *   口径，空串/超长整体拒绝不走截断）；
      * - subject 为原子对：kind/value 任一侧出现在 patch 即合并当前行后整体归一化
      *   （显式 null = 清除该侧；归一化后任一侧缺失 → 双双置空）；
      * - gps：undefined = 不动；null = 清除；对象 = 覆盖写（非法坐标整体拒绝）；
@@ -288,6 +291,7 @@ interface ArchiveStore {
     updateEventMeta(
         eventId: string,
         patch: {
+            title?: string;
             status?: EventStatus;
             handledBy?: string | null;
             subjectKind?: EventSubjectKind | null;
@@ -297,10 +301,13 @@ interface ArchiveStore {
         },
     ): Promise<boolean>;
     /**
-     * 事件媒体（v6）：对齐 attachTripMedia——落盘分流（视频 copyFromUri 直迁、
+     * 事件媒体（v6）：对齐 attachJournalMedia——落盘分流（视频 copy/move 直迁、
      * 图片 manipulator 字节路径、音频字节落盘+容器嗅探）+ 落库，返回 mediaId 供
      * blocks 引用；缩略图增强可选不做（v6 取舍）。落盘 key：
      * event-media/<eventId>/<mediaId>.<ext>。
+     * v6.1 录制归属泛化补齐 opts（AttachMediaOptions，对齐 attachJournalMedia）：
+     * taskId 进进度注册表（事件编辑屏占位卡 / 录制会话 `capture:<seq>` 横幅）、
+     * moveSource = 录像/录音 cache 产物直迁、onProgress 供会话护栏活跃度跟踪。
      */
     attachEventMedia(
         eventId: string,
@@ -309,6 +316,7 @@ interface ArchiveStore {
         width: number | null,
         height: number | null,
         durationMs?: number | null,
+        opts?: AttachMediaOptions,
     ): Promise<string | null>;
     /**
      * 删单条事件媒体：行软删 + **DB 级 blocks 引用摘除**（事件正文块引用媒体，
@@ -361,6 +369,17 @@ interface ArchiveStore {
      * 只读语义 + 归属目标失效兜底）。true = 追加成功（含幂等命中）。
      */
     appendMediaBlockToJournal(journalId: string, media: { mediaId: string; kind: JournalMediaKind; durationMs?: number }): Promise<boolean>;
+    /**
+     * 【归属铁律·事件侧】DB 级媒体块追加（全局录制会话停录产物落库专用，见
+     * recording-session.tsx；对齐 appendMediaBlockToJournal）：绕过任何未挂载/
+     * 在栈下的编辑屏本地态，读该事件当前 blocks（DB 权威值）→ 尾部追加真实
+     * 媒体块（复用既有 parse/serialize 语义）→ 立即落库 + revision bump。幂等：
+     * mediaId 已被引用时直接成功（owner 屏在 DB 写入前经 persist 事件合并进
+     * 本地态并抢先保存的场景，不产生重复块）。目标事件不存在/已删除拒绝（归属
+     * 目标失效兜底；事件无收笔锁定语义，open/done 均可增补）。true = 追加成功
+     * （含幂等命中）。
+     */
+    appendMediaBlockToEvent(eventId: string, media: { mediaId: string; kind: JournalMediaKind; durationMs?: number }): Promise<boolean>;
 }
 
 function toMessage(error: unknown): string {
@@ -1096,6 +1115,21 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 set({ error: '事件不存在或已删除' });
                 return false;
             }
+            // 标题（设置卡改名）：与创建同源口径——trim 后必填非空、上限
+            // EVENT_TITLE_MAX；空串/超长整体拒绝（不走截断，标题是必填语义字段）
+            let title: string | undefined;
+            if (patch.title !== undefined) {
+                const trimmed = patch.title.trim();
+                if (trimmed.length === 0) {
+                    set({ error: '给事件起个名字' });
+                    return false;
+                }
+                if (trimmed.length > EVENT_TITLE_MAX) {
+                    set({ error: `事件名最多 ${EVENT_TITLE_MAX} 个字` });
+                    return false;
+                }
+                title = trimmed;
+            }
             // 状态仅接受合法枚举（非法值整体拒绝，避免脏状态落库）
             let status: EventStatus | undefined;
             if (patch.status !== undefined) {
@@ -1134,6 +1168,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                   )
                 : null;
             await db.updateEventMeta(eventId, {
+                ...(title !== undefined ? { title } : {}),
                 ...(status !== undefined ? { status } : {}),
                 ...(patch.handledBy !== undefined
                     ? { handled_by: normalizeEventText(patch.handledBy, EVENT_HANDLED_BY_MAX) }
@@ -1158,7 +1193,10 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         return true;
     },
 
-    async attachEventMedia(eventId, kind, uri, width, height, durationMs = null) {
+    async attachEventMedia(eventId, kind, uri, width, height, durationMs = null, opts?) {
+        // 进度汇（对齐 attachJournalMedia）：taskId 进注册表（编辑屏占位卡 /
+        // capture: 会话横幅），onProgress 原始拍供录制会话护栏跟踪
+        const sink = makeProgressSink(opts?.taskId, opts?.onProgress);
         try {
             // 存在性预检（事件已删则媒体没有落点；事件无锁定语义，open/done 均可增补）
             const event = await db.getEvent(eventId);
@@ -1177,11 +1215,15 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 ext = audioExtFromBytes(bytes);
             }
             const key = `event-media/${eventId}/${mediaId}.${ext}`;
-            // 落盘分流（对齐 attachTripMedia/attachJournalMedia）：视频 copyFromUri
-            // 直迁（本签名无 moveSource 选项——事件媒体统一 copy 语义，不动源文件），
-            // 图片 manipulator 字节路径，音频字节落盘
+            // 落盘分流（对齐 attachJournalMedia/attachTripMedia）：视频 move/copy
+            // 直迁（moveSource = 录像/录音 cache 产物直迁零残留；相册产物 copy
+            // 不动源文件），图片 manipulator 字节路径，音频字节落盘
             if (kind === 'video') {
-                await fileStorage.copyFromUri(key, uri);
+                if (opts?.moveSource) {
+                    await fileStorage.moveFromUri(key, uri, { onProgress: sink });
+                } else {
+                    await fileStorage.copyFromUri(key, uri, { onProgress: sink });
+                }
             } else if (kind === 'audio') {
                 await fileStorage.put(key, await readUriBytes(uri));
             } else {
@@ -1206,11 +1248,16 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 await fileStorage.remove(key).catch(() => undefined);
                 throw dbError;
             }
+            // 缩略图是展示增强（fire-and-forget，失败仅回退占位卡，不阻塞入库）
+            if (kind === 'video') void ensureVideoThumbnail(key);
             set({ error: null, revision: get().revision + 1 });
             return mediaId;
         } catch (error) {
             set({ error: `媒体上传失败：${toMessage(error)}` });
             return null;
+        } finally {
+            // 任务收敛即摘除进度注册键（占位卡/横幅收口，成功失败同口径）
+            clearUploadProgress(opts?.taskId);
         }
     },
 
@@ -1553,6 +1600,43 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             // 不需要孤儿对账，也不该动 savingJournal 指示器；媒体行刚由
             // attachJournalMedia 建立，引用随写随闭合
             await db.updateJournalBlocks(journalId, serializeBlocks(next), wordCount(next));
+            set({ error: null, revision: get().revision + 1 });
+            return true;
+        } catch (error) {
+            set({ error: `媒体块追加失败：${toMessage(error)}` });
+            return false;
+        }
+    },
+
+    async appendMediaBlockToEvent(eventId, media) {
+        try {
+            // DB 权威读取（不经过任何屏的本地态——owner 屏可能未挂载/在栈下/
+            // 已卸载，本地 blocksRef 不可信）
+            const row = await db.getEvent(eventId);
+            if (!row) {
+                set({ error: '事件不存在或已删除，素材没有落点。' });
+                return false;
+            }
+            // 事件无收笔锁定语义（open/done 均可编辑），不做 #7 只读闸；
+            // 归属目标已删除的场景由上方存在性预检兜住
+            const blocks = parseBlocks(row.blocks);
+            // 幂等闸：owner 屏在 DB 写入前经 persist 事件合并进本地态并抢先保存
+            // （blocks 已带引用）→ 不重复追加，直接成功
+            if (blocks.some((block) => block.t === 'media' && block.mediaId === media.mediaId)) {
+                return true;
+            }
+            // 块 id 在 store 层生成（与屏层 newBlockId 同源）；durationMs 仅音频携带
+            const appended: JournalBlock = {
+                t: 'media',
+                id: newBlockId(),
+                mediaId: media.mediaId,
+                ...(media.durationMs != null ? { durationMs: media.durationMs } : {}),
+            };
+            const next = [...blocks, appended];
+            // 直接 updateEventBlocks（非 updateEventBlocks action 的对账版）：这里是
+            // 「新增引用」，不需要孤儿对账；媒体行刚由 attachEventMedia 建立，引用
+            // 随写随闭合。事件表无 word_count 冗余列（字数按需派生）
+            await db.updateEventBlocks(eventId, serializeBlocks(next));
             set({ error: null, revision: get().revision + 1 });
             return true;
         } catch (error) {

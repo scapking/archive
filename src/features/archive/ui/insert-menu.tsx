@@ -19,8 +19,10 @@ import { usePalette } from './theme';
 
 /**
  * + 号插入选择器（罗盘）：条件渲染遮罩（禁 RN Modal——Fabric 触摸失效坑）。
- * 七行卡片（#8/#10 视觉对标大厂快捷面板）：相册图片 / 相册视频 / 录音 /
- * 拍照 / 拍视频 / 添加输入框 / 完成收笔，icon + 标题 + 副标双行。
+ * 行卡片（#8/#10 视觉对标大厂快捷面板）：相册图片 / 相册视频 / 录音 /
+ * 拍照 / 拍视频 / 添加输入框 / 完成收笔（journal 全行；事件编辑器经 `actions`
+ * 过滤复用本组件——行序同源，仅裁「新建事件」「完成收笔」），icon + 标题 +
+ * 副标双行。
  * 行序（2026-11 调整）：相册两行（图库选取）前移到录音之前——插媒体里
  * 「从图库选」是最高频路径，取材行（相册）前置、采集行（录音/拍摄）次之，
  * 输入与收笔仍压轴；纯顺序调整，onAction 词表与行为不变。
@@ -77,11 +79,20 @@ export function InsertMenu({
     onClose,
     onAction,
     activeCapture,
+    actions,
 }: {
     onClose: () => void;
     onAction: (action: InsertAction) => void;
     /** 全局录制会话进行中（任意发起方）时展示状态行；null = 不展示。 */
     activeCapture?: ActiveCaptureStatus | null;
+    /**
+     * 行过滤（v6.1 事件编辑器复用本组件的接线面）：传入时只渲染词表内的行
+     * （行序 = 本组件既定行序——相册两行 → 采集三行 → 输入 → 收笔，与需求
+     * 事件词表「相册图片/相册视频/录音/拍照/拍视频/添加输入框」为同一前缀），
+     * 未列出的行（如 journal 版的「完成收笔」「新建事件」）整行退场，确认步
+     * 等专属分支随之不可达。缺省 = 全行（journal 屏原行为，零改动）。
+     */
+    actions?: readonly InsertAction[];
 }) {
     const palette = usePalette();
     // 「新建事件」行的路由出口（组件内直推，见 InsertAction 'new-event' 注——
@@ -110,8 +121,10 @@ export function InsertMenu({
     }, [onClose, confirming]);
 
     /** 行配置：web 能力边界内裁剪（录音 MediaRecorder 缺失 / 视频 recordAsync 无 web 实现）。
-     *  行序：相册取材两行 → 采集三行（录音/拍照/拍视频）→ 添加输入框 → 完成收笔。 */
-    const rows: Array<{ action: InsertAction; icon: React.ReactNode; title: string; hint: string }> = [
+     *  行序：相册取材两行 → 采集三行（录音/拍照/拍视频）→ 添加输入框 → 完成收笔。
+     *  actions 过滤（事件屏复用）：既定行序内筛除未列入的行（过滤不重排——
+     *  journal 行序 = 事件行序的同源保证）。 */
+    const allRows: Array<{ action: InsertAction; icon: React.ReactNode; title: string; hint: string }> = [
         { action: 'library-image', icon: <LucideImage size={20} strokeWidth={1.9} />, title: '相册图片', hint: '从图库选取，可多选' },
         { action: 'library-video', icon: <ImagePlayIcon size={20} strokeWidth={1.9} />, title: '相册视频', hint: '从图库选取，可多选' },
         ...(isRecordingSupported()
@@ -128,6 +141,7 @@ export function InsertMenu({
         { action: 'new-event', icon: <LucideFlag size={20} strokeWidth={1.9} />, title: '新建事件', hint: '工单式记录，独立于这篇笔记' },
         { action: 'complete', icon: <LucideCheck size={20} strokeWidth={1.9} />, title: '完成收笔', hint: '收笔后不可再修改' },
     ];
+    const rows = actions ? allRows.filter((row) => actions.includes(row.action)) : allRows;
 
     const run = (action: InsertAction) => {
         if (action === 'complete') {

@@ -32,12 +32,16 @@ import { PrimaryButton, ScreenHeader, usePalette } from './ui';
 /**
  * 新建事件页（/events/new，极简表单）：
  *
- * - 字段即需求词表：标题（必填，FieldInput，maxLength 与 EVENT_TITLE_MAX 同源）/
- *   GPS（进页自动经 core/location 取当前位置，**不可手输**——失败/拒绝降级为
- *   muted「未定位」行，创建时 gps 置 null）/ 处理人（可选）/ 对象（类型分段
- *   单选：无/手机/邮箱/地址/GPS + 值输入，原子对由 normalizeEventSubject 在
- *   提交前归一——类型选「无」即整对清除）/ 描述（可选，multiline 自然增高
- *   收起式）；created_at 时间由 store 落库时统一打，表单不出现时间字段；
+ * - 字段即需求词表（全字段完整铺开，顺序 = 标题 / 位置 / 处理人 / 对象 / 描述）：
+ *   标题（必填，FieldInput，maxLength 与 EVENT_TITLE_MAX 同源）/
+ *   GPS（进页自动经 core/location 取当前位置，**不可手输**——自动定位行保留，
+ *   已定位展示**完整 GPS 信息**（状态行「已定位 · ±Nm」+ 原始经纬度行）；失败/
+ *   拒绝降级为 muted「未定位」行，创建时 gps 置 null）/ 处理人（可选）/ 对象
+ *   （类型分段单选：无/手机/邮箱/地址/GPS + 值输入，原子对由
+ *   normalizeEventSubject 在提交前归一——类型选「无」即整对清除）/ 描述（可选，
+ *   multiline 自然增高收起式）；created_at 时间由 store 落库时统一打，表单不
+ *   出现时间字段；行间距统一 4dp 网格（组间 gap-4=16、标签 mb-2=8、提示
+ *   mt-1=4、提交 mt-2=8）；
  * - 定位可靠性：权限预检（已授权跳过弹窗）→ 系统服务检查 → 8s 超时兜底
  *   （定位挂起不阻塞表单填写）；卸载后 discarded（cancelled 守卫防旧响应回填）；
  * - 提交 → store.createEvent（校验失败走 error 通道返回 null，横幅可见不
@@ -213,7 +217,7 @@ export function EventFormScreen() {
                             {!titleValid ? (
                                 // 可见提示（需求口径：标题为空禁用提交 + 提示）；
                                 // 条件渲染非条件类，不涉恒等铁律
-                                <Text className="mt-1.5 text-[12px] text-ink-muted dark:text-inkd-muted">
+                                <Text className="mt-1 text-[12px] text-ink-muted dark:text-inkd-muted">
                                     先起个名字；创建后正文里随时补细节。
                                 </Text>
                             ) : null}
@@ -221,8 +225,9 @@ export function EventFormScreen() {
 
                         {/* GPS（进页自动定位，不可手输）：行容器与 FieldInput 同
                             视觉语言（rounded-control 近色底 + min-h-11），内容为
-                            只读状态行——定位中 spinner / 已定位 ±Nm（accent icon，
-                            数据态上色）/ 未定位（muted 全行） */}
+                            只读状态行——定位中 spinner / 已定位（**完整 GPS 信息**：
+                            首行「已定位 · ±Nm」、次行原始经纬度 tabular-nums，
+                            自动定位行保留）/ 未定位（muted 全行） */}
                         <View>
                             <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                 位置
@@ -245,16 +250,25 @@ export function EventFormScreen() {
                                             strokeWidth={1.9}
                                             color={palette.accent}
                                         />
-                                        <Text
-                                            className="flex-1 text-[13px] text-ink-secondary dark:text-inkd-secondary"
-                                            style={{ fontVariant: ['tabular-nums'] }}
-                                        >
-                                            {`已定位${
-                                                gps.accuracy != null
-                                                    ? ` ±${Math.round(gps.accuracy)}m`
-                                                    : ''
-                                            }`}
-                                        </Text>
+                                        {/* 完整 GPS 信息：状态行（定位成功 + 精度）+
+                                            原始坐标行（不取整——入库值即展示值，详情
+                                            设置卡同口径）；tabular-nums 防数字抖动 */}
+                                        <View className="min-w-0 flex-1">
+                                            <Text className="text-[13px] text-ink-secondary dark:text-inkd-secondary">
+                                                {`已定位${
+                                                    gps.accuracy != null
+                                                        ? ` · ±${Math.round(gps.accuracy)}m`
+                                                        : ''
+                                                }`}
+                                            </Text>
+                                            <Text
+                                                numberOfLines={1}
+                                                className="mt-1 text-[12px] text-ink-muted dark:text-inkd-muted"
+                                                style={{ fontVariant: ['tabular-nums'] }}
+                                            >
+                                                {`${gps.lat}, ${gps.lng}`}
+                                            </Text>
+                                        </View>
                                     </>
                                 ) : (
                                     <>
@@ -356,8 +370,10 @@ export function EventFormScreen() {
                             />
                         </View>
 
-                        {/* 提交（近黑主行动，PrimaryButton；标题为空禁用） */}
-                        <View className="mt-1">
+                        {/* 提交（近黑主行动，PrimaryButton；标题为空禁用）。
+                            mt-2(8dp)：叠 gap-4(16) 后与上一字段净距 24dp（4dp 网格
+                            主行动独立档） */}
+                        <View className="mt-2">
                             <PrimaryButton
                                 label={submitting ? '创建中…' : '创建事件'}
                                 disabled={!titleValid || submitting}

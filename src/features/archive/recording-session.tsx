@@ -25,13 +25,15 @@ import {
  *    录音/录像不依赖任何屏的存活——从 A 笔记发起后切到任意页面（B 笔记 /
  *    tab 页 / viewer）录制继续；展开覆盖层与收起悬浮 chip 都在根层级条件
  *    渲染，任意页面可重开无缝恢复（状态一直在会话层，重开零重启动）。
- * 2. **归属铁律**：会话绑定发起时的编辑上下文 ownerJournalId；停止产物走
- *    persistCaptureProduct → store.attachJournalMedia（媒体行）→
- *    store.appendMediaBlockToJournal（DB 级块追加，读 DB 权威 blocks、绕过
- *    一切屏本地态）**落回发起笔记**——无论停止发生在哪个页面、owner 屏是否
- *    挂载。owner 屏挂载时经 subscribeRecordingSessionPersist 收到 persist
- *    事件（媒体行建立后、DB 块写入前）先把媒体块合并进本地 blocksRef（到达
- *    序合并，applyBlocks 唯一写入口），其后的防抖/收笔保存天然携带该块。
+ * 2. **归属铁律**：会话绑定发起时的编辑上下文 owner（v6.1 泛化：journal 笔记
+ *    或 event 工单，见 CaptureOwner）；停止产物走 persistCaptureProduct →
+ *    store.attachJournalMedia / attachEventMedia（媒体行）→
+ *    store.appendMediaBlockToJournal / appendMediaBlockToEvent（DB 级块追加，
+ *    读 DB 权威 blocks、绕过一切屏本地态）**落回发起上下文**——无论停止发生
+ *    在哪个页面、owner 屏是否挂载。owner 屏挂载时经
+ *    subscribeRecordingSessionPersist 收到 persist 事件（媒体行建立后、DB 块
+ *    写入前）先把媒体块合并进本地 blocksRef（到达序合并，applyBlocks 唯一
+ *    写入口），其后的防抖/收笔保存天然携带该块。
  *
  * 合并冲突口径（owner 屏有未保存本地编辑时，见报告）：
  * - persist 事件先于 DB 块写入发出 → 本地合并先发生，此后任何屏级保存的
@@ -87,6 +89,30 @@ import {
 /* ------------------------------------------------------------------ */
 
 export type CaptureKind = 'audio' | 'video';
+
+/**
+ * 录制会话归属（v6.1 泛化，拍照/录像/录音接入事件工单的前提）：
+ * - { kind: 'journal', id } = 笔记（journal-edit-screen 发起，旧口径）；
+ * - { kind: 'event', id } = 事件工单（event-detail-screen 发起）。
+ * 停止产物按 kind 分派落库链（attach/append 的 journal/event 双侧）；
+ * persist 事件与 zustand 状态上的 ownerJournalId 为 journal 归属的兼容投影
+ * （见各自注）。
+ */
+export type CaptureOwner = { kind: 'journal' | 'event'; id: string };
+
+/** CaptureOwner → 兼容投影（journal-edit-screen 未迁移消费面）：journal 归属
+ *  返回其 id，事件归属返回 null——旧消费点的 `=== 本篇 id` 判定对事件归属
+ *  天然为 false（不会误合并/误提示），兼容零改动。 */
+function ownerJournalIdCompat(owner: CaptureOwner | null): string | null {
+    return owner && owner.kind === 'journal' ? owner.id : null;
+}
+
+/** startCaptureSession 归属参数归一：裸 string = journal 归属（旧口径——
+ *  journal-edit-screen 的调用点保持 `startCaptureSession(kind, row.id)` 不动），
+ *  CaptureOwner = 显式归属（事件屏传 { kind: 'event', id }）。 */
+function normalizeCaptureOwner(owner: CaptureOwner | string): CaptureOwner {
+    return typeof owner === 'string' ? { kind: 'journal', id: owner } : owner;
+}
 /**
  * 会话相位：
  * - stopping = 硬件停录段在途（卡片淡出关闭中，5s 护栏兜底）；
@@ -99,9 +125,16 @@ interface RecordingSessionState {
     /** 会话种类：null = 空闲（一次至多一个采集会话——录音/录像互斥）。 */
     kind: CaptureKind | null;
     phase: CapturePhase;
-    /** 【归属铁律】发起时的编辑上下文：停止产物固定落回这本笔记。 */
+    /** 【归属铁律】发起时的编辑上下文：停止产物固定落回该归属（journal 或 event）。 */
+    owner: CaptureOwner | null;
+    /**
+     * ownerJournalId（兼容投影，journal-edit-screen 未迁移消费面专用——
+     * persist 订阅 / + 菜单归属提示 / 收笔 owner 判定三处读它）：journal 归属
+     * = 该笔记 id；事件归属 = null（旧消费点的 `=== 本篇 id` 判定天然为
+     * false，归属铁律不被破坏）。新消费点一律读 owner。
+     */
     ownerJournalId: string | null;
-    /** owner 笔记的展示名（归属提示「停止后保存到 X」用，发起时冻结）。 */
+    /** owner 上下文的展示名（归属提示「停止后保存到 X」用，发起时冻结）。 */
     ownerLabel: string | null;
     /** 相机会的初始模式（audio 会话恒 'photo'，占位不消费）。 */
     cameraMode: 'photo' | 'video';
@@ -114,7 +147,7 @@ interface RecordingSessionState {
     overlayOpen: boolean;
     begin(input: {
         kind: CaptureKind;
-        ownerJournalId: string;
+        owner: CaptureOwner;
         ownerLabel: string | null;
         cameraMode: 'photo' | 'video';
     }): void;
@@ -126,6 +159,7 @@ interface RecordingSessionState {
 export const useRecordingSessionStore = create<RecordingSessionState>((set) => ({
     kind: null,
     phase: 'idle',
+    owner: null,
     ownerJournalId: null,
     ownerLabel: null,
     cameraMode: 'video',
@@ -139,7 +173,10 @@ export const useRecordingSessionStore = create<RecordingSessionState>((set) => (
         set({
             kind: input.kind,
             phase: 'preparing',
-            ownerJournalId: input.ownerJournalId,
+            owner: input.owner,
+            // 兼容投影同帧写入：journal-edit-screen 的三处旧消费点读
+            // ownerJournalId（见接口注），事件归属投影为 null
+            ownerJournalId: ownerJournalIdCompat(input.owner),
             ownerLabel: input.ownerLabel,
             cameraMode: input.cameraMode,
             startedAt: Date.now(),
@@ -182,13 +219,20 @@ function setCaptureHardware(kind: CaptureKind, handlers: CaptureHardware | null)
 /* ------------------------------------------------------------------ */
 
 /**
- * 产物持久化事件：媒体行已建立（attachJournalMedia 成功）、DB 块追加**之前**
- * 发出。owner 屏（ownerJournalId 匹配且挂载中）据此把媒体块合并进本地
+ * 产物持久化事件：媒体行已建立（attachJournalMedia / attachEventMedia 成功）、
+ * DB 块追加**之前**发出。owner 屏（owner 匹配且挂载中）据此把媒体块合并进本地
  * blocksRef——先本地后 DB 的顺序保证此后屏幕保存快照必含该块（见文件头注
  * 冲突口径）。非 owner 屏必须忽略（归属铁律：B 的编辑状态与 A 的会话零耦合）。
  */
 export interface RecordingSessionPersistEvent {
-    ownerJournalId: string;
+    /** 泛化归属（v6.1）：新消费点按 kind + id 判定（事件屏比对 event id）。 */
+    owner: CaptureOwner;
+    /**
+     * ownerJournalId（兼容投影，journal-edit-screen 未迁移消费面专用）：
+     * journal 归属 = 该笔记 id（旧消费点 `event.ownerJournalId !== row.id`
+     * 判定照常成立）；事件归属 = null（旧判定天然 false，不误合并）。
+     */
+    ownerJournalId: string | null;
     mediaId: string;
     kind: JournalMediaKind;
     durationMs?: number;
@@ -216,7 +260,7 @@ export function subscribeRecordingSessionPersist(listener: PersistListener): () 
 export type CaptureStartOutcome = { ok: true } | { ok: false; reason: string };
 
 export type CaptureStopOutcome =
-    | { ok: true; ownerJournalId: string; kind: CaptureKind }
+    | { ok: true; owner: CaptureOwner; kind: CaptureKind }
     | { ok: false; message: string };
 
 function toMessage(error: unknown): string {
@@ -235,6 +279,7 @@ function endCaptureSession(error: string | null): void {
     useRecordingSessionStore.setState({
         kind: null,
         phase: 'idle',
+        owner: null,
         ownerJournalId: null,
         ownerLabel: null,
         startedAt: null,
@@ -278,25 +323,32 @@ function enterPersistingPhase(): void {
  * 发起会话（屏层 + 菜单入口）：已有会话 → 拒绝并给 reason（可见反馈）；
  * **persisting（后台落库期）放行**——落库是 IO+DB、新录制是相机/麦克风，
  * 零资源冲突，begin() 原子顶替痕迹，旧会话的后台任务经注册表独立收敛
- * （token 防串）。ownerJournalId 必须是发起时编辑上下文的 journal id——编辑
- * 屏经 ensureJournal 保证写前有 id（journal state 就绪才渲染 + FAB），此处
- * 兜底空 id 拒绝。
+ * （token 防串）。owner 必须是发起时编辑上下文的归属（journal 笔记或事件
+ * 工单，见 CaptureOwner；journal-edit-screen 传裸 id 走 journal 归属兼容），
+ * 编辑屏经 ensureJournal / 详情页 event 行就绪保证写前有 id，此处兜底空 id
+ * 拒绝。
  */
 export function startCaptureSession(
     kind: CaptureKind,
-    ownerJournalId: string,
+    owner: CaptureOwner | string,
     opts?: { cameraMode?: 'photo' | 'video'; ownerLabel?: string | null },
 ): CaptureStartOutcome {
-    if (!ownerJournalId) return { ok: false, reason: '笔记尚未就绪，稍后再试。' };
+    const normalizedOwner = normalizeCaptureOwner(owner);
+    if (!normalizedOwner.id) {
+        return {
+            ok: false,
+            reason: normalizedOwner.kind === 'event' ? '事件尚未就绪，稍后再试。' : '笔记尚未就绪，稍后再试。',
+        };
+    }
     const state = useRecordingSessionStore.getState();
     if (state.kind && state.phase !== 'persisting') {
         const busy =
             state.kind === 'audio' ? '录音' : state.phase === 'recording' ? '录像' : '相机';
-        return { ok: false, reason: `已有${busy}在进行中（素材将保存到发起的笔记），不能同时开始。` };
+        return { ok: false, reason: `已有${busy}在进行中（素材将保存到发起的页面），不能同时开始。` };
     }
     state.begin({
         kind,
-        ownerJournalId,
+        owner: normalizedOwner,
         ownerLabel: opts?.ownerLabel ?? null,
         // audio 会话不消费 cameraMode；video 会话默认录像、+ 菜单「拍照」行传 photo
         cameraMode: kind === 'video' ? (opts?.cameraMode ?? 'video') : 'photo',
@@ -343,7 +395,7 @@ let videoStopIntake: VideoStopIntake | null = null;
 /** 抢救窗口槽：护栏超时后短暂等待迟到的原生产物（素材已落盘则尽力入库）。 */
 interface VideoSalvageIntake {
     sessionToken: number;
-    ownerJournalId: string;
+    owner: CaptureOwner;
     timer: ReturnType<typeof setTimeout>;
 }
 
@@ -358,7 +410,7 @@ let videoSalvageIntake: VideoSalvageIntake | null = null;
 function stopVideoHardwareWithGuard(
     stopRecording: () => boolean,
     sessionToken: number,
-    ownerJournalId: string,
+    owner: CaptureOwner,
 ): Promise<{ product: CaptureHardwareProduct; wasRecording: boolean }> {
     return new Promise((resolve) => {
         let settled = false;
@@ -374,7 +426,7 @@ function stopVideoHardwareWithGuard(
             // 归属尽力入库；窗口空过则明确丢弃提示（不静默）
             videoSalvageIntake = {
                 sessionToken,
-                ownerJournalId,
+                owner,
                 timer: setTimeout(() => {
                     if (videoSalvageIntake?.sessionToken === sessionToken) {
                         videoSalvageIntake = null;
@@ -409,7 +461,7 @@ function stopVideoHardwareWithGuard(
  */
 async function stopAudioHardwareWithGuard(
     stop: () => Promise<CaptureHardwareProduct>,
-    ownerJournalId: string,
+    owner: CaptureOwner,
 ): Promise<CaptureHardwareProduct> {
     let timedOut = false;
     // 立即执行包装：同步抛错归一为 rejected promise（race 与迟到链统一语义）
@@ -424,7 +476,7 @@ async function stopAudioHardwareWithGuard(
             }
             if (late.uri) {
                 void salvageLateProduct({
-                    ownerJournalId,
+                    owner,
                     kind: 'audio',
                     uri: late.uri,
                     durationMs: late.durationMs,
@@ -451,13 +503,14 @@ async function stopAudioHardwareWithGuard(
 }
 
 /**
- * 媒体落库核心（不含会话状态写入）：attach 媒体行 → persist 事件（owner 屏
- * 先本地合并）→ DB 级块追加（归属落库）。停录/拍照产物与迟到抢救共用；
- * attach/append 失败文案由 store 上浮（store.error），本层不重复覆盖。
- * taskId/onProgress 透传（进度注册表 + 护栏活跃度跟踪；抢救路径可缺省）。
+ * 媒体落库核心（不含会话状态写入）：attach 媒体行（按 owner.kind 分派
+ * journal/event 双侧）→ persist 事件（owner 屏先本地合并）→ DB 级块追加
+ * （归属落库）。停录/拍照产物与迟到抢救共用；attach/append 失败文案由 store
+ * 上浮（store.error），本层不重复覆盖。taskId/onProgress 透传（进度注册表 +
+ * 护栏活跃度跟踪；抢救路径可缺省）。
  */
-async function persistMediaToJournal(input: {
-    ownerJournalId: string;
+async function persistMediaToOwner(input: {
+    owner: CaptureOwner;
     sessionKind: CaptureKind;
     mediaKind: JournalMediaKind;
     uri: string;
@@ -467,34 +520,53 @@ async function persistMediaToJournal(input: {
     taskId?: string;
     onProgress?: () => void;
 }): Promise<CaptureStopOutcome> {
-    const mediaId = await useArchiveStore
-        .getState()
-        .attachJournalMedia(input.ownerJournalId, input.mediaKind, input.uri, input.width, input.height, {
-            // 录像/录音产物 = cache 临时件 → move 直迁（原件移走零残留）；
-            // 拍照产物为 image，不走 move 分支（相册兜底通道已删，纯化轮）
-            taskId: input.taskId,
-            moveSource: true,
-            onProgress: input.onProgress,
-        });
+    const owner = input.owner;
+    // 媒体行落库按归属分派：journal 走 attachJournalMedia（taskId/moveSource/
+    // onProgress 全量 opts）；event 走 attachEventMedia（v6.1 补齐同款 opts）。
+    // 录像/录音产物 = cache 临时件 → move 直迁（原件移走零残留）；拍照产物为
+    // image，不走 move 分支（相册兜底通道已删，纯化轮）
+    const attachOpts = {
+        taskId: input.taskId,
+        moveSource: true,
+        onProgress: input.onProgress,
+    };
+    const mediaId =
+        owner.kind === 'journal'
+            ? await useArchiveStore
+                  .getState()
+                  .attachJournalMedia(owner.id, input.mediaKind, input.uri, input.width, input.height, attachOpts)
+            : await useArchiveStore
+                  .getState()
+                  .attachEventMedia(owner.id, input.mediaKind, input.uri, input.width, input.height, input.durationMs ?? null, attachOpts);
     if (!mediaId) {
         // attach 失败文案已由 store 上浮（store.error）；素材弃置 cache 由系统清理
         return { ok: false, message: '媒体上传失败，素材未能保存。' };
     }
     // 先本地合并（owner 屏）、后 DB 追加：此后屏幕保存快照必含媒体块（头注口径）
     emitPersist({
-        ownerJournalId: input.ownerJournalId,
+        owner,
+        // 兼容投影：journal 归属 = 笔记 id，事件归属 = null（旧消费点判定天然 false）
+        ownerJournalId: ownerJournalIdCompat(owner),
         mediaId,
         kind: input.mediaKind,
         durationMs: input.durationMs,
     });
-    const appended = await useArchiveStore.getState().appendMediaBlockToJournal(input.ownerJournalId, {
-        mediaId,
-        kind: input.mediaKind,
-        durationMs: input.durationMs,
-    });
+    // DB 级块追加按归属分派（双侧同为 DB 权威读-改-写 + 幂等 + revision bump）
+    const appended =
+        owner.kind === 'journal'
+            ? await useArchiveStore.getState().appendMediaBlockToJournal(owner.id, {
+                  mediaId,
+                  kind: input.mediaKind,
+                  durationMs: input.durationMs,
+              })
+            : await useArchiveStore.getState().appendMediaBlockToEvent(owner.id, {
+                  mediaId,
+                  kind: input.mediaKind,
+                  durationMs: input.durationMs,
+              });
     return appended
-        ? { ok: true, ownerJournalId: input.ownerJournalId, kind: input.sessionKind }
-        : { ok: false, message: '素材已上传，但媒体块落库失败，请重新保存笔记。' };
+        ? { ok: true, owner, kind: input.sessionKind }
+        : { ok: false, message: '素材已上传，但媒体块落库失败，请重新保存记录。' };
 }
 
 /**
@@ -504,15 +576,15 @@ async function persistMediaToJournal(input: {
  * 反馈（store 已给出更具体的失败文案时不覆盖）。
  */
 async function salvageLateProduct(input: {
-    ownerJournalId: string;
+    owner: CaptureOwner;
     kind: CaptureKind;
     uri: string;
     durationMs?: number;
     timeoutNoun: string;
 }): Promise<void> {
     const errorBefore = useArchiveStore.getState().error;
-    const outcome = await persistMediaToJournal({
-        ownerJournalId: input.ownerJournalId,
+    const outcome = await persistMediaToOwner({
+        owner: input.owner,
         sessionKind: input.kind,
         mediaKind: input.kind,
         uri: input.uri,
@@ -542,7 +614,7 @@ async function salvageLateProduct(input: {
  * 收尾协调器的 token 比对承担）。
  */
 interface BackgroundPersistTask {
-    ownerJournalId: string;
+    owner: CaptureOwner;
     promise: Promise<CaptureStopOutcome>;
 }
 
@@ -554,9 +626,9 @@ let backgroundPersistSeq = 0;
 const CAPTURE_PROGRESS_PREFIX = 'capture:';
 
 /** 同归属后台落库是否仍有在途任务（收尾协调的终结条件之一）。 */
-function hasInflightPersists(ownerJournalId: string): boolean {
+function hasInflightPersists(owner: CaptureOwner): boolean {
     for (const task of backgroundPersists.values()) {
-        if (task.ownerJournalId === ownerJournalId) return true;
+        if (task.owner.kind === owner.kind && task.owner.id === owner.id) return true;
     }
     return false;
 }
@@ -567,13 +639,13 @@ function hasInflightPersists(ownerJournalId: string): boolean {
  * ok。任务 promise 已在注册处 catch 归一，rejected 分支纯防御。
  */
 async function waitForOwnerPersists(
-    ownerJournalId: string,
+    owner: CaptureOwner,
     kind: CaptureKind,
 ): Promise<CaptureStopOutcome> {
     const tasks = Array.from(backgroundPersists.values()).filter(
-        (task) => task.ownerJournalId === ownerJournalId,
+        (task) => task.owner.kind === owner.kind && task.owner.id === owner.id,
     );
-    if (tasks.length === 0) return { ok: true, ownerJournalId, kind };
+    if (tasks.length === 0) return { ok: true, owner, kind };
     const results = await Promise.allSettled(tasks.map((task) => task.promise));
     for (const result of results) {
         const outcome =
@@ -582,7 +654,7 @@ async function waitForOwnerPersists(
                 : { ok: false as const, message: toMessage(result.reason) };
         if (!outcome.ok) return outcome;
     }
-    return { ok: true, ownerJournalId, kind };
+    return { ok: true, owner, kind };
 }
 
 /**
@@ -596,7 +668,7 @@ async function waitForOwnerPersists(
  */
 function persistCaptureProduct(
     input: {
-        ownerJournalId: string;
+        owner: CaptureOwner;
         sessionKind: CaptureKind;
         mediaKind: JournalMediaKind;
         uri: string;
@@ -616,7 +688,7 @@ function persistCaptureProduct(
         let lastProgressAt = Date.now();
         let stallPoll: ReturnType<typeof setInterval> | null = null;
         try {
-            const underlying = persistMediaToJournal({
+            const underlying = persistMediaToOwner({
                 ...input,
                 taskId: progressTaskId,
                 onProgress: () => {
@@ -659,7 +731,7 @@ function persistCaptureProduct(
             backgroundPersists.delete(taskId);
             tryCloseUiSession();
         });
-    backgroundPersists.set(taskId, { ownerJournalId: input.ownerJournalId, promise });
+    backgroundPersists.set(taskId, { owner: input.owner, promise });
     return promise;
 }
 
@@ -668,7 +740,7 @@ function persistCaptureProduct(
 /* ------------------------------------------------------------------ */
 
 interface UiSessionClose {
-    ownerJournalId: string;
+    owner: CaptureOwner;
     /** 发起收尾的代会话令牌（startedAt）：被新会话顶替/终结即作废。 */
     sessionToken: number;
     /** 终结时写入会话状态的错误（失败收场口径；null = 干净收场）。 */
@@ -687,13 +759,13 @@ let uiSessionClose: UiSessionClose | null = null;
  * 照常），落库任务注册不等缓冲（立即开始）。
  */
 function scheduleUiSessionClose(
-    ownerJournalId: string,
+    owner: CaptureOwner,
     sessionToken: number,
     endError: string | null,
 ): void {
     cancelUiSessionClose(); // 单例：同代会话重复调度幂等
     const close: UiSessionClose = {
-        ownerJournalId,
+        owner,
         sessionToken,
         endError,
         fadeDone: false,
@@ -725,7 +797,7 @@ function tryCloseUiSession(): void {
         cancelUiSessionClose();
         return;
     }
-    if (hasInflightPersists(close.ownerJournalId)) {
+    if (hasInflightPersists(close.owner)) {
         // 落库仍在后台：UI 已随淡出消失，会话转 persisting（仅 stopping 可
         // 进——preparing/recording 说明已被新会话顶替，绝不误伤）
         if (state.phase === 'stopping') enterPersistingPhase();
@@ -736,9 +808,9 @@ function tryCloseUiSession(): void {
 }
 
 /** 停止路径失败收场：文案上浮 + UI 会话按淡出缓冲终结（卡片不瞬移，横幅即反馈）。 */
-function failStopSession(message: string, ownerJournalId: string, sessionToken: number): void {
+function failStopSession(message: string, owner: CaptureOwner, sessionToken: number): void {
     surfaceSessionError(message);
-    scheduleUiSessionClose(ownerJournalId, sessionToken, message);
+    scheduleUiSessionClose(owner, sessionToken, message);
 }
 
 /**
@@ -751,17 +823,17 @@ function failStopSession(message: string, ownerJournalId: string, sessionToken: 
  */
 export async function stopCaptureSession(): Promise<CaptureStopOutcome> {
     const state = useRecordingSessionStore.getState();
-    if (!state.kind || !state.ownerJournalId || state.startedAt == null) {
+    if (!state.kind || !state.owner || state.startedAt == null) {
         return { ok: false, message: '当前没有进行中的录制会话。' };
     }
     const kind = state.kind;
-    const ownerJournalId = state.ownerJournalId;
+    const owner = state.owner;
     const startedAt = state.startedAt;
     if (state.phase === 'persisting') {
         // 落库后台期的停止（「停后立即收笔」的路径）：硬件已无可停——等待
-        // 该笔记归属的全部后台落库任务收敛并回传聚合结果（persist 事件/
+        // 该归属的全部后台落库任务收敛并回传聚合结果（persist 事件/
         // DB 追加既有链在任务内完成，等待保证收笔保存必带媒体块）
-        return waitForOwnerPersists(ownerJournalId, kind);
+        return waitForOwnerPersists(owner, kind);
     }
     if (state.phase === 'stopping') {
         // 可见反馈（不静默）：硬件停录在途且有界（5s 护栏），拒绝重入
@@ -785,12 +857,12 @@ export async function stopCaptureSession(): Promise<CaptureStopOutcome> {
             const stopped = await stopVideoHardwareWithGuard(
                 videoStopRecording,
                 startedAt,
-                ownerJournalId,
+                owner,
             );
             product = stopped.product;
             wasRecording = stopped.wasRecording;
         } else if (kind === 'audio' && audioStop) {
-            product = await stopAudioHardwareWithGuard(audioStop, ownerJournalId);
+            product = await stopAudioHardwareWithGuard(audioStop, owner);
         } else {
             // 不可达（上方已闸）：防御性收场，不让任何路径滞留 stopping
             failSession('录制控制器不可用，会话已结束。');
@@ -798,29 +870,29 @@ export async function stopCaptureSession(): Promise<CaptureStopOutcome> {
         }
     } catch (caught) {
         const message = `停止录制失败：${toMessage(caught)}`;
-        failStopSession(message, ownerJournalId, startedAt);
+        failStopSession(message, owner, startedAt);
         return { ok: false, message };
     }
     if ('error' in product) {
-        failStopSession(product.error, ownerJournalId, startedAt);
+        failStopSession(product.error, owner, startedAt);
         return { ok: false, message: product.error };
     }
     if (!product.uri) {
         if (wasRecording) {
-            failStopSession('录制未能生成文件，素材没有保存。', ownerJournalId, startedAt);
+            failStopSession('录制未能生成文件，素材没有保存。', owner, startedAt);
             return { ok: false, message: '录制未能生成文件，素材没有保存。' };
         }
         // 未真正开录（prepare/取景阶段被收场）：无产物、无落库义务、不阻塞
         // 调用方——按淡出缓冲终结
-        scheduleUiSessionClose(ownerJournalId, startedAt, null);
-        return { ok: true, ownerJournalId, kind };
+        scheduleUiSessionClose(owner, startedAt, null);
+        return { ok: true, owner, kind };
     }
     // 有产物：落库立即转后台任务（不等淡出），UI 会话按淡出缓冲终结——
     // 用户口径「关窗即返回，保存自动完成」。收笔等同步链路需要真实落库
     // 结果判定中止：等待同归属全部后台任务收敛（allSettled）后回传。
     void persistCaptureProduct(
         {
-            ownerJournalId,
+            owner,
             sessionKind: kind,
             mediaKind: kind,
             uri: product.uri,
@@ -832,8 +904,8 @@ export async function stopCaptureSession(): Promise<CaptureStopOutcome> {
         },
         startedAt,
     );
-    scheduleUiSessionClose(ownerJournalId, startedAt, null);
-    return waitForOwnerPersists(ownerJournalId, kind);
+    scheduleUiSessionClose(owner, startedAt, null);
+    return waitForOwnerPersists(owner, kind);
 }
 
 /** 取消会话（丢弃）：硬件停录丢弃，无落库义务；卡片同样走淡出关闭语言
@@ -843,7 +915,7 @@ export async function cancelCaptureSession(): Promise<void> {
     const state = useRecordingSessionStore.getState();
     if (!state.kind || isSessionSettling(state.phase)) return;
     const hardware = captureHardware[state.kind];
-    const ownerJournalId = state.ownerJournalId;
+    const owner = state.owner;
     const startedAt = state.startedAt;
     useRecordingSessionStore.setState({ phase: 'stopping' });
     let cancelGuardTimer: ReturnType<typeof setTimeout> | null = null;
@@ -862,8 +934,8 @@ export async function cancelCaptureSession(): Promise<void> {
     }
     // 丢弃收场按淡出缓冲终结（无任务在途，淡出落地即终结）；痕迹缺失时
     // 防御性立即终结
-    if (ownerJournalId && startedAt != null) {
-        scheduleUiSessionClose(ownerJournalId, startedAt, null);
+    if (owner && startedAt != null) {
+        scheduleUiSessionClose(owner, startedAt, null);
     } else {
         endCaptureSession(null);
     }
@@ -934,7 +1006,7 @@ function handleCameraProduct(capture: CameraCapture, sessionToken: number | null
         clearTimeout(salvage.timer);
         videoSalvageIntake = null;
         void salvageLateProduct({
-            ownerJournalId: salvage.ownerJournalId,
+            owner: salvage.owner,
             kind: 'video',
             uri: capture.uri,
             timeoutNoun: '录制停止超时',
@@ -946,7 +1018,7 @@ function handleCameraProduct(capture: CameraCapture, sessionToken: number | null
         state.kind !== 'video' ||
         state.startedAt !== sessionToken ||
         state.startedAt == null ||
-        !state.ownerJournalId
+        !state.owner
     ) {
         // 非当前会话的迟到产物：素材未入库，明确反馈（不静默）
         if (sessionToken != null) surfaceSessionError('迟到的录像素材未能保存。');
@@ -955,12 +1027,12 @@ function handleCameraProduct(capture: CameraCapture, sessionToken: number | null
     // 自发性产物（拍照即完成/系统收尾）：先入 stopping（卡片淡出驱动），落库
     // 立即转后台任务，UI 会话按淡出缓冲终结——与停止同口径（关窗即返回，
     // 成功静默、失败横幅在任务收敛时反馈）
-    const ownerJournalId = state.ownerJournalId;
+    const owner = state.owner;
     const startedAt = state.startedAt;
     useRecordingSessionStore.setState({ phase: 'stopping' });
     void persistCaptureProduct(
         {
-            ownerJournalId,
+            owner,
             sessionKind: 'video',
             mediaKind: capture.kind,
             uri: capture.uri,
@@ -969,7 +1041,7 @@ function handleCameraProduct(capture: CameraCapture, sessionToken: number | null
         },
         startedAt,
     );
-    scheduleUiSessionClose(ownerJournalId, startedAt, null);
+    scheduleUiSessionClose(owner, startedAt, null);
 }
 
 /**
@@ -1134,11 +1206,14 @@ function AudioCaptureController({ ownerHint }: { ownerHint: string | null }) {
 /* ------------------------------------------------------------------ */
 
 /** 悬浮 chip 悬挂基线：编辑器路由（无 tabBar）贴底 32；tab 页等抬高越过
- *  tabBar 条带（49dp + 余量），避免压住 tab 导航。 */
+ *  tabBar 条带（49dp + 余量），避免压住 tab 导航。事件详情（/events/[id]）
+ *  与事件表单同属无 tabBar 的编辑面，v6.1 录制归属泛化后一并按编辑器口径
+ *  （/events 前缀整体命中，新建页也可承载最小化 chip）。 */
 function chipBottomInset(pathname: string, bottomInset: number): number {
     const isEditorRoute =
         pathname === '/write' ||
         pathname.startsWith('/journal/') ||
+        pathname.startsWith('/events/') ||
         /\/write(\/|$)/.test(pathname);
     return bottomInset + (isEditorRoute ? 32 : 96);
 }

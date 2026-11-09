@@ -161,11 +161,30 @@ export interface TripStats {
 
 export async function tripStats(): Promise<Map<string, TripStats>> {
     const db = await getDb();
+    // 统计窗口 = 行程自身日期区间（2026-11-11 反馈四配套修正）：调整行程天数
+    // （改 start/end）后，落在窗外（原区间多出的日子）的日记/计划行仍留库——
+    // 详情页逐日骨架只渲染窗内日（tripDayList），统计若全量计数就会出现
+    // 「已写 6/5 天」「计划完成 2/10 但行程只有 5 天」的旧值/超分母错位。
+    // 修后按 local_date ∈ [start_date, end_date] 过滤，与详情页骨架口径一致；
+    // 持续性行程 end_date = 'open'（字典序恒大于任何 YYYY-MM-DD），显式
+    // OR end_date = 'open' 表达「无上界」（同 searchTrips 的写法，不靠隐式巧合）。
     const journalCounts = await db.getAll<{ trip_id: string; n: number }>(
-        'SELECT trip_id, COUNT(DISTINCT local_date) AS n FROM journals WHERE deleted_at IS NULL AND trip_id IS NOT NULL GROUP BY trip_id',
+        `SELECT j.trip_id AS trip_id, COUNT(DISTINCT j.local_date) AS n
+         FROM journals j
+         JOIN trips t ON t.id = j.trip_id AND t.deleted_at IS NULL
+         WHERE j.deleted_at IS NULL AND j.trip_id IS NOT NULL
+           AND j.local_date >= t.start_date
+           AND (j.local_date <= t.end_date OR t.end_date = 'open')
+         GROUP BY j.trip_id`,
     );
     const planRows = await db.getAll<{ trip_id: string; total: number; done: number }>(
-        'SELECT trip_id, COUNT(*) AS total, COALESCE(SUM(done), 0) AS done FROM day_plans WHERE deleted_at IS NULL GROUP BY trip_id',
+        `SELECT p.trip_id AS trip_id, COUNT(*) AS total, COALESCE(SUM(p.done), 0) AS done
+         FROM day_plans p
+         JOIN trips t ON t.id = p.trip_id AND t.deleted_at IS NULL
+         WHERE p.deleted_at IS NULL
+           AND p.local_date >= t.start_date
+           AND (p.local_date <= t.end_date OR t.end_date = 'open')
+         GROUP BY p.trip_id`,
     );
     const map = new Map<string, TripStats>();
     for (const row of journalCounts) {
@@ -623,12 +642,14 @@ export async function updateEventBlocks(id: string, blocks: string): Promise<voi
 }
 
 /**
- * updateEventMeta 的可变字段集合：状态 / 短描述 / GPS 三列 / 处理人 / 对象对。
- * 原子对与 GPS 的清空语义由 store 层归一化后落库（db 层只认列值，不做解析）。
+ * updateEventMeta 的可变字段集合：标题（v6.1 设置卡改名）/ 状态 / 短描述 /
+ * GPS 三列 / 处理人 / 对象对。原子对与 GPS 的清空语义由 store 层归一化后落库
+ * （db 层只认列值，不做解析）；title 的必填/长度校验同样在 store 层。
  */
 export type EventMetaPatch = Partial<
     Pick<
         EventRow,
+        | 'title'
         | 'status'
         | 'description'
         | 'gps_lat'
@@ -846,4 +867,21 @@ export async function nextDayPlanSortOrder(tripId: string, localDate: string): P
         [tripId, localDate],
     );
     return (row?.max_sort ?? -1) + 1;
+}
+
+/**
+ * 单条逐日计划软删（行程详情计划行长按删除入口）：软删域约定（对齐
+ * softDeleteTripCascade 的 day_plans 段——deleted_at + updated_at 同拍落，
+ * 列结构见 insertDayPlan 的 INSERT 列清单），轻量行级操作**不经 store**，
+ * 由屏层（trip-detail-screen）直连调用——同本节 insertDayPlan / setDayPlanDone
+ * 的既有取径。删除后的刷新广播由调用方负责（列表重载 +
+ * data-revision.notifyDataRevision 中立层广播）。
+ * @param at 统一的删除时间戳（同一事件一个时间，审计口径一致）
+ */
+export async function softDeleteDayPlan(id: string, at: number): Promise<void> {
+    const db = await getDb();
+    await db.run(
+        'UPDATE day_plans SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL',
+        [at, id],
+    );
 }
