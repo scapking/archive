@@ -9,8 +9,13 @@ import { applyThemePref, getPalette, useEffectiveTheme, useArchiveStore, type Th
 // Android E2E 冷启自愈（同 last-route/store 深路径直连先例——域 barrel index.ts
 // 不在本次允许改动清单内）：reapply 等价调 Me 切换链的 native 生效点但不切主题
 // （dev build 正解，Expo Go 下 no-op）；useAndroidE2eSelfRepair 是 Expo Go 冷启
-// 非 E2E 的主题双翻自动修复（检测口径、时序与 guardrail 全集见 theme.ts 尾段）。
-import { reapplyAndroidEdgeToEdge, useAndroidE2eSelfRepair } from '@/features/archive/ui/theme';
+// 非 E2E 的主题双翻自动修复（检测口径、时序与 guardrail 全集见 theme.ts 尾段），
+// useBootReady 是它驱动的启动门控（bootReady=false 期间本布局以过渡页替代 app
+// 内容，收口口径与时序见 theme.ts boot gate 段）。
+import { reapplyAndroidEdgeToEdge, useAndroidE2eSelfRepair, useBootReady } from '@/features/archive/ui/theme';
+// 启动过渡页（深路径直连同上）：仅 Android 且 bootReady=false 期间渲染，
+// 全屏 sceneBg 底 + 品牌 Logo，盖住双翻的两次 Activity 重建（boot-screen.tsx 头注）。
+import { BootScreen } from '@/features/archive/ui/boot-screen';
 // 上一次界面缓存（R8 深路径直连：域 barrel index.ts 不在本次允许改动清单内）
 import {
     consumeLastRoute,
@@ -91,6 +96,10 @@ export default function RootLayout() {
     // Activity 重建。与下方 600ms 探测 effect 无耦合（一个 Expo Go no-op 只服务
     // dev build，一个只服务 Expo Go），机理与时序见 theme.ts 尾段实现注。
     useAndroidE2eSelfRepair();
+    // 启动门控（Android：自愈链收口前 false；web/iOS 恒 true）——false 期间本
+    // 布局渲染 BootScreen 替代 Stack，双翻两次重建全程盖在过渡页下。注意 hook
+    // 须无条件调用（conditional render 在全部 hooks 之后，见 return 前的门控分支）。
+    const bootReady = useBootReady();
 
     useEffect(() => {
         if (!ready) void loadAll();
@@ -231,7 +240,15 @@ export default function RootLayout() {
         // 会让 RootLayout 随每次导航状态变化重渲——仓库此前已为此特意选了事件
         // 订阅路径，这里沿用零重渲方案。10ms × 200 次 ≈ 2s 上限：超时放弃恢复
         // （只少一次增强，保存闸门照常放行）。
+        //
+        // boot 门控顺延（Android）：恢复必须等 bootReady=true（自愈链收口）后
+        // 再走——①双翻的两次重建会整树重挂，boot 期间 Stack 未挂载，replace 的
+        // 目标屏在重建中必丢；②boot 期间 navigationRef.current 为 null，轮询只
+        // 会空转把 2s 预算烧完、恢复静默失效。bootReady 收口与 Stack 首挂同
+        // commit，此处启动轮询时路由已可读（10ms 首拍即中）。web/iOS 恒 ready，
+        // 时序与历史行为一致。
         if (lastRouteRestoreDone) return;
+        if (!bootReady) return;
         let cancelled = false;
         let pollTimer: ReturnType<typeof setTimeout> | null = null;
         let polls = 0;
@@ -280,7 +297,23 @@ export default function RootLayout() {
             cancelled = true;
             if (pollTimer !== null) clearTimeout(pollTimer);
         };
-    }, [navigationRef, router]);
+    }, [navigationRef, router, bootReady]);
+
+    // Android 启动门控分支（在全部 hooks 之后，hook 顺序跨渲染恒定）：bootReady
+    // 收口前以过渡页替代全部 app 内容——不渲染 Stack（首页在双翻重建期间不可见，
+    // 也不被重建吞掉恢复导航），RecordingSessionHost 一并顺延挂载（冷启本就无
+    // 录制会话，无状态丢失面）。其余常驻副作用（窗口底色跟随、键盘/E2E 补调、
+    // 数据 loadAll、启动 GC）照常在 boot 期间运行——窗口底色必须随主题翻转，
+    // 否则导航栏条带会露陈旧底色。theme 同步刷新 StatusBar（boot 页底色翻转到
+    // 哪档，状态栏内容就配哪档）。
+    if (Platform.OS === 'android' && !bootReady) {
+        return (
+            <>
+                <StatusBar style={theme === 'dark' ? 'light' : 'dark'} />
+                <BootScreen />
+            </>
+        );
+    }
 
     return (
         <>
