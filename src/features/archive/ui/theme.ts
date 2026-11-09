@@ -203,8 +203,8 @@ export function reapplyAndroidEdgeToEdge(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Android Expo Go 冷启 E2E 自动修复 v2（持久化守卫驱动的跨上下文状态机，
-// 2026-11-09）。
+// Android Expo Go 冷启 E2E 自动修复 v3（持久化守卫驱动的跨上下文状态机，
+// 2026-11-10 可靠性加固轮：双采样检测 / restore 轮询自证 / 同 boot 一次重试）。
 //
 // 【问题】Expo Go 58 未捆绑 react-native-edge-to-edge 原生模块（机理见上方
 // reapplyAndroidEdgeToEdge 注），冷启窗口非 E2E（decorFitsSystemWindows=true，
@@ -212,67 +212,107 @@ export function reapplyAndroidEdgeToEdge(): void {
 // useSafeAreaInsets().bottom——E2E 时三键/手势导航的 bottom inset 必 >0，
 // 非 E2E（insets 被窗口布局消费）恒 =0。
 //
-// 【v1 教训 → v2 架构】v1「同上下文双翻」被真机证伪：Expo Go 的
-// ExperienceActivity 重建是**新 JS 上下文**（bundle 重新求值），v1 的翻二
-// 定时器随翻一的上下文死亡而丢失（主题滞留对档），且重建与模块求值竞态
-// 触发 `Cannot find native module 'ExpoCrypto'` 崩溃循环。v2 把每一步落盘
-// 为持久化守卫状态（AsyncStorage），每次挂载（无论同上下文重挂还是新上下文
-// 重求值）都从守卫状态续跑恰好一步：
-//   无守卫 + bottom===0 → 落盘 {phase:'flip'} → 翻对档（触发重建）；
-//   phase='flip'        → 翻二 applyThemePref(原档)（归位）→ 落盘 'restore'；
-//   phase='restore'     → bottom>0 成功清守卫收口；仍 0 计败重试（3 次放弃）。
-// 每个上下文至多执行一步（e2eStepRanInThisContext），步间推进靠重建/重挂。
+// 【v1/v2 教训 → v3 架构】v1「同上下文双翻」被真机证伪：Expo Go 的
+// ExperienceActivity 重建是**新 JS 上下文**（bundle 重新求值），上下文内
+// 定时器随重建丢失且与模块求值竞态崩溃，故每一步落盘为持久化守卫状态
+// （AsyncStorage），每次挂载从守卫续跑恰好一步。v2 的单次判定与单点自证被
+// 真机反馈证伪出四个概率性可靠性面，v3 逐项加固：
 //
-// 【guardrail】1. 失败计数落盘 + 3 次放弃（守卫保留使后续冷启持续短路，出口
-// 转人工/dev build；E2E 健康冷启自动清零重置）；2. 双翻窗口用户竞态：盘上
-// 'ui.theme' 被用户改过 → 中止尊重用户；3. 注水超时不动（宁缺毋滥）；4.
-// 误判面：全屏隐藏导航栏设备（E2E 但 bottom=0）→ 走一轮翻转后原档归位，
-// 可接受；insets null 保守不动。
+//   ① 检测防瞬态误判（双采样）：v2 挂载 400ms 单次读 bottom——健康设备的
+//      insets 晚测量（单拍瞬时 0）会误入修复（无谓双翻重建）；反之瞬时 >0
+//      （上次会话收尾/系统时序残留）会误判健康提前收口 → boot 页一闪而过且
+//      修复没跑。v3 改 T1=400ms、T2=1000ms 各读一拍：**两拍全 0 才判定非
+//      E2E 进入修复；任一拍 >0 即健康收口**（保守方向：宁可不修、不可误翻；
+//      T1 即 >0 的健康冷启保持 ~400ms 快路径不回退）。
+//   ② restore 自证改观察窗轮询：v2 restore 重建后单点读数，insets 事件晚到
+//      时把「实际已生效」误判为失败。v3 在 restore 步后最长 1.5s 内以 100ms
+//      间隔轮询 bottom，任一 >0 即成功，超时全 0 才判失败（消除时序误判面）。
+//   ③ 同 boot 内一次重试：v2 restore 判失败即计败收口（本 boot 放弃）。v3
+//      失败后同 boot 重开一轮 flip→restore（守卫 rounds 记账，至多 2 轮），
+//      两轮仍 0 才计败收口（落 flip 守卫，下次冷启重试）；重试全程 boot 页
+//      盖住（链内任何一步都不提前收口）。
+//   ④ 计败口径：failedRuns = restore 轮询判失败的跨 boot 累计次数（每轮失败
+//      +1，成功清守卫即清零）。v2 在第 3 次失败时清守卫收口，「守卫保留短路」
+//      实际不持久（每 4 个冷启循环重来）；v3 达 3 次时守卫以 flip 态保留，
+//      后续冷启在检测步持续短路放弃，出口 = 手动切主题（Me 页）或 dev build。
+//
+// 每上下文至多一次检测/一步（e2eStepRanInThisContext 在收口处置位，重挂
+// 短路；同 boot 多轮跨越多个上下文，轮次由守卫 rounds 字段跨上下文记账）。
+// 翻转与归位的 Activity 重建全部被 boot 页盖住（见文件尾 boot gate 段）。
+//
+// 【guardrail】1. 失败计数落盘 + 3 次放弃（守卫保留持续短路；E2E 健康冷启
+// 自动清零重置）；2. 双翻窗口用户竞态：盘上 'ui.theme' 被用户改过 → 中止
+// 尊重用户；3. 注水超时不动（宁缺毋滥——用默认档误当原档会翻错用户主题；
+// 下次冷启重试，不计失败）；4. 误判面：全屏隐藏导航栏设备（E2E 但
+// bottom=0）→ 走一轮翻转后原档归位，可接受；insets 镜像未测得（null）沿用
+// -1 口径进入修复路径（实测不可达，防御性兜底）。
 // ---------------------------------------------------------------------------
 
 /** 修复守卫持久化键（AsyncStorage 直连：archive.config 是用户配置域文档，
     修复状态属运行时自愈流程，混入会污染配置语义）。 */
 const E2E_REPAIR_GUARD_KEY = 'archive.e2e-repair-guard';
 
-/** 连续失败上限：第 3 次冷启修复仍非 E2E 后放弃（防死循环骚扰，出口转人工）。 */
+/** restore 轮询判失败累计上限：跨 boot 累计第 3 次后放弃自动修复（防死循环
+    骚扰，出口转人工/dev build；守卫保留使后续冷启持续短路）。 */
 const E2E_REPAIR_MAX_FAILED_RUNS = 3;
 
-/** 每步动作前的稳定等待（挂载/重建后的布局与 insets 沉淀）。 */
+/** 单 boot 内 flip→restore 最大轮数：第 1 轮判失败后同 boot 重试 1 次，两轮
+    仍非 E2E 才计败收口放弃本 boot（下次冷启重试）。 */
+const E2E_REPAIR_MAX_ROUNDS_PER_BOOT = 2;
+
+/** 检测第一拍 = 各步动作前的稳定等待（挂载/重建后的布局与 insets 沉淀）。 */
 const E2E_REPAIR_STEP_DELAY_MS = 400;
 
-/** restore 步自证观察窗（等待重建后的 insets 事件重渲刷新镜像）。 */
-const E2E_REPAIR_SETTLE_DELAY_MS = 600;
+/** 检测第二拍：与第一拍两拍全 0 才判定非 E2E（双采样防瞬态误判，见段头注①）。 */
+const E2E_REPAIR_DETECT_SECOND_SAMPLE_MS = 1000;
+
+/** restore 自证观察窗上限：轮询时长（任一拍 >0 即成功；超时全 0 判失败）。 */
+const E2E_REPAIR_RESTORE_POLL_WINDOW_MS = 1500;
+
+/** restore 自证轮询间隔。 */
+const E2E_REPAIR_RESTORE_POLL_INTERVAL_MS = 100;
 
 /** 配置注水等待上限：超时放弃本次修复（宁缺毋滥——用默认档误当原档会翻错
     用户主题；下次冷启重试，不计失败）。 */
 const E2E_REPAIR_HYDRATION_TIMEOUT_MS = 1500;
 
-/** 修复守卫持久化结构：phase=下一步动作（flip=翻对档触发重建 / restore=归位
-    用户原档）；originalPref=用户原档（restore 目标 + 用户竞态比对基准）；
-    failedRuns=连续失败冷启数（restore 失败 +1，成功或放弃清零，3 次放弃）。 */
+/** 修复守卫持久化结构（跨上下文/跨冷启续跑的唯一记账载体）：
+    phase=下一步动作（flip=开新一轮：翻一入对档 / restore=归位原档 + 轮询
+    自证）；originalPref=用户原档（restore 目标 + 用户竞态比对基准）；
+    failedRuns=restore 判失败跨 boot 累计（每轮 +1，成功清零，3 次放弃）；
+    rounds=当前 boot 内已进行的轮数（1..2；flip 态落盘时恒 1 = 下次冷启重开）。 */
 type E2eRepairPhase = 'flip' | 'restore';
 
 interface E2eRepairGuard {
     phase: E2eRepairPhase;
     originalPref: ThemePref;
     failedRuns: number;
+    rounds: number;
 }
 
-/** 每上下文一步守卫：本 JS 上下文已执行过步骤（含收口）→ 同上下文的重挂全部
-    短路；Activity 重建若产生新 JS 上下文（Expo Go 实测行为，v1 同上下文双翻
-    被证伪的根因）则变量重置、由持久化守卫续跑下一步——两种宿主模型通用。 */
+/** 每上下文一次守卫：本 JS 上下文已收口（含修复链内任何收口点）→ 同上下文的
+    重挂全部短路；Activity 重建若产生新 JS 上下文（Expo Go 实测行为，v1 同
+    上下文双翻被证伪的根因）则变量重置、由持久化守卫续跑——两种宿主模型
+    通用。链内多步/多轮不置位本标记（仅收口置位），重挂竞态由各步幂等性 +
+    守卫状态兜底。 */
 let e2eStepRanInThisContext = false;
 
 /** 最新一次渲染的 bottom inset / 生效主题（渲染期镜像，跨重挂存活的「最新
-    快照」）：restore 自证与各步判定读这里；树重挂后由新树渲染持续刷新。 */
+    快照」）：双采样检测、restore 轮询与各步判定统一读这里；树重挂后由新树
+    渲染持续刷新。 */
 let e2eLatestInsetsBottom: number | null = null;
 let e2eLatestEffectiveTheme: 'light' | 'dark' = 'light';
 
 /** 读修复守卫（存储层失败降级为 null：守卫缺失的后果只是多一次修复尝试，
-    有 3 次上限兜底，不会死循环）。 */
+    有 3 次上限兜底，不会死循环）。v2 旧守卫无 rounds 字段，读取时归一为 1
+    （旧链按第 1 轮续跑，重试与放弃上限语义不受影响）。 */
 function e2eReadGuard(): Promise<E2eRepairGuard | null> {
     return AsyncStorage.getItem(E2E_REPAIR_GUARD_KEY)
-        .then((raw) => (raw ? (JSON.parse(raw) as E2eRepairGuard) : null))
+        .then((raw) => {
+            if (!raw) return null;
+            const guard = JSON.parse(raw) as E2eRepairGuard;
+            return { ...guard, rounds: typeof guard.rounds === 'number' ? guard.rounds : 1 };
+        })
         .catch((e: unknown) => {
             console.warn('[theme] e2e repair guard read failed:', e);
             return null;
@@ -283,6 +323,13 @@ function e2eReadGuard(): Promise<E2eRepairGuard | null> {
 function e2eWriteGuard(guard: E2eRepairGuard): void {
     AsyncStorage.setItem(E2E_REPAIR_GUARD_KEY, JSON.stringify(guard)).catch((e: unknown) => {
         console.warn('[theme] e2e repair guard write failed:', e);
+    });
+}
+
+/** 清修复守卫（fire-and-forget + 上报；removeItem 对不存在的键为 no-op）。 */
+function e2eClearGuard(): void {
+    AsyncStorage.removeItem(E2E_REPAIR_GUARD_KEY).catch((e: unknown) => {
+        console.warn('[theme] e2e repair guard clear failed:', e);
     });
 }
 
@@ -305,110 +352,204 @@ function e2eWaitConfigHydrated(): Promise<boolean> {
     });
 }
 
-/** 状态机单步执行体（挂载/重建后的稳定延时回调；async 内全部 await 有界）。
-    每次执行恰好推进一步，步间靠 Activity 重建/重挂回到本函数
-    （e2eStepRanInThisContext 在收口处置位，防同上下文重复执行）。 */
-async function e2eRunStep(insetsBottom: number): Promise<void> {
+/** 有界延时（async 步内的重试节奏；Promise 永不 reject，上下文随重建终止时
+    其定时器随之销毁，悬挂的 await 由 GC 回收，无泄漏面）。 */
+function e2eDelay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** restore 自证观察窗轮询（段头注②）：最长 E2E_REPAIR_RESTORE_POLL_WINDOW_MS
+    内每 E2E_REPAIR_RESTORE_POLL_INTERVAL_MS 读一次渲染期镜像 bottom，任一 >0
+    即成功；超时全 0 判失败。单点读数会被重建后的 insets 事件晚到误判（「实际
+    已生效」读成 0），轮询窗消除该时序误判面。 */
+function e2ePollBottomUntilPositive(): Promise<boolean> {
+    return new Promise((resolve) => {
+        const deadline = Date.now() + E2E_REPAIR_RESTORE_POLL_WINDOW_MS;
+        const timer = setInterval(() => {
+            if ((e2eLatestInsetsBottom ?? -1) > 0) {
+                clearInterval(timer);
+                resolve(true);
+                return;
+            }
+            if (Date.now() >= deadline) {
+                clearInterval(timer);
+                resolve(false);
+            }
+        }, E2E_REPAIR_RESTORE_POLL_INTERVAL_MS);
+    });
+}
+
+/** 健康收口（双采样任一拍 >0 / restore 轮询自证成功共用）：E2E 已生效 → 清
+    守卫（含 failedRuns 清零重置，guardrail 1 的健康重置出口）并收口。不依赖
+    配置注水（不动配置域）。 */
+function e2eConcludeHealthy(): void {
+    e2eClearGuard();
+    e2eConcludeBoot();
+}
+
+/** 开轮动作（无守卫或 phase='flip'，双采样两拍全 0 后进入）：落盘 restore
+    守卫并翻一入对档（真实 uiMode 变化触发 Activity 重建），重建后的新上下文
+    由 restore 步续跑；本上下文不收口（boot 页继续盖住重建）。若挂载时生效档
+    已不在原档（kill 残留 / 跨版本守卫残留），翻一会成同值 no-op 使链卡死——
+    此时跳过翻一，直接走 restore 步归位 + 轮询。 */
+async function e2eStartRepairRound(guard: E2eRepairGuard | null): Promise<void> {
+    const originalPref = guard?.originalPref ?? (archiveConfig.get()['ui.theme'] as ThemePref);
+    const failedRuns = guard?.failedRuns ?? 0;
+    if (e2eLatestEffectiveTheme !== originalPref) {
+        // 对档已在位：视为翻一已完成，直接归位 + 轮询自证（rounds 从 1 记起）
+        const resumed: E2eRepairGuard = { phase: 'restore', originalPref, failedRuns, rounds: 1 };
+        e2eWriteGuard(resumed);
+        await e2eRestoreAndJudge(resumed);
+        return;
+    }
+    e2eWriteGuard({ phase: 'restore', originalPref, failedRuns, rounds: 1 });
+    try {
+        // 翻一：真实 uiMode 变化 → Activity 重建（E2E 生效点）。不落盘
+        // 'ui.theme'（持久化终态核对见段头注）。双采样已等待 1000ms，布局与
+        // insets 沉淀充分，直接翻转（步延时语义已由 T1/T2 承担）。
+        applyThemePref(e2eLatestEffectiveTheme === 'dark' ? 'light' : 'dark');
+    } catch (e) {
+        console.warn('[theme] e2e repair flip failed:', e);
+        e2eClearGuard();
+        e2eConcludeBoot();
+        return;
+    }
+    // 不收口：翻一的重建/重挂后由 restore 步续跑（boot 页全程盖住）。
+}
+
+/** restore 步（phase='restore'：翻一重建后的续跑上下文）：归位用户原档
+    （生效档已在原档则免翻转，直接进入自证）→ 观察窗轮询 → 成功清守卫收口；
+    判失败计败 +1 后分流：同 boot 重试一轮（rounds<2，重新翻一，boot 页继续
+    盖住）/ 两轮用尽计败收口放弃本 boot（下次冷启重试）/ 累计达 3 次守卫保留
+    短路放弃（段头注③④）。翻转触发的重建若先于轮询落地，本上下文随重建
+    终止，由新上下文的 restore 步重新自证（无双判面）。 */
+async function e2eRestoreAndJudge(guard: E2eRepairGuard): Promise<void> {
+    // 用户竞态守卫：盘上主题被用户改过（≠ 修复起点原档）→ 中止尊重用户
+    const diskPref = archiveConfig.get()['ui.theme'] as ThemePref;
+    if (diskPref !== guard.originalPref) {
+        e2eClearGuard();
+        e2eConcludeBoot();
+        return;
+    }
+    if (e2eLatestEffectiveTheme !== guard.originalPref) {
+        // 翻二：归位用户原档（真实 uiMode 变化 → Activity 重建）。守卫保持
+        // restore 态：重建后新上下文按同守卫续跑自证。
+        try {
+            applyThemePref(guard.originalPref);
+        } catch (e) {
+            console.warn('[theme] e2e repair restore failed:', e);
+            e2eConcludeBoot();
+            return;
+        }
+    }
+    // 观察窗轮询自证（任一拍 >0 即成功）：同时覆盖「翻转未触发重建」时本
+    // 上下文继续存活的兜底面——无重建则就地出判定，不依赖重建续跑。
+    const restored = await e2ePollBottomUntilPositive();
+    if (restored) {
+        e2eConcludeHealthy();
+        return;
+    }
+    // 判失败：计败 +1（每轮 restore 判失败 +1，跨 boot 累计，段头注④）
+    const failedRuns = guard.failedRuns + 1;
+    if (failedRuns >= E2E_REPAIR_MAX_FAILED_RUNS) {
+        // 累计 3 次 → 放弃自动修复：守卫以 flip 态保留，后续冷启在检测步
+        // 持续短路，出口转人工/dev build。
+        console.warn(
+            '[theme] e2e auto repair given up after',
+            failedRuns,
+            'failed restore rounds; fix manually via Me page theme switch or switch to a dev build',
+        );
+        e2eWriteGuard({ phase: 'flip', originalPref: guard.originalPref, failedRuns, rounds: 1 });
+        e2eConcludeBoot();
+        return;
+    }
+    if (guard.rounds < E2E_REPAIR_MAX_ROUNDS_PER_BOOT) {
+        // 同 boot 重试：重开一轮 flip→restore（至多 2 轮，段头注③），重试
+        // 全程 boot 页盖住（本路径不收口，重建后由新上下文续跑）。
+        e2eWriteGuard({
+            phase: 'restore',
+            originalPref: guard.originalPref,
+            failedRuns,
+            rounds: guard.rounds + 1,
+        });
+        await e2eDelay(E2E_REPAIR_STEP_DELAY_MS);
+        try {
+            // 翻一（第 2 轮）：此刻生效档已被上一轮翻二归位，翻走即真实变化
+            applyThemePref(e2eLatestEffectiveTheme === 'dark' ? 'light' : 'dark');
+        } catch (e) {
+            console.warn('[theme] e2e repair retry flip failed:', e);
+            e2eConcludeBoot();
+            return;
+        }
+        // 不收口：重建后由 restore 步续跑第 2 轮自证。
+        return;
+    }
+    // 本 boot 两轮仍非 E2E：计败收口，落 flip 守卫供下次冷启重试（下次冷启
+    // 检测步两拍全 0 时按 failedRuns 续计，达 3 次转放弃）。
+    console.warn(
+        '[theme] e2e repair still non-e2e after',
+        guard.rounds,
+        'rounds this boot; will retry next cold start (failedRuns=',
+        failedRuns,
+        ')',
+    );
+    e2eWriteGuard({ phase: 'flip', originalPref: guard.originalPref, failedRuns, rounds: 1 });
+    e2eConcludeBoot();
+}
+
+/** 状态机单步执行体（挂载期守卫分派后的延时回调；async 内全部 await 有界：
+    注水 ≤1.5s / 轮询 ≤1.5s / 步延时 400ms，任一环卡死由 boot 强制收口兜底）。
+    kind='detect'：双采样两拍全 0 → 判定非 E2E，开修复轮；kind='restore'：
+    翻一重建后的续跑上下文 → 归位 + 轮询自证 + 失败分流。 */
+async function e2eRunStep(guard: E2eRepairGuard | null, kind: 'detect' | 'restore'): Promise<void> {
     // 配置注水守卫：拿不到可靠原档就不动（见常量注）
     if (!(await e2eWaitConfigHydrated())) {
         console.warn('[theme] e2e repair skipped: archive config not hydrated in time');
         e2eConcludeBoot();
         return;
     }
-    const diskPref = archiveConfig.get()['ui.theme'] as ThemePref;
-    const guard = await e2eReadGuard();
-
-    // 健康快路径（含守卫存在时的重置出口）：E2E 已生效 → 清历史计数并收口
-    if (insetsBottom > 0) {
-        if (guard) {
-            AsyncStorage.removeItem(E2E_REPAIR_GUARD_KEY).catch((e: unknown) => {
-                console.warn('[theme] e2e repair guard clear failed:', e);
-            });
+    if (kind === 'restore') {
+        // 续跑步（挂载期已按守卫分派）：守卫缺失属存储层降级，保守收口
+        if (!guard) {
+            e2eConcludeBoot();
+            return;
         }
-        e2eConcludeBoot();
+        await e2eRestoreAndJudge(guard);
         return;
     }
-
-    // ---- bottom === 0：判定非 E2E（Expo Go 冷启症状面）----
+    // ---- 检测步（双采样两拍全 0 → Expo Go 冷启症状面）----
     if (guard && guard.failedRuns >= E2E_REPAIR_MAX_FAILED_RUNS) {
-        // 连续 3 次冷启修复后仍非 E2E → 放弃自动修复（守卫保留：后续冷启在此
+        // 累计 3 次 restore 判失败 → 放弃自动修复（守卫保留：后续冷启在此
         // 持续短路，出口转人工/dev build）。
         console.warn(
             '[theme] e2e auto repair given up after',
             guard.failedRuns,
-            'failed cold starts; fix manually via Me page theme switch or switch to a dev build',
+            'failed restore rounds; fix manually via Me page theme switch or switch to a dev build',
         );
         e2eConcludeBoot();
         return;
     }
-
     if (guard) {
         // 用户竞态守卫：盘上主题被用户改过（≠ 修复起点原档）→ 中止尊重用户
+        const diskPref = archiveConfig.get()['ui.theme'] as ThemePref;
         if (diskPref !== guard.originalPref) {
-            AsyncStorage.removeItem(E2E_REPAIR_GUARD_KEY).catch((e: unknown) => {
-                console.warn('[theme] e2e repair guard clear failed:', e);
-            });
+            e2eClearGuard();
             e2eConcludeBoot();
             return;
         }
-        if (guard.phase === 'flip') {
-            // 步骤 B：翻一（对档）已触发重建——本步归位用户原档 → 重建后由
-            // 'restore' 步收口。不收口即返回（boot 页继续盖住归位重建）。
-            e2eWriteGuard({ phase: 'restore', originalPref: guard.originalPref, failedRuns: guard.failedRuns });
-            setTimeout(() => {
-                try {
-                    applyThemePref(guard.originalPref);
-                } catch (e) {
-                    console.warn('[theme] e2e repair restore failed:', e);
-                    e2eConcludeBoot();
-                }
-            }, E2E_REPAIR_STEP_DELAY_MS);
-            return;
-        }
-        // 步骤收口（phase='restore'）：restore 重建后仍 bottom===0 → 本次尝试
-        // 失败计败 +1；达到上限转人工，否则下次冷启以 'flip' 重试整轮。
-        const failedRuns = guard.failedRuns + 1;
-        AsyncStorage.removeItem(E2E_REPAIR_GUARD_KEY).catch((e: unknown) => {
-            console.warn('[theme] e2e repair guard clear failed:', e);
-        });
-        if (failedRuns >= E2E_REPAIR_MAX_FAILED_RUNS) {
-            console.warn(
-                '[theme] e2e auto repair given up after',
-                failedRuns,
-                'failed cold starts; fix manually via Me page theme switch or switch to a dev build',
-            );
-            e2eConcludeBoot();
-            return;
-        }
-        e2eWriteGuard({ phase: 'flip', originalPref: guard.originalPref, failedRuns });
-        e2eConcludeBoot();
-        return;
     }
-
-    // ---- 无守卫 + bottom===0：启动修复步骤 A ----
-    e2eWriteGuard({ phase: 'flip', originalPref: diskPref, failedRuns: 1 });
-    setTimeout(() => {
-        try {
-            // 翻一：真实 uiMode 变化 → Activity 重建（E2E 生效点）。不落盘
-            // 'ui.theme'（持久化终态核对见段头注）。
-            applyThemePref(e2eLatestEffectiveTheme === 'dark' ? 'light' : 'dark');
-        } catch (e) {
-            console.warn('[theme] e2e repair flip failed:', e);
-            AsyncStorage.removeItem(E2E_REPAIR_GUARD_KEY).catch((e2: unknown) => {
-                console.warn('[theme] e2e repair guard clear failed:', e2);
-            });
-            e2eConcludeBoot();
-        }
-    }, E2E_REPAIR_STEP_DELAY_MS);
-    // 不收口：flip 的重建/重挂后由 'flip' 分支续跑归位（boot 页全程盖住）。
+    await e2eStartRepairRound(guard);
 }
 
 /**
  * Android Expo Go 冷启 E2E 自动修复挂载点（仅 RootLayout 调用一次；web 不参与，
- * iOS 原生恒 E2E 无此症状）。渲染期把 insets/生效主题镜像进模块级快照，挂载后
- * 稳定延时执行状态机单步（持久化守卫驱动，跨上下文/重挂续跑，机理与 guardrail
- * 全集见上方实现段头注）。同时驱动启动门控（boot gate，文件尾段）：arm 时装填
- * ~5.5s 强制收口兜底，E2E 健康（bottom>0）时提前收口放行 app 内容。
+ * iOS 原生恒 E2E 无此症状）。渲染期把 insets/生效主题镜像进模块级快照；挂载后
+ * 先读持久化守卫分派（AsyncStorage ~ms 级，远早于第一拍）：restore 态 = 翻一
+ * 重建后的续跑上下文（跳过双采样——其 bottom 是链中间态，两拍口径不适用——
+ * 步延时后直接归位 + 轮询自证）；flip/无守卫 = 双采样检测上下文（T1/T2 两拍，
+ * 机理与 guardrail 全集见上方实现段头注）。同时驱动启动门控（boot gate，文件
+ * 尾段）：arm 时装填 ~5.5s 强制收口兜底，双采样任一拍 >0 时健康收口放行 app
+ * 内容。
  */
 export function useAndroidE2eSelfRepair(): void {
     const insets = useSafeAreaInsets();
@@ -419,24 +560,67 @@ export function useAndroidE2eSelfRepair(): void {
 
     useEffect(() => {
         if (Platform.OS !== 'android') return;
-        // 每上下文一步：本上下文已执行（含收口）→ 短路；新上下文（Activity
-        // 重建重求值）由持久化守卫续跑下一步——两种宿主模型通用。
+        // 每上下文一次：本上下文已收口（含检测拍/链内任何收口点）→ 重挂全部
+        // 短路；新上下文（Activity 重建重求值）由持久化守卫续跑——两种宿主
+        // 模型通用。
         if (e2eStepRanInThisContext) return;
         // boot 门控兜底装填：状态机任一环卡死时 ~5.5s 强制放行（boot gate 段头注）
         e2eArmBootForceReady();
-        const timer = setTimeout(() => {
-            void e2eRunStep(e2eLatestInsetsBottom ?? -1).catch((e: unknown) => {
-                console.warn('[theme] e2e repair step failed:', e);
-                e2eConcludeBoot();
-            });
-        }, E2E_REPAIR_STEP_DELAY_MS);
-        return () => clearTimeout(timer);
+        let cancelled = false;
+        const timers: Array<ReturnType<typeof setTimeout>> = [];
+        void e2eReadGuard().then((mountGuard) => {
+            if (cancelled) return;
+            if (mountGuard?.phase === 'restore') {
+                // 续跑步（翻一重建后的新上下文）：步延时沉淀后直接归位 + 轮询
+                timers.push(
+                    setTimeout(() => {
+                        if (e2eStepRanInThisContext) return;
+                        void e2eRunStep(mountGuard, 'restore').catch((e: unknown) => {
+                            console.warn('[theme] e2e repair step failed:', e);
+                            e2eConcludeBoot();
+                        });
+                    }, E2E_REPAIR_STEP_DELAY_MS),
+                );
+                return;
+            }
+            // 双采样检测第一拍 T1（=步延时）：任一拍 >0 即健康收口（清守卫 +
+            // 收口，健康冷启快路径不回退）；=0 不收口等第二拍——单拍瞬时值
+            // 不再直接驱动「进入修复/判定健康」的任一方向（段头注①）。
+            timers.push(
+                setTimeout(() => {
+                    if (e2eStepRanInThisContext) return;
+                    if ((e2eLatestInsetsBottom ?? -1) > 0) e2eConcludeHealthy();
+                }, E2E_REPAIR_STEP_DELAY_MS),
+            );
+            // 第二拍 T2：仍 0 才判定非 E2E 进入修复；>0 健康收口（insets 晚
+            // 测量的健康设备在 ~1000ms 收口——宁晚收，不误翻）。
+            timers.push(
+                setTimeout(() => {
+                    if (e2eStepRanInThisContext) return;
+                    if ((e2eLatestInsetsBottom ?? -1) > 0) {
+                        e2eConcludeHealthy();
+                        return;
+                    }
+                    void e2eRunStep(mountGuard, 'detect').catch((e: unknown) => {
+                        console.warn('[theme] e2e repair step failed:', e);
+                        e2eConcludeBoot();
+                    });
+                }, E2E_REPAIR_DETECT_SECOND_SAMPLE_MS),
+            );
+        });
+        return () => {
+            cancelled = true;
+            timers.forEach((timer) => clearTimeout(timer));
+        };
     }, []);
 
-    // boot 门控提前收口（E2E 健康快路径）：bottom>0 且本上下文状态机已跑过 →
-    // 收口。状态机未跑前不得提前收口——flip 修复可能已随上一步重建生效，对档
-    // 主题的新树测得 bottom>0 属预期，此时应由 'restore' 步归位主题后收口，
-    // app 内容不得在对档主题下抢跑进场（boot gate 段头注）。
+    // boot 门控提前收口（E2E 健康快路径，口径不变）：bottom>0 且本上下文状态
+    // 机已跑过 → 收口。状态机未跑前不得提前收口——flip 修复可能已随上一步
+    // 重建生效，对档主题的新树测得 bottom>0 属预期，此时应由 restore 步归位
+    // 主题后收口，app 内容不得在对档主题下抢跑进场（boot gate 段头注）。与
+    // 双采样检测无交集：e2eStepRanInThisContext 仅由 e2eConcludeBoot 置位，
+    // 检测期内恒 false，本 effect 不会抢跑；收口后的重挂/重渲按原口径首帧
+    // 收口（过渡页 1-2 帧，预期）。
     useEffect(() => {
         if (Platform.OS !== 'android') return;
         if (!e2eStepRanInThisContext) return;
@@ -445,21 +629,27 @@ export function useAndroidE2eSelfRepair(): void {
 }
 
 // ---------------------------------------------------------------------------
-// 启动门控（boot gate，2026-11-09 / v2 更新）：Android 自愈链收口前不放行 app
+// 启动门控（boot gate，2026-11-10 / v3 更新）：Android 自愈链收口前不放行 app
 // 内容——过渡页（features/archive/ui/boot-screen.tsx）在 bootReady=false 期间
-// 替代 Stack 渲染，状态机两步翻转的 Activity 重建全部被盖在启动页之下（用户
-// 诉求：「没真正进入 app 首页之前完成，黑色主题在黑色页面加载，白色的在白色」）。
+// 替代 Stack 渲染，状态机两步翻转与同 boot 重试轮的 Activity 重建全部被盖在
+// 启动页之下（用户诉求：「没真正进入 app 首页之前完成，黑色主题在黑色页面
+// 加载，白色的在白色」）。
 //
 // 收口口径（e2eConcludeBoot 幂等，多路同时到达以先到者为准，后到为 no-op）：
 // - web/iOS：store 初值即 true（不渲染过渡页，直接进 app）；
-// - Android「无需修复」快路径：渲染期镜像 bottom>0 即 E2E 健康 → 提前收口
-//   （hook 内 effect，见上；状态机未跑过前抑制——flip 步生效后的 bottom>0 属
-//   预期中间态，须等 restore 归位）；
-// - 状态机各步的保守放弃（insets 未测得 / 3 次失败放弃 / 用户竞态中止 /
-//   注水超时 / 翻转抛错 / restore 后仍非 E2E 计败 / step 抛错）：当拍收口；
-// - 修复链完整走完：restore 后 bottom>0 成功收口——boot 页全程盖住两步重建；
-// - 兜底：挂载起最长 ~5.5s 强制收口（状态机任一环卡死不困在启动页）。上界取
-//   v2 链最坏 400+1500+400+400+600≈3300ms 加两次重建与多拍余量。
+// - Android「无需修复」双采样快路径（hook 挂载 effect，见上）：任一拍 >0 即
+//   健康收口——T1 即 >0 的健康冷启在第一拍收口（过渡页 ~400ms，与 v2 持平）；
+//   T1=0 而 T2>0（insets 晚测量）在第二拍收口（~1000ms，双采样为「进入修复」
+//   设两拍一致门槛的代价，宁晚收不误翻）；
+// - 同上下文重挂（本上下文已收口过）：early effect 首帧收口，过渡页 1-2 帧，
+//   预期口径（未改）；
+// - 状态机各步的保守放弃（注水超时 / 用户竞态中止 / 翻转抛错 / 累计 3 次放弃
+//   / 两轮仍非 E2E 计败收口 / step 抛错）：当拍收口；
+// - 修复链完整走完：restore 轮询任一拍 >0 成功收口——boot 页全程盖住两步
+//   重建与同 boot 重试轮（链内任何一步都不提前收口）；
+// - 兜底：每上下文挂载起最长 ~5.5s 强制收口（Activity 重建的新上下文会重新
+//   装填，该上界是单上下文粒度；全链总时长由「至多 2 轮」界定，最坏 ~7s 量级，
+//   仅出现在修复连续失败的病态面）。
 //
 // 载体：zustand 单布尔 store，模块级创建 = 与状态机同寿（Activity 重建在新
 // 上下文模型下重置模块变量，持久化守卫负责跨上下文续跑；同上下文重挂读到

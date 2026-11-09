@@ -33,21 +33,25 @@ import type { JournalMediaRow } from '../db';
  *   Math.random），同一 mediaId 跨渲染/跨端/跨引擎同形（useMemo + 纯函数）；
  *   条形垂直居中（选居中不选底部对齐：微信/iMessage 语音波形均为中轴对称
  *   观感，底对齐会读成柱状均衡器，与「语音包络」语义不符）；
- * - **逐条点亮（v4 用户明确口径）**：单排 N=38 根条各自独立渲染，播放进度
- *   推进时**逐条点亮**——litCount = floor(progress × N)，index < litCount 的
- *   条 = palette.accent（已播），其余 = palette.muted（未播）；随 player
- *   updateInterval（200ms）状态流重渲换色（38 根纯 View 换色开销可忽略，
- *   无需动画节点——旧双层覆盖式进度结构整层退役，见 v4 注）。
+ * - **逐条点亮（v4 用户明确口径；v6 单色化返工）**：单排 N=38 根条各自独立
+ *   渲染，播放进度推进时**逐条点亮**——litCount = floor(progress × N)，
+ *   index < litCount 的条 = palette.text（已播），其余 = palette.faint
+ *   （未播）；随 player updateInterval（200ms）状态流重渲换色（38 根纯 View
+ *   换色开销可忽略，无需动画节点——旧双层覆盖式进度结构整层退役，见 v4 注）。
  *   **边界条脉冲（v5「播放到了，就动一下」）**：litCount 每前进一根，边界条
  *   （index === litCount−1）做一次 scaleY 弹跳 1→1.35→1（timing 序列
  *   90+90ms ≈ 180ms，transform only，native driver，不改布局卡高恒定）；
  *   共享单 Animated.Value 复位重放（快速推进新脉冲接管旧脉冲）；暂停/播完
  *   清脉冲回落 1；恢复 seek（暂停态跳变）不脉冲。只动边界条一根，其余 37
  *   根恒纯 View 零动画节点（实现口径见 AudioBlock 内注）。
- *   **颜色双主题铁定可辨**：accent / muted 都从 usePalette() 取语义色
- *   （禁固定 hex）——muted 为弱灰阶、accent 为数据强调蓝，token 与 tailwind
- *   ink/inkd 严格成对，深浅两主题「已播/未播」对比均明显（切主题失效排查
- *   见 v3 注）；**跨界条视觉取舍**：正好跨界的第 litCount 根整条点亮，
+ *   **单色系（v6 用户口径 2026-11-10「声纹颜色，深色模式白色，亮色模式黑色。
+ *   统一一些」）**：声纹条整体退出 accent/muted 彩色系，改整排单色灰阶——
+ *   已点亮 = palette.text（深色近白 / 浅色近黑，随主题翻转），未点亮 =
+ *   palette.faint（同主题弱灰）：深色模式整片白灰阶、亮色模式整片黑灰阶，
+ *   无彩色。两色均从 usePalette() 取语义色（禁固定 hex），token 与 tailwind
+ *   ink/inkd 严格成对（切主题失效排查见 v3 注）；loading 占位与未点亮同色
+ *   （faint），解析前后零色彩跳变；**跨界条视觉取舍**：正好跨界的第 litCount
+ *   根整条点亮，
  *   不做半根渐变——38 条下单条宽 5-7dp，半根差异 <4dp 观感不可辨，而半根
  *   渐变需要按条宽算裁切比例并逐帧重算，违背「纯 View 换色」的轻量口径；
  * - **交互（与媒体块 useBlockActionGestures 完全同语义）**：整卡面 = 触控体
@@ -305,23 +309,26 @@ function deriveWaveHeights(mediaId: string): number[] {
 }
 
 /** 一排声纹条（逐条点亮渲染）：单排 N 根独立渲染，index < litCount 的条 =
-    accent（已播），其余 = idle 色（未播 muted / loading faint）——纯 View
-    换色随 200ms 状态流重渲，开销可忽略。边界条（index === litCount−1）为
-    PulseBar，scaleY 脉冲由共享单 Value 驱动（复位重放，见 AudioBlock 注）；
+    lit 色（已播 = palette.text），其余 = unlit 色（未播/占位 = palette.faint）
+    ——纯 View 换色随 200ms 状态流重渲，开销可忽略。单色系口径见文件头 v6 注
+    （深色整片白灰阶 / 浅色整片黑灰阶，无彩色）。边界条（index === litCount−1）
+    为 PulseBar，scaleY 脉冲由共享单 Value 驱动（复位重放，见 AudioBlock 注）；
     其余 37 根恒为纯 View 零动画节点。边界条零 className（css-interop 不碰
     按压 observable 之外的动画面，样式全走 inline style，与动画值同挂）。 */
 function WaveBars({
     heights,
     litCount,
-    accent,
-    idle,
+    lit,
+    unlit,
     pulse,
 }: {
     heights: number[];
     /** 已点亮条数 = floor(progress × N)；跨界条整条点亮（取舍见文件头 v4 注）。 */
     litCount: number;
-    accent: string;
-    idle: string;
+    /** 已点亮条色（单色系：palette.text，深色近白 / 浅色近黑，随主题翻转）。 */
+    lit: string;
+    /** 未点亮/占位条色（同主题弱灰 palette.faint，与 loading 占位同色）。 */
+    unlit: string;
     /** 边界条脉冲驱动值（AudioBlock 持有；静止恒 1，脉冲时 1→1.35→1）。 */
     pulse: Animated.Value;
 }) {
@@ -333,7 +340,7 @@ function WaveBars({
                     flex: 1,
                     borderRadius: 9999,
                     height,
-                    backgroundColor: index < litCount ? accent : idle,
+                    backgroundColor: index < litCount ? lit : unlit,
                 };
                 if (index === boundaryIndex) {
                     // 边界条：scaleY 脉冲（transform only，native driver；
@@ -630,12 +637,14 @@ export function AudioBlock({
                     accessibilityLabel={playing ? '暂停录音' : '播放录音'}
                     style={{ height: WAVE_HEIGHT }}
                 >
-                    {/* 逐条点亮（v4）：ready 时 index < litCount 的条 = accent
-                        （已播），其余 = muted（未播）；loading 期整排同几何
-                        faint 占位（哈希只吃 mediaId，解析前即出形，载入零跳变；
-                        触摸穿透到外层兜底手势层）。颜色全部从 palette 取语义色
-                        （无固定 hex，深浅翻转由 useEffectiveTheme 驱动重渲自动
-                        换色）；跨界条整条点亮，不做半根渐变（取舍见文件头 v4 注） */}
+                    {/* 逐条点亮（v4/v6）：ready 时 index < litCount 的条 =
+                        palette.text（已播），其余 = palette.faint（未播）——
+                        单色系（深色整片白灰阶 / 亮色整片黑灰阶，无彩色，见
+                        文件头 v6 注）；loading 期整排同几何 faint 占位（哈希
+                        只吃 mediaId，解析前即出形，载入零跳变；触摸穿透到外层
+                        兜底手势层）。颜色全部从 palette 取语义色（无固定 hex，
+                        深浅翻转由 useEffectiveTheme 驱动重渲自动换色）；跨界条
+                        整条点亮，不做半根渐变（取舍见文件头 v4 注） */}
                     <View
                         style={{
                             height: WAVE_HEIGHT,
@@ -647,8 +656,8 @@ export function AudioBlock({
                         <WaveBars
                             heights={waveHeights}
                             litCount={ready ? litCount : 0}
-                            accent={palette.accent}
-                            idle={ready ? palette.muted : palette.faint}
+                            lit={palette.text}
+                            unlit={palette.faint}
                             pulse={pulse}
                         />
                     </View>
