@@ -41,7 +41,6 @@ import { parseBlocks, previewText } from './journal-logic';
 import { safeBack } from './ui';
 import {
     CloseButton,
-    EmptyState,
     LoadingView,
     ProgressBar,
     ProgressLabel,
@@ -53,6 +52,12 @@ import {
     useFileUrlState,
     usePalette,
 } from './ui';
+// 深路径注记：DeadEndView（死路页共享视图，2026-11-10 反馈二轮）宿主在
+// journal-edit-screen——两处消费屏均在本组改动权限内、单一实现源（同语言同
+// 实现的收口取舍见 DeadEndView 注），未入 ui/index.ts 出口（该文件无本组
+// 改动权限），域内深取；barrel 出口扩充时迁走收口（editor-icons /
+// field-input 先例）。journal-edit 不反向依赖本屏，无 require 环。
+import { DeadEndView } from './journal-edit-screen';
 
 /**
  * 行程详情 = 逐日卡片列表（行程逐日卡重构，v6——媒体时间线退役 + 日卡现代化）：
@@ -708,12 +713,15 @@ export function TripDetailScreen() {
     if (missing || !trip) {
         return (
             // 外层 insets.top 口径保持不动（屏头带与正常视图逐 dp 对齐）；
-            // 降级内容整体下移一档（2026-11-09 反馈）：屏头之下加 pt-8 呼吸带
-            // ——EmptyState 居中口径下内容净下移 16dp；返回钮行为不变
+            // 内容块整体下移一档（2026-11-09 反馈）保留：屏头之下 pt-8 呼吸带。
+            // 死路页交互重做（2026-11-10 反馈二轮）：与 journal-edit 载入失败
+            // 视图同一实现（DeadEndView 共享组件，取舍与行为矩阵见其注）——
+            // 动作区与内容间距 24→48dp（净增 24dp）、整页点按回首页、6s 无操作
+            // 自动返回；「返回」钮仍 safeBack（点按即停倒计时，导航卸载收口）
             <View className="flex-1 bg-ink-base dark:bg-inkd-base" style={{ paddingTop: insets.top }}>
                 <ScreenHeader title="行程" />
                 <View className="flex-1 pt-8">
-                    <EmptyState
+                    <DeadEndView
                         icon={<LucideCalendar size={40} color={palette.muted} strokeWidth={1.5} />}
                         title="找不到这个行程"
                         hint="它可能已被删除。回到 Archive 看看其他内容。"

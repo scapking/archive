@@ -20,7 +20,9 @@ import { BootScreen } from '@/features/archive/ui/boot-screen';
 import {
     consumeLastRoute,
     flushLastRoute,
+    initLastRouteSaveGate,
     isRestorablePath,
+    markLastRouteBootCompleted,
     pathFromNavigationState,
     saveLastRoute,
 } from '@/features/archive/last-route';
@@ -42,11 +44,16 @@ export const unstable_settings = { anchor: '(tabs)' };
 
 /**
  * 上一次界面恢复的一次性闸门（模块级而非 ref）：effect 重跑 / Fast Refresh 重挂载
- * 时 ref 会随组件重建，模块变量在本 JS 会话内恒存——恢复只执行一次。双重防护：
+ * 时 ref 会随组件重建，模块变量在本 JS 会话内恒存——恢复轮询只执行一次。双重防护：
  * - 本会话内重复触发（Fast Refresh 重挂载）由该变量拦截；
  * - 跨 dev reload 由 consumeLastRoute 读后清除兜底（缓存已消费，重跑读到 null）。
- * 同时它也是保存闸门：恢复完成前根容器的初始 state 事件（anchor 播种 (tabs)）
- * 不得写入缓存——否则慢启动时上次停留路径会被默认路由 '/' 覆盖掉。
+ * **它不再是保存闸门**：Android 主题双翻（E2E 自愈）触发 Activity 重建产生新
+ * JS 上下文时，本变量随模块状态全部重置（theme.ts:215-219 实测口径），靠它挡
+ * 「播种路径覆盖真实缓存」跨上下文必失效。保存门在 last-route.ts 内部实现
+ * （BOOT_COMPLETED_KEY 持久标志 + saveGateOpen，跨上下文存活）：新上下文异步
+ * 读标志装填，恢复周期各收口分支 markLastRouteBootCompleted 前一律不落盘；
+ * 本变量现仅承担两层职责——①恢复轮询一次性；②恢复收口前把播种态事件挡在
+ * 序列化之前（监听器早退，省一次无意义序列化）。
  */
 let lastRouteRestoreDone = false;
 
@@ -189,8 +196,10 @@ export default function RootLayout() {
         // 路径③上一次界面缓存：订阅原本仅 Android（edge-to-edge 修复挂上），
         // 现提升为全平台——同一 'state' 监听里顺手把根 state 序列化为路径节流
         // 落盘（复用既有订阅，不另挂第二份）；Android 专属调用收进回调内 gate。
-        // 仅序列化成功（path 非 null）时写，无效路由不覆盖上次缓存；恢复完成前
-        // 不写（见 lastRouteRestoreDone 注——初始播种 state 不得覆盖上次缓存）。
+        // 仅序列化成功（path 非 null）时写，无效路由不覆盖上次缓存。不写的门控
+        // 有两层：本变量（恢复轮询收口前的播种态事件直接早退，不进序列化）+
+        // last-route 持久保存门（saveLastRoute 内部，恢复周期收口前丢弃——跨
+        // 上下文鲁棒，见 lastRouteRestoreDone 与 BOOT_COMPLETED_KEY 注）。
         const appStateSub =
             Platform.OS === 'android'
                 ? AppState.addEventListener('change', (state) => {
@@ -233,6 +242,10 @@ export default function RootLayout() {
     }, []);
 
     useEffect(() => {
+        // 保存门装填（每上下文一次，模块级幂等；置于早退分支之前——异步读标志
+        // 须随上下文挂载立即启动，读完成前的 state 事件由保存门丢弃，见
+        // initLastRouteSaveGate / BOOT_COMPLETED_KEY 注）。
+        initLastRouteSaveGate();
         // 上一次界面恢复（一次性，根导航 ready 后；在主题初始化 effect 与 anchor
         // 播种之后异步执行，不抢跑——replace 在 ready 后覆盖播种的默认路由）。
         // ready 检测用轮询 getCurrentRoute：EventMapCore 没有 ready 事件可订阅
@@ -256,6 +269,9 @@ export default function RootLayout() {
             try {
                 const nav = navigationRef.current;
                 const saved = await consumeLastRoute();
+                // cancelled（effect 清理 / 上下文将死）中断不收口：boot 完成标志
+                // 保持缺失态，后继上下文的保存门保持关闭直至自身收口（见
+                // BOOT_COMPLETED_KEY 注——双翻链中途死亡的上、下文交接口径）。
                 if (cancelled) return;
                 // 深链守卫：显式深链 / web 地址栏入口不恢复——URL 本身就是用户意图；
                 // Expo Go 冷启 initialURL 恒为 exp://…（非显式深链）正常恢复，原生
@@ -263,20 +279,37 @@ export default function RootLayout() {
                 // client 深链）与自定义 scheme 均视为显式入口。
                 const initialUrl = await Linking.getInitialURL().catch(() => null);
                 if (cancelled) return;
-                if (initialUrl && !initialUrl.startsWith('exp://')) return;
+                if (initialUrl && !initialUrl.startsWith('exp://')) {
+                    // 深链入口：恢复周期照常收口（后续导航按真实意图记录）
+                    markLastRouteBootCompleted();
+                    return;
+                }
                 // 路径合法守卫：'/' 开头非空、非 '/viewer' 透明路由、无 '+' 特殊段；
                 // 无缓存 / 无效路径 → 不动作（停在默认 '/'）
-                if (!saved || !isRestorablePath(saved)) return;
+                if (!saved || !isRestorablePath(saved)) {
+                    markLastRouteBootCompleted();
+                    return;
+                }
                 // 已在目标屏则不动作（web 重载同路径 / 锚点播种即目标）
                 const currentPath = pathFromNavigationState(nav?.getRootState());
-                if (currentPath === saved) return;
+                if (currentPath === saved) {
+                    markLastRouteBootCompleted();
+                    return;
+                }
                 // replace（非 push）：恢复屏落在栈底，back 直接退出应用而非回落默认页。
                 // typedRoutes 的路径联合类型是构建期生成，运行期动态路径无法静态收窄；
                 // saved 已过 isRestorablePath 运行时守卫，此处仅做类型放行。
                 router.replace(saved as Parameters<typeof router.replace>[0]);
+                // 恢复 replace 完成 = 周期收口（持久标志置位 + 保存门同步开启）：
+                // 此后 replace 触发的 state 事件把恢复目标正常写回缓存，播种路径
+                // 已被收口前的门控丢弃，不会被其覆盖。
+                markLastRouteBootCompleted();
             } catch (e) {
-                // 静默降级：恢复是增强不是关键路径，任何失败都不影响正常启动
+                // 静默降级：恢复是增强不是关键路径，任何失败都不影响正常启动。
+                // 异常同样按收口处理：保存门放行本上下文后续真实导航，不因一次
+                // 恢复失败丢掉整个会话的缓存写入。
                 console.warn('[last-route] restore failed:', e);
+                markLastRouteBootCompleted();
             }
         };
         const tick = () => {
@@ -288,6 +321,8 @@ export default function RootLayout() {
             }
             if (++polls >= 200) {
                 lastRouteRestoreDone = true;
+                // 轮询超时放弃恢复：周期按超时口径收口（保存门放行后续真实导航）
+                markLastRouteBootCompleted();
                 return;
             }
             pollTimer = setTimeout(tick, 10);

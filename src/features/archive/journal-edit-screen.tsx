@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { Path, Rect } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import {
     BouncyPressable,
     createIcon,
@@ -75,7 +76,6 @@ import { pickComfortQuote } from './ui/comfort-quotes';
 import {
     BlockEditor,
     CloseButton,
-    EmptyState,
     formatAudioTime,
     InsertMenu,
     LoadingView,
@@ -1018,7 +1018,10 @@ export function JournalEditScreen({
     })();
 
     // 载入失败态（自愈口径，参照 useFileUrlState 三态）：明确失败 + 重试入口，
-    // 绝不把失败渲染成永久 spinner；store.error（如「日记初始化失败」）一并展示
+    // 绝不把失败渲染成永久 spinner；store.error（如「日记初始化失败」）一并展示。
+    // 死路页交互重做（2026-11-10 反馈二轮，与 trip-detail 行程不存在视图同一
+    // 实现 = DeadEndView 共享组件，取舍见其注）：动作区间距再加大（24→48dp）、
+    // 整页点按回首页、6s 无操作自动返回（重试即取消）。
     if (loadFailed) {
         return (
             <View className="flex-1 bg-ink-base dark:bg-inkd-base">
@@ -1031,10 +1034,10 @@ export function JournalEditScreen({
                         </Text>
                     ) : null}
                     {/* 空态块整体下移一档（2026-11-09 反馈）：容器顶 pt-8 呼吸带
-                        ——EmptyState 居中口径下内容净下移 16dp，与屏头群留出明确
-                        间距；重试交互不变 */}
+                        ——居中口径下内容净下移 16dp，与屏头群留出明确间距（本轮
+                        保留）；内容→动作区间距归 DeadEndView（mt-12） */}
                     <View className="flex-1 pt-8">
-                        <EmptyState
+                        <DeadEndView
                             icon={<LucideBookOpen size={40} color={palette.muted} strokeWidth={1.5} />}
                             title="打不开这一页"
                             hint="日记可能已被删除，或数据读取失败。"
@@ -1321,6 +1324,141 @@ export function JournalEditScreen({
                 />
             ) : null}
         </KeyboardAvoidingView>
+    );
+}
+
+/* ------------------------------------------------------------------ */
+/* 死路页共享视图（journal-edit 载入失败 / trip-detail 行程不存在）       */
+/* ------------------------------------------------------------------ */
+
+/** 自动返回首页倒计时时长（秒）：用户口径 4-8s 档取中 6s——够读完两行文案
+    并反应一次，又不让「走不通」的页面滞留太久。 */
+const DEAD_END_AUTO_BACK_SECONDS = 6;
+
+/**
+ * 死路页视图（走到没有路的地方的统一降级面，2026-11-10 反馈二轮重做）：
+ *
+ * - **单一实现源**：journal-edit 载入失败与 trip-detail「行程不存在」两处
+ *   同语言同实现——宿主在本文件（两处均在本组改动权限内），trip-detail 深
+ *   路径引入（域内深取纪律，先例同 editor-icons / field-input；ui/index.ts
+ *   出口无本组改动权限，barrel 扩充时迁走收口）。不复用 ui/empty-state.tsx：
+ *   该文件无改动权限，且死路页需要倒计时/整页命中等 EmptyState 契约外行为
+ *   ——视觉语言（icon/题/hint/按钮规格与类名）与 EmptyState 逐项对齐，仅
+ *   内容→动作区间距按本轮反馈加大。
+ * - **动作区间距（反馈①）**：hint→按钮 24dp（EmptyState mt-6）→ 48dp
+ *   （mt-12），净增 24dp（「再加 16-24dp」档顶格）。间距放 Pressable 外层
+ *   包裹（margin 不计入命中区），按钮视觉盒即命中区。
+ * - **整页点按回首页（反馈②）**：本组件根 = 全域 Pressable，onPress →
+ *   router.replace('/')（回首页语义，按反馈原文口径；非 safeBack——深链/
+ *   无栈场景与倒计时落点一致，且「回首页」明确于「退一层」）。命中区分：
+ *   动作按钮在内层 BouncyPressable，RN responder 深度优先认领——点按钮
+ *   只触发按钮、不落背景层（按钮优先），其余任意区域触发回首页。
+ * - **自动返回倒计时（反馈③）**：挂载即启动 6s 倒计时，归零 router.replace
+ *   ('/')；用户点重试/返回先停倒计时再走原动作；卸载/成功恢复（loadFailed
+ *   翻 false / missing 翻 false 时本视图随分支卸载）由 effect 清理自然收口。
+ *   实现分工：interval 只递减（纯 updater，无副作用——StrictMode 双调防护），
+ *   导航独立 effect 在归零帧触发。重试失败重进本视图 = 重新挂载 = 计时重置，
+ *   无陈旧计时面。可视（克制口径）：无进度环、无动画，按钮下方 muted 小字
+ *   「N 秒后返回首页」每秒跳变，tabular-nums 防数字宽度抖动（房规）。
+ * - **a11y**：根命中体 role=button（点按回首页的真实语义）；动作按钮 role=
+ *   button 挂内层 View（BouncyPressable 契约不透传 a11y props，屏内既有口径）。
+ *   嵌套按压体在 RN 无 HTML 非法嵌套面（RNW 亦渲染 div 而非 <button>）。
+ */
+export function DeadEndView({
+    icon,
+    title,
+    hint,
+    actionLabel,
+    onAction,
+}: {
+    icon: React.ReactNode;
+    title: string;
+    hint: string;
+    actionLabel?: string;
+    onAction?: () => void;
+}) {
+    const router = useRouter();
+    // 倒计时状态：remaining = 剩余秒数；countdownOn = 倒计时在跑（用户点按
+    // 按钮置 false——计数行隐藏、递减与归零导航一并停摆）
+    const [remaining, setRemaining] = useState(DEAD_END_AUTO_BACK_SECONDS);
+    const [countdownOn, setCountdownOn] = useState(true);
+
+    // 每秒递减：interval 唯一职责是减数（纯 updater）；卸载/停跑清理 interval
+    useEffect(() => {
+        if (!countdownOn) return;
+        const interval = setInterval(() => {
+            setRemaining((current) => Math.max(current - 1, 0));
+        }, 1000);
+        return () => clearInterval(interval);
+    }, [countdownOn]);
+
+    // 归零导航（副作用的独立出口）：replace('/') 回首页，本视图随页面卸载，
+    // interval 由上一 effect 清理；置停后的归零帧不再触发（countdownOn 闸）
+    useEffect(() => {
+        if (!countdownOn || remaining > 0) return;
+        router.replace('/');
+    }, [countdownOn, remaining, router]);
+
+    /** 用户点动作按钮（重试/返回）：先停倒计时再走原动作——倒计时不再在
+        动作进行中（重试载入窗口）触发导航。 */
+    const handleAction = () => {
+        setCountdownOn(false);
+        onAction?.();
+    };
+
+    /** 背景区任意点按 → 回首页（导航即卸载，计时随卸载清理）。 */
+    const goHome = () => {
+        router.replace('/');
+    };
+
+    return (
+        // 整页命中体（EmptyState 区域点任意处回首页）：flex-1 铺满宿主让出的
+        // 全部区域；命中区分靠 RN 嵌套 Pressable 深度优先 responder（按钮优先）
+        <Pressable
+            onPress={goHome}
+            accessibilityRole="button"
+            accessibilityLabel="回到首页"
+            className="flex-1 items-center justify-center px-10"
+        >
+            {/* 视觉语言与 ui/empty-state.tsx 逐项对齐（icon/题/hint 同规格同类），
+                仅间距按本轮反馈加大——见文件头与上注 */}
+            <View className="mb-4 h-12 w-12 items-center justify-center opacity-70">{icon}</View>
+            <Text className="text-[15px] font-medium text-ink-text dark:text-inkd-text">{title}</Text>
+            <Text className="mt-1.5 text-center text-[13px] leading-5 text-ink-muted dark:text-inkd-muted">
+                {hint}
+            </Text>
+            {actionLabel && onAction ? (
+                // 动作区（反馈①）：hint→按钮 24dp（EmptyState mt-6）→ 48dp
+                // （mt-12），净增 24dp；间距在 Pressable 外层（margin 不计入
+                // 命中区，按钮视觉盒 = 命中区，与背景层无重叠核算项）
+                <View className="mt-12">
+                    <BouncyPressable onPress={handleAction} scaleTo={0.96}>
+                        <View
+                            accessibilityRole="button"
+                            accessibilityLabel={actionLabel}
+                            className="h-11 items-center justify-center rounded-control border border-ink-border bg-ink-surface px-6 dark:border-inkd-border dark:bg-inkd-surface"
+                        >
+                            <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
+                                {actionLabel}
+                            </Text>
+                        </View>
+                    </BouncyPressable>
+                </View>
+            ) : null}
+            {countdownOn && remaining > 0 ? (
+                // 倒计时可视（反馈③，克制口径）：无进度环、无动画，muted 小字
+                // 每秒跳变；tabular-nums 防数字换位抖动（房规）。位于动作区下方
+                // ——「不动就会发生什么」读在动作语义之后，不打断内容→动作的
+                // 间距节奏（反馈①的 48dp 净空保持完整）。归零帧整行退场
+                // （不给「0 秒后」闪一帧，导航同帧触发）
+                <Text
+                    className="mt-4 text-[11px] text-ink-muted dark:text-inkd-muted"
+                    style={{ fontVariant: ['tabular-nums'] }}
+                >
+                    {`${remaining} 秒后返回首页`}
+                </Text>
+            ) : null}
+        </Pressable>
     );
 }
 

@@ -54,6 +54,17 @@ import type { JournalMediaRow } from '../db';
  *   根整条点亮，
  *   不做半根渐变——38 条下单条宽 5-7dp，半根差异 <4dp 观感不可辨，而半根
  *   渐变需要按条宽算裁切比例并逐帧重算，违背「纯 View 换色」的轻量口径；
+ * - **播放点亮渐变蓝（v7 用户口径 2026-11-10「默认颜色白色或者黑色（现状
+ *   text 单色系保留），播放的时候渐变蓝色」）**：底层 text/faint 单色排与
+ *   litCount 点亮判定原样保留（进度条语义不变），其上叠一层**同几何 accent
+ *   点亮层**（index < litCount = palette.accent，其余透明占位——占位保 flex
+ *   均分对齐，缺位会重新均分错位）；整层 opacity 由 RN Animated（native
+ *   driver，opacity 是合法驱动属性——**颜色动画不适用 native driver，且禁
+ *   JS 驱动颜色插值**：38 根 × 逐帧颜色 lerp 是主线程杀手）随 isPlaying
+ *   120ms 渐变：播放渐显蓝、暂停/停止/播完渐隐回单色。上层 38 根纯 View
+ *   零动画节点，边界条与底层共用同一 pulse Value 同步 scaleY（脉冲期 accent
+ *   完整覆盖 text 条，无露边）；loading/未就绪 litCount=0 上层全透明，
+ *   解析前后零色彩跳变。
  * - **交互（与媒体块 useBlockActionGestures 完全同语义）**：整卡面 = 触控体
  *   （BouncyPressable，scaleTo 0.985 与媒体块同档）——
  *   · native / web 触屏：单击切播放/暂停，长按 → 块操作卡（onBlockAction）；
@@ -206,6 +217,10 @@ const PULSE_PEAK = 1.35;
 /** 脉冲单程时长（ms）：上行/下行各一程，总长 ~180ms（克制口径，不喧宾）。 */
 const PULSE_LEG_MS = 90;
 
+/** 播放点亮层渐变时长（ms，v7 用户口径 120ms）：opacity-only 双向渐变
+    （播放渐显 accent 蓝 / 停止渐隐回 text 单色）。 */
+const ACCENT_FADE_MS = 120;
+
 /** FNV-1a 32 位哈希：同输入恒同输出，跨渲染/跨端/跨 JS 引擎稳定（无时钟、
     无随机源、纯整数运算——Math.imul 保证 32 位乘法不丢精度）。 */
 function fnv1a(input: string): number {
@@ -311,10 +326,12 @@ function deriveWaveHeights(mediaId: string): number[] {
 /** 一排声纹条（逐条点亮渲染）：单排 N 根独立渲染，index < litCount 的条 =
     lit 色（已播 = palette.text），其余 = unlit 色（未播/占位 = palette.faint）
     ——纯 View 换色随 200ms 状态流重渲，开销可忽略。单色系口径见文件头 v6 注
-    （深色整片白灰阶 / 浅色整片黑灰阶，无彩色）。边界条（index === litCount−1）
-    为 PulseBar，scaleY 脉冲由共享单 Value 驱动（复位重放，见 AudioBlock 注）；
-    其余 37 根恒为纯 View 零动画节点。边界条零 className（css-interop 不碰
-    按压 observable 之外的动画面，样式全走 inline style，与动画值同挂）。 */
+    （深色整片白灰阶 / 浅色整片黑灰阶，无彩色）；v7 起为本结构的**底层**
+    （播放态的 accent 着色由上层 AccentWaveBars 承担，见其注）。边界条
+    （index === litCount−1）为 PulseBar，scaleY 脉冲由共享单 Value 驱动
+    （复位重放，见 AudioBlock 注）；其余 37 根恒为纯 View 零动画节点。
+    边界条零 className（css-interop 不碰按压 observable 之外的动画面，
+    样式全走 inline style，与动画值同挂）。 */
 function WaveBars({
     heights,
     litCount,
@@ -345,6 +362,63 @@ function WaveBars({
                 if (index === boundaryIndex) {
                     // 边界条：scaleY 脉冲（transform only，native driver；
                     // scaleY 绕条自身中轴缩放，垂直居中不漂移、不改布局）
+                    return (
+                        <PulseBar
+                            key={index}
+                            style={[bar, { transform: [{ scaleY: pulse }] }]}
+                        />
+                    );
+                }
+                return <View key={index} style={bar} />;
+            })}
+        </>
+    );
+}
+
+/** 播放点亮层（v7「播放渐变蓝」）：与底层 WaveBars **同几何**（同一 heights
+    数组 + 同行布局），index < litCount 的条 = accent（播放时点亮段渐变蓝），
+    其余 = 透明占位——占位是 flex 对齐的必需品：缺位会让 flex:1 在幸存条间
+    重新均分、点亮段整体错位，不是「省几根 View」的优化点。本组件不自带
+    透明度：整层 opacity 由 AudioBlock 的 accentGlow（Animated.Value）挂在
+    宿主 Animated.View 上驱动（native driver，120ms，见 AudioBlock 注）。
+    边界条与底层共用同一 pulse Value 同步 scaleY——脉冲期 accent 条与 text
+    条同幅缩放，上层完整覆盖底层、无 text 色露边。38 根全部为零动画纯
+    View（动画节点只有宿主 opacity 一处 + 边界条脉冲一处）。 */
+function AccentWaveBars({
+    heights,
+    litCount,
+    accent,
+    pulse,
+}: {
+    heights: number[];
+    /** 与底层同源：floor(progress × N)；未就绪传 0 = 全透明（零跳变）。 */
+    litCount: number;
+    /** 点亮段播放态色（palette.accent，语义色随主题翻转，禁固定 hex）。 */
+    accent: string;
+    /** 边界条脉冲驱动值（与底层 WaveBars 同一 Value，同步缩放）。 */
+    pulse: Animated.Value;
+}) {
+    const boundaryIndex = litCount - 1;
+    return (
+        <>
+            {heights.map((height, index) => {
+                if (index >= litCount) {
+                    // 未点亮：透明占位（同几何对齐，不遮挡底层单色条）
+                    return (
+                        <View
+                            key={index}
+                            style={{ flex: 1, borderRadius: 9999, height, backgroundColor: 'transparent' }}
+                        />
+                    );
+                }
+                const bar = {
+                    flex: 1,
+                    borderRadius: 9999,
+                    height,
+                    backgroundColor: accent,
+                };
+                if (index === boundaryIndex) {
+                    // 边界条：与底层同一 pulse 值（同步 scaleY，覆盖无露边）
                     return (
                         <PulseBar
                             key={index}
@@ -435,6 +509,21 @@ export function AudioBlock({
         pulse.stopAnimation();
         pulse.setValue(1);
     }, [playing, pulse]);
+
+    // 播放点亮层透明度（v7「播放渐变蓝」）：isPlaying → 1（accent 层渐显）、
+    // 暂停/停止/播完/未就绪 → 0（回 text 单色）。opacity + native driver
+    // （颜色动画不适用 native driver，双层 opacity 叠加是房规替代法，见文件
+    // 头 v7 注）；重复 timing 从当前值续走——快速切播放/暂停时反向渐变平滑
+    // 接管在飞动画，无跳变（与 BouncyPressable 的 spring 复用同法）。
+    const accentGlow = useRef(new Animated.Value(0)).current;
+    useEffect(() => {
+        Animated.timing(accentGlow, {
+            toValue: playing ? 1 : 0,
+            duration: ACCENT_FADE_MS,
+            easing: Easing.linear,
+            useNativeDriver: true,
+        }).start();
+    }, [playing, accentGlow]);
 
     // 最后已知播放位（卸载写缓存用）：状态流里同步，卸载清理函数只读 ref
     const latestTimeRef = useRef(0);
@@ -637,14 +726,16 @@ export function AudioBlock({
                     accessibilityLabel={playing ? '暂停录音' : '播放录音'}
                     style={{ height: WAVE_HEIGHT }}
                 >
-                    {/* 逐条点亮（v4/v6）：ready 时 index < litCount 的条 =
-                        palette.text（已播），其余 = palette.faint（未播）——
-                        单色系（深色整片白灰阶 / 亮色整片黑灰阶，无彩色，见
-                        文件头 v6 注）；loading 期整排同几何 faint 占位（哈希
-                        只吃 mediaId，解析前即出形，载入零跳变；触摸穿透到外层
-                        兜底手势层）。颜色全部从 palette 取语义色（无固定 hex，
-                        深浅翻转由 useEffectiveTheme 驱动重渲自动换色）；跨界条
-                        整条点亮，不做半根渐变（取舍见文件头 v4 注） */}
+                    {/* 逐条点亮（v4/v6，v7 起为**底层**）：ready 时 index <
+                        litCount 的条 = palette.text（已播），其余 =
+                        palette.faint（未播）——单色系（深色整片白灰阶 / 亮色
+                        整片黑灰阶，无彩色，见文件头 v6 注）；loading 期整排
+                        同几何 faint 占位（哈希只吃 mediaId，解析前即出形，载入
+                        零跳变；触摸穿透到外层兜底手势层）。颜色全部从 palette
+                        取语义色（无固定 hex，深浅翻转由 useEffectiveTheme 驱动
+                        重渲自动换色）；跨界条整条点亮，不做半根渐变（取舍见
+                        文件头 v4 注）。播放态着色由其上的 accent 点亮层承担
+                        （v7），底层恒单色不变 */}
                     <View
                         style={{
                             height: WAVE_HEIGHT,
@@ -661,6 +752,35 @@ export function AudioBlock({
                             pulse={pulse}
                         />
                     </View>
+                    {/* 播放点亮层（v7「播放渐变蓝」）：同几何 accent 条绝对定位
+                        覆盖底层，整层 opacity 随 isPlaying 120ms 渐变（native
+                        driver，双层 opacity 叠加替代颜色动画——JS 颜色插值是
+                        主线程杀手，见文件头 v7 注）。同宽同行距同垂直居中 ⇒
+                        两层条形逐根重合；pointerEvents="none" 不截触摸（触摸体
+                        是外层 BouncyPressable 整卡）。未播时 opacity 0 但保持
+                        挂载——38 根纯 View 静置零动画节点，卸载/重挂的重建成本
+                        高于静置，不做条件渲染 */}
+                    <Animated.View
+                        pointerEvents="none"
+                        style={{
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            bottom: 0,
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: WAVE_BAR_GAP,
+                            opacity: accentGlow,
+                        }}
+                    >
+                        <AccentWaveBars
+                            heights={waveHeights}
+                            litCount={ready ? litCount : 0}
+                            accent={palette.accent}
+                            pulse={pulse}
+                        />
+                    </Animated.View>
                 </View>
                 {/* 下：时间行（底部水平居中）——「0:05 · 剩余 0:03」：当前
                     （text 实色）/ 分隔+剩余（muted），tabular-nums 房规；
