@@ -1,5 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
-import { Animated, Easing, Platform, Pressable, Text, View } from 'react-native';
+import {
+    AccessibilityInfo,
+    Animated,
+    Easing,
+    Platform,
+    Pressable,
+    Text,
+    View,
+} from 'react-native';
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import type { AudioPlayer } from 'expo-audio';
 import { BouncyPressable } from '@/core/icons';
@@ -33,38 +41,30 @@ import type { JournalMediaRow } from '../db';
  *   Math.random），同一 mediaId 跨渲染/跨端/跨引擎同形（useMemo + 纯函数）；
  *   条形垂直居中（选居中不选底部对齐：微信/iMessage 语音波形均为中轴对称
  *   观感，底对齐会读成柱状均衡器，与「语音包络」语义不符）；
- * - **逐条点亮（v4 用户明确口径；v6 单色化返工）**：单排 N=38 根条各自独立
- *   渲染，播放进度推进时**逐条点亮**——litCount = floor(progress × N)，
- *   index < litCount 的条 = palette.text（已播），其余 = palette.faint
- *   （未播）；随 player updateInterval（200ms）状态流重渲换色（38 根纯 View
- *   换色开销可忽略，无需动画节点——旧双层覆盖式进度结构整层退役，见 v4 注）。
- *   **边界条脉冲（v5「播放到了，就动一下」）**：litCount 每前进一根，边界条
- *   （index === litCount−1）做一次 scaleY 弹跳 1→1.35→1（timing 序列
- *   90+90ms ≈ 180ms，transform only，native driver，不改布局卡高恒定）；
- *   共享单 Animated.Value 复位重放（快速推进新脉冲接管旧脉冲）；暂停/播完
- *   清脉冲回落 1；恢复 seek（暂停态跳变）不脉冲。只动边界条一根，其余 37
- *   根恒纯 View 零动画节点（实现口径见 AudioBlock 内注）。
- *   **单色系（v6 用户口径 2026-11-10「声纹颜色，深色模式白色，亮色模式黑色。
- *   统一一些」）**：声纹条整体退出 accent/muted 彩色系，改整排单色灰阶——
- *   已点亮 = palette.text（深色近白 / 浅色近黑，随主题翻转），未点亮 =
- *   palette.faint（同主题弱灰）：深色模式整片白灰阶、亮色模式整片黑灰阶，
- *   无彩色。两色均从 usePalette() 取语义色（禁固定 hex），token 与 tailwind
- *   ink/inkd 严格成对（切主题失效排查见 v3 注）；loading 占位与未点亮同色
- *   （faint），解析前后零色彩跳变；**跨界条视觉取舍**：正好跨界的第 litCount
- *   根整条点亮，
- *   不做半根渐变——38 条下单条宽 5-7dp，半根差异 <4dp 观感不可辨，而半根
- *   渐变需要按条宽算裁切比例并逐帧重算，违背「纯 View 换色」的轻量口径；
- * - **播放点亮渐变蓝（v7 用户口径 2026-11-10「默认颜色白色或者黑色（现状
- *   text 单色系保留），播放的时候渐变蓝色」）**：底层 text/faint 单色排与
- *   litCount 点亮判定原样保留（进度条语义不变），其上叠一层**同几何 accent
- *   点亮层**（index < litCount = palette.accent，其余透明占位——占位保 flex
- *   均分对齐，缺位会重新均分错位）；整层 opacity 由 RN Animated（native
- *   driver，opacity 是合法驱动属性——**颜色动画不适用 native driver，且禁
- *   JS 驱动颜色插值**：38 根 × 逐帧颜色 lerp 是主线程杀手）随 isPlaying
- *   120ms 渐变：播放渐显蓝、暂停/停止/播完渐隐回单色。上层 38 根纯 View
- *   零动画节点，边界条与底层共用同一 pulse Value 同步 scaleY（脉冲期 accent
- *   完整覆盖 text 条，无露边）；loading/未就绪 litCount=0 上层全透明，
- *   解析前后零色彩跳变。
+ * - **声纹单色 + 波纹进度（v8 用户口径 2026-11-10「全部声纹条单一颜色，
+ *   进度改用动效表达」，声纹终版；撤销 v7 渐变蓝叠加层）**：全部 38 根条
+ *   恒一色 palette.text（深色白/浅色黑，随主题翻转）——v6 的 text/faint
+ *   点亮双色与 v7 的 accent 叠加层（AccentWaveBars / accentGlow /
+ *   ACCENT_FADE_MS）整体退役，进度不再用颜色表达；**改由波纹动效承载**：
+ *   播放推进时播放头邻域（[playhead−1, playhead+1]）确定性选两根做 scaleY
+ *   弹跳 1→~1.25→1（上行 100ms ease-out + 下行 55ms ease-in，含相位 delay
+ *   总长 155-195ms 落克制档；transform only，native driver，不改布局卡高
+ *   恒定），波纹跟着 playhead 一路向前（v5「边界条脉冲」的直系演进，取代
+ *   v4/v6 逐条点亮换色）。实现口径（详见 AudioBlock 注）：
+ *   · 动画节点 = 3 个共享 Animated.Value，按 barIndex % 3 轮换挂载到邻域
+ *     条目（不为 38 根各建节点；邻域外恒纯 View，重渲零动画开销）；单次
+ *     弹跳总长 < 200ms 状态节拍 ⇒ 新邻域接管 Value 时上一 occupant 必已
+ *     归 1，跨步零跳变（「续放 vs 重放」取舍见 AudioBlock 注）；
+ *   · 每步动哪两根：「左右随机两个动一下」= fnv1a(mediaId+步进) 哈希在
+ *     {左,当前}/{当前,右}/{左,右} 三模式中确定选取（RIPPLE_PATTERNS）；
+ *     幅度（peak 1.16-1.25）与相位（delay 0-40ms）由 mulberry32(mediaId)
+ *     逐条派生（纯函数 deriveRippleBeats，相邻条天然微差错落，无 Math.random）；
+ *   · 同帧至多 2 根在动；暂停/播完/未就绪全排静默归位 1；reduceMotion
+ *     全静止（useReduceMotionRef 本地副本，import 环规避见其注）；恢复
+ *     seek（暂停态跳变）不波纹；播放中跳进（迟帧）先整组复位再起新步；
+ *   · loading 占位与全排同色同形（哈希只吃 mediaId，解析前后零布局/零
+ *     色彩跳变）；单色制下无「跨界半根」问题（v4 跨界条取舍随点亮制
+ *     一并退役）。
  * - **交互（与媒体块 useBlockActionGestures 完全同语义）**：整卡面 = 触控体
  *   （BouncyPressable，scaleTo 0.985 与媒体块同档）——
  *   · native / web 触屏：单击切播放/暂停，长按 → 块操作卡（onBlockAction）；
@@ -100,11 +100,11 @@ import type { JournalMediaRow } from '../db';
  *   与进度缓存不冲突：缓存只服务挂载恢复（restoreDoneRef 一次性读取），
  *   播完即清位，重挂后读到空缓存从头播；
  * - **切主题可用性（v3 硬性修复面）**：排查结论（嫌疑链逐条）——
- *   ①固定 hex / 不随主题的 tone 类：本文件无（已亮条/未亮条/时间行全部
- *     palette 语义色 + ink/inkd 类），排除；
- *   ②动画插值含 palette 依赖：本文件现仅存的动画节点 = 边界条脉冲的
- *     scaleY Value（v5，纯 transform，无 palette 参与，条色仍为静态
- *     prop 换色），排除；
+ *   ①固定 hex / 不随主题的 tone 类：本文件无（声纹条/时间行全部 palette
+ *     语义色 + ink/inkd 类），排除；
+ *   ②动画插值含 palette 依赖：本文件现仅存的动画节点 = 播放头波纹的
+ *     3 个 scaleY Value（v8，纯 transform，无 palette 参与，条色为静态
+ *     prop），排除；
  *   ③useFileUrlState blob 误 revoke：该 hook effect deps 严格 [key]，
  *     主题重渲不重跑、blob 只在卸载/换 key 时 revoke（use-file-url.ts:52
  *     核实），排除；
@@ -131,8 +131,9 @@ import type { JournalMediaRow } from '../db';
  *     让「试听」失真）：模块级登记「正在播」的唯一一张，新卡起播前 pause
  *     旧卡；旧卡 UI 由它自己的 useAudioPlayerStatus 事件流自动回「播放」态，
  *     无需跨组件 setState；
- * - 三态：loading = 同几何 faint 占位条（哈希只吃 mediaId，解析前即可出形，
- *   载入完成零布局跳变；触摸穿透到外层兜底手势层）；missing/失败 = 「录音
+ * - 三态：loading = 同几何同色占位条（v8 全排单色 text；哈希只吃 mediaId，
+ *   解析前即可出形，载入完成零布局/零色彩跳变；触摸穿透到外层兜底手势层）；
+ *   missing/失败 = 「录音
  *   无法播放」文字行（同卡面语言）；只读态同卡可播（无操作卡入口）；
  * - 状态刷新频率 = player updateInterval（200ms），React 侧轻量重渲染仅本卡。
  */
@@ -205,21 +206,87 @@ const WAVE_HEIGHT = 48;
 const WAVE_BAR_GAP = 2;
 
 /* ------------------------------------------------------------------ */
-/* 边界条脉冲（「播放到了，就动一下」v5）                                */
+/* 播放头波纹（v8「进度 = 动效」：bounce 跟着 playhead 一路向前）         */
 /* ------------------------------------------------------------------ */
 
-/** 边界条 Animated 容器（模块级 createAnimatedComponent——组件级创建会在
+/** 邻域条 Animated 容器（模块级 createAnimatedComponent——组件级创建会在
  *  每次渲染重建 native 组件，deck.tsx #9 同源教训）。 */
-const PulseBar = Animated.createAnimatedComponent(View);
-/** 脉冲峰值：边界条 scaleY 弹跳上冲倍率（1 → 1.35 → 1，transform only，
- *  不改布局——媒体卡高度恒定）。 */
-const PULSE_PEAK = 1.35;
-/** 脉冲单程时长（ms）：上行/下行各一程，总长 ~180ms（克制口径，不喧宾）。 */
-const PULSE_LEG_MS = 90;
+const RippleBar = Animated.createAnimatedComponent(View);
 
-/** 播放点亮层渐变时长（ms，v7 用户口径 120ms）：opacity-only 双向渐变
-    （播放渐显 accent 蓝 / 停止渐隐回 text 单色）。 */
-const ACCENT_FADE_MS = 120;
+/** 波纹上冲时长（ms，ease-out 攻速）：单条 scaleY 1 → peak 快起慢到顶。 */
+const RIPPLE_UP_MS = 100;
+/** 波纹回落时长（ms，ease-in 收尾）：peak → 1 略悬停后加速落定。上行+回落
+ *  固定 155ms；加上相位 delay 总长 ≤ 195ms < 200ms 状态节拍——接管口径的
+ *  基石（见 AudioBlock 注），调整任一时长必须保住「总长 < 节拍」不变式。 */
+const RIPPLE_DOWN_MS = 55;
+/** 波纹相位 delay 上限（ms）：逐条错落的最大起始错位（155 + 40 = 195ms）。 */
+const RIPPLE_DELAY_MAX_MS = 40;
+/** 波纹峰值下限（scaleY 倍率）：单条上冲的最小幅度。 */
+const RIPPLE_PEAK_MIN = 1.16;
+/** 波纹峰值跨度：peak ∈ [1.16, 1.25]（用户口径 ~1.25 封顶，克制不喧宾）。 */
+const RIPPLE_PEAK_SPAN = 0.09;
+
+/** 每步邻域动两根的模式集（「左右随机两个动一下」）：offset 相对播放头，
+ *  {-1,0}=左+当前、{0,1}=当前+右、{-1,1}=左右两根；逐步由
+ *  fnv1a(mediaId:ripple:playheadIndex) 哈希确定选取（确定性「随机」，
+ *  三模式均落在播放头 ±1 内 ⇒ 波纹位置恒随播放进度前移）。 */
+const RIPPLE_PATTERNS: ReadonlyArray<ReadonlyArray<-1 | 0 | 1>> = [
+    [-1, 0],
+    [0, 1],
+    [-1, 1],
+];
+
+/** 单条波纹参数（幅度 + 相位）：由 mediaId 确定性派生，相邻条天然微差。 */
+interface RippleBeat {
+    /** scaleY 上冲峰值（1.16-1.25，幅度微差）。 */
+    peak: number;
+    /** 起始 delay（0-40ms，相位微差——两根不同时起跳才有「错落」观感）。 */
+    delayMs: number;
+}
+
+/**
+ * mediaId → 逐条波纹参数表。与 deriveWaveHeights 同族纯函数：FNV 种子 +
+ * mulberry32，无时钟/无随机源/无外部状态，同 mediaId 跨渲染/跨端/跨引擎
+ * 恒同参（确定性错落的基石：不引入 Math.random）。
+ */
+function deriveRippleBeats(mediaId: string): RippleBeat[] {
+    const rand = mulberry32(fnv1a(`voice-ripple:${mediaId}`));
+    const beats: RippleBeat[] = [];
+    for (let i = 0; i < WAVE_BAR_COUNT; i += 1) {
+        beats.push({
+            peak: RIPPLE_PEAK_MIN + rand() * RIPPLE_PEAK_SPAN,
+            delayMs: Math.round(rand() * RIPPLE_DELAY_MAX_MS),
+        });
+    }
+    return beats;
+}
+
+/** 系统「减弱动态」探测（ref 形态）：与 recorder-overlay 的 useReduceMotionRef
+ *  同实现——不直接 import 是因为 recorder-overlay 已 import 本文件的
+ *  formatAudioTime，反向 import 即成 require 环（DEV.md #14 循环告警同源、
+ *  去环纪律与 useBlockActionGestures 本地同构同理由，勿回潮）。波纹用它做
+ *  「全静止」降级：true 时一步都不触发，条形恒自然高度。ref 形态（非 state）
+ *  是刻意的：波纹在 effect 内触发，触发时刻读取即可，无需驱动重渲。 */
+function useReduceMotionRef() {
+    const reduceMotionRef = useRef(false);
+    useEffect(() => {
+        let cancelled = false;
+        AccessibilityInfo.isReduceMotionEnabled
+            ?.()
+            .then((enabled) => {
+                if (!cancelled) reduceMotionRef.current = !!enabled;
+            })
+            .catch(() => undefined);
+        const subscription = AccessibilityInfo.addEventListener?.('reduceMotionChanged', (enabled) => {
+            reduceMotionRef.current = !!enabled;
+        });
+        return () => {
+            cancelled = true;
+            subscription?.remove();
+        };
+    }, []);
+    return reduceMotionRef;
+}
 
 /** FNV-1a 32 位哈希：同输入恒同输出，跨渲染/跨端/跨 JS 引擎稳定（无时钟、
     无随机源、纯整数运算——Math.imul 保证 32 位乘法不丢精度）。 */
@@ -323,33 +390,27 @@ function deriveWaveHeights(mediaId: string): number[] {
     });
 }
 
-/** 一排声纹条（逐条点亮渲染）：单排 N 根独立渲染，index < litCount 的条 =
-    lit 色（已播 = palette.text），其余 = unlit 色（未播/占位 = palette.faint）
-    ——纯 View 换色随 200ms 状态流重渲，开销可忽略。单色系口径见文件头 v6 注
-    （深色整片白灰阶 / 浅色整片黑灰阶，无彩色）；v7 起为本结构的**底层**
-    （播放态的 accent 着色由上层 AccentWaveBars 承担，见其注）。边界条
-    （index === litCount−1）为 PulseBar，scaleY 脉冲由共享单 Value 驱动
-    （复位重放，见 AudioBlock 注）；其余 37 根恒为纯 View 零动画节点。
-    边界条零 className（css-interop 不碰按压 observable 之外的动画面，
+/** 一排声纹条（v8 单色 + 播放头邻域波纹渲染）：全部 38 根恒一色（palette.text，
+    深色白/浅色黑，随主题翻转；v6 点亮双色与 v7 accent 叠加层已退役，进度由
+    波纹动效承载，见文件头 v8 注）。播放头邻域 [playhead−1, playhead+1] 内的
+    条挂共享波纹 Value（barIndex % 3 轮换取用，见 AudioBlock 注）渲染为
+    RippleBar，其余恒纯 View（props 静态，200ms 状态流重渲零动画开销）。
+    邻域条零 className（css-interop 不碰按压 observable 之外的动画面，
     样式全走 inline style，与动画值同挂）。 */
 function WaveBars({
     heights,
-    litCount,
-    lit,
-    unlit,
-    pulse,
+    color,
+    playheadIndex,
+    rippleValues,
 }: {
     heights: number[];
-    /** 已点亮条数 = floor(progress × N)；跨界条整条点亮（取舍见文件头 v4 注）。 */
-    litCount: number;
-    /** 已点亮条色（单色系：palette.text，深色近白 / 浅色近黑，随主题翻转）。 */
-    lit: string;
-    /** 未点亮/占位条色（同主题弱灰 palette.faint，与 loading 占位同色）。 */
-    unlit: string;
-    /** 边界条脉冲驱动值（AudioBlock 持有；静止恒 1，脉冲时 1→1.35→1）。 */
-    pulse: Animated.Value;
+    /** 全排条色（v8 单色：palette.text，随主题翻转）。 */
+    color: string;
+    /** 播放头条引（0..N−1）：邻域 = [playhead−1, playhead+1]（端部自然收窄）。 */
+    playheadIndex: number;
+    /** 共享波纹驱动值（3 个，barIndex % 3 取用；静止恒 1，波纹 1→peak→1）。 */
+    rippleValues: readonly Animated.Value[];
 }) {
-    const boundaryIndex = litCount - 1;
     return (
         <>
             {heights.map((height, index) => {
@@ -357,72 +418,15 @@ function WaveBars({
                     flex: 1,
                     borderRadius: 9999,
                     height,
-                    backgroundColor: index < litCount ? lit : unlit,
+                    backgroundColor: color,
                 };
-                if (index === boundaryIndex) {
-                    // 边界条：scaleY 脉冲（transform only，native driver；
+                if (index >= playheadIndex - 1 && index <= playheadIndex + 1) {
+                    // 邻域条：scaleY 波纹（transform only，native driver；
                     // scaleY 绕条自身中轴缩放，垂直居中不漂移、不改布局）
                     return (
-                        <PulseBar
+                        <RippleBar
                             key={index}
-                            style={[bar, { transform: [{ scaleY: pulse }] }]}
-                        />
-                    );
-                }
-                return <View key={index} style={bar} />;
-            })}
-        </>
-    );
-}
-
-/** 播放点亮层（v7「播放渐变蓝」）：与底层 WaveBars **同几何**（同一 heights
-    数组 + 同行布局），index < litCount 的条 = accent（播放时点亮段渐变蓝），
-    其余 = 透明占位——占位是 flex 对齐的必需品：缺位会让 flex:1 在幸存条间
-    重新均分、点亮段整体错位，不是「省几根 View」的优化点。本组件不自带
-    透明度：整层 opacity 由 AudioBlock 的 accentGlow（Animated.Value）挂在
-    宿主 Animated.View 上驱动（native driver，120ms，见 AudioBlock 注）。
-    边界条与底层共用同一 pulse Value 同步 scaleY——脉冲期 accent 条与 text
-    条同幅缩放，上层完整覆盖底层、无 text 色露边。38 根全部为零动画纯
-    View（动画节点只有宿主 opacity 一处 + 边界条脉冲一处）。 */
-function AccentWaveBars({
-    heights,
-    litCount,
-    accent,
-    pulse,
-}: {
-    heights: number[];
-    /** 与底层同源：floor(progress × N)；未就绪传 0 = 全透明（零跳变）。 */
-    litCount: number;
-    /** 点亮段播放态色（palette.accent，语义色随主题翻转，禁固定 hex）。 */
-    accent: string;
-    /** 边界条脉冲驱动值（与底层 WaveBars 同一 Value，同步缩放）。 */
-    pulse: Animated.Value;
-}) {
-    const boundaryIndex = litCount - 1;
-    return (
-        <>
-            {heights.map((height, index) => {
-                if (index >= litCount) {
-                    // 未点亮：透明占位（同几何对齐，不遮挡底层单色条）
-                    return (
-                        <View
-                            key={index}
-                            style={{ flex: 1, borderRadius: 9999, height, backgroundColor: 'transparent' }}
-                        />
-                    );
-                }
-                const bar = {
-                    flex: 1,
-                    borderRadius: 9999,
-                    height,
-                    backgroundColor: accent,
-                };
-                if (index === boundaryIndex) {
-                    // 边界条：与底层同一 pulse 值（同步 scaleY，覆盖无露边）
-                    return (
-                        <PulseBar
-                            key={index}
-                            style={[bar, { transform: [{ scaleY: pulse }] }]}
+                            style={[bar, { transform: [{ scaleY: rippleValues[index % 3] }] }]}
                         />
                     );
                 }
@@ -450,6 +454,8 @@ export function AudioBlock({
     // 声纹条高：mediaId 一次确定性派生（条高与容器宽无关——宽度由 flex 均分
     // 承担；deps 完整：纯函数只吃 mediaId）
     const waveHeights = useMemo(() => deriveWaveHeights(media.id), [media.id]);
+    // 波纹参数表：mediaId 一次确定性派生（幅度/相位逐条错落，见 deriveRippleBeats）
+    const rippleBeats = useMemo(() => deriveRippleBeats(media.id), [media.id]);
 
     const duration =
         playerStatus.isLoaded && playerStatus.duration > 0
@@ -461,69 +467,99 @@ export function AudioBlock({
     const playing = playerStatus.isLoaded && playerStatus.playing;
     // 剩余时间（底部时间行）：钳 0 防浮点越界显示负数
     const remainingSeconds = duration > 0 ? Math.max(duration - currentTime, 0) : 0;
-    // 逐条点亮进度（0..1，渲染期纯派生，无动画节点/无额外 state）：随 200ms
-    // 状态流重渲换色（38 根纯 View 换色开销可忽略）；duration 未知（0）时
-    // ratio 恒 0 = 全灭；恢复 seek / 播完归位的位置跳变直接整排重着色
-    // （单排条无覆盖层，不存在跳变穿帮面）
+    // 播放进度（0..1，渲染期纯派生，无动画节点/无额外 state）：驱动播放头
+    // 邻域（波纹位置随进度前移）；duration 未知（0）时 ratio 恒 0 = 播放头
+    // 停在首条；seek/播完归位的位置跳变整排同色（单色制无重着色面），只有
+    // 波纹邻域整体迁移（跳进复位口径见下）
     const progressRatio = duration > 0 ? Math.min(Math.max(currentTime / duration, 0), 1) : 0;
-    const litCount = Math.floor(progressRatio * WAVE_BAR_COUNT);
+    // 播放头条引 = floor(progress × N) 钳到末条（progress=1 时 floor 越界）
+    const playheadIndex = Math.min(Math.floor(progressRatio * WAVE_BAR_COUNT), WAVE_BAR_COUNT - 1);
 
-    // 边界条脉冲（v5「播放到了，就动一下」）：litCount 每前进一根，边界条
-    // （index === litCount−1）做一次 scaleY 弹跳 1→1.35→1（timing 序列
-    // 90+90ms，transform only，native driver，不改布局——媒体卡高度恒定）。
-    // 实现口径：
-    // - 共享单 Animated.Value：快速连续推进时新脉冲 stopAnimation → 复位 1
-    //   → 重放，天然接管旧脉冲（不叠 Value、不排队）；
-    // - 只动边界条一根（PulseBar 随边界移动重挂，其余 37 根恒纯 View）；
-    // - 暂停/播完（playing 翻 false，含互斥让位/播完即停/卸载前态）清脉冲
-    //   回落 1；恢复 seek（暂停态位置跳变）不触发脉冲（不是「播放到了」）；
-    // - useLayoutEffect：复位先于边界条首帧绘制，新边界条不会以旧脉冲的
-    //   在飞值闪一帧；
+    // 播放头波纹（v8「进度 = 动效」，v5 边界条脉冲的直系演进）：播放推进
+    // （playheadIndex 前进）时，新邻域内确定性选两根做 scaleY 弹跳 1→peak→1
+    // （模式与参数选择见文件头 v8 注 / RIPPLE_PATTERNS / deriveRippleBeats；
+    // transform only，native driver，不改布局——媒体卡高度恒定）。实现口径：
+    // - 动画节点 = 3 个共享 Animated.Value，按 barIndex % 3 轮换挂载到邻域
+    //   条目（不为 38 根各建节点）：任一步的三根邻域条索引连续 ⇒ 恰好用满
+    //   3 个不同 Value；邻域每步滑动 1 根时条目跨步持有同一 Value（「轮换
+    //   挂载」），在飞弹跳不因重渲被打断；
+    // - 零跳变接管的取舍（用户口径二选一：续放 or 重放）：**重放**。基石
+    //   是不变式「单次弹跳总长（delay ≤40 + 上行 100 + 下行 55 ≤195ms）<
+    //   200ms 状态节拍」——每步触发时上一步所有弹跳必已落定归 1，重放的
+    //   stop→setValue(1) 恒为无感空操作；代价是弹跳总长被节拍钉死上限
+    //   （RIPPLE_DOWN_MS 注），要更绵长的波纹需改「从在飞相位续放」（要
+    //   读在飞值/跨 Value 迁移，复杂度不成比例，故不取）；
+    // - 同帧至多 2 根在动（每步一对 + 总长 < 节拍 ⇒ 不与上一步残波叠加），
+    //   落「同帧至多 2-3 根」克制档；
+    // - 暂停/播完/未就绪（playing 翻 false，含互斥让位/播完即停/卸载前态）：
+    //   全排静默归位 1（见下方 useLayoutEffect，先于绘制复位）；
+    // - 恢复 seek（暂停态位置跳变）不触发波纹（不是「播放到了」）；播放中
+    //   跳进（迟帧一次前进 ≥2 根）或回退：先整组复位再按新邻域起波纹
+    //   （离场条不再挂动画值，复位先于绘制无闪帧）；
+    // - reduceMotion：一步都不触发，全排恒自然高度（useReduceMotionRef）；
     // - AudioBlock 是音频卡唯一实现（照片堆不收音频），堆内复用即同行为。
-    const pulse = useRef(new Animated.Value(1)).current;
-    const litRef = useRef(0);
+    const rippleValues = useRef<readonly Animated.Value[]>([
+        new Animated.Value(1),
+        new Animated.Value(1),
+        new Animated.Value(1),
+    ]).current;
+    const reduceMotionRef = useReduceMotionRef();
+    const playheadRef = useRef(0);
     useLayoutEffect(() => {
-        const advanced = litCount > litRef.current;
-        litRef.current = litCount;
-        if (!advanced || !playing) return;
-        pulse.stopAnimation();
-        pulse.setValue(1);
-        Animated.sequence([
-            Animated.timing(pulse, {
-                toValue: PULSE_PEAK,
-                duration: PULSE_LEG_MS,
-                easing: Easing.out(Easing.quad),
-                useNativeDriver: true,
-            }),
-            Animated.timing(pulse, {
-                toValue: 1,
-                duration: PULSE_LEG_MS,
-                easing: Easing.in(Easing.quad),
-                useNativeDriver: true,
-            }),
-        ]).start();
-    }, [litCount, playing, pulse]);
-    // 暂停/播完清脉冲：条回落 1（静止位形），下次推进重新起脉冲
-    useEffect(() => {
+        const previous = playheadRef.current;
+        playheadRef.current = playheadIndex;
+        if (!playing) return; // 未播（暂停/未就绪/播完归位）：静默，只同步游标
+        const stepped = playheadIndex === previous + 1;
+        if (!stepped) {
+            // 跳进/回退（迟帧、seek）：整组复位先于绘制——旧邻域离场条不以
+            // 在飞值闪帧；随后按新邻域重新起波纹（回退则不起）
+            for (const value of rippleValues) {
+                value.stopAnimation();
+                value.setValue(1);
+            }
+        }
+        if (playheadIndex <= previous) return; // 「一路向前」：回退/原地不波纹
+        if (reduceMotionRef.current) return; // 减弱动态：全静止
+        // 「左右随机两个动一下」：本步模式由 (mediaId, playhead) 哈希确定选取
+        const pattern =
+            RIPPLE_PATTERNS[fnv1a(`${media.id}:ripple:${playheadIndex}`) % RIPPLE_PATTERNS.length];
+        for (const offset of pattern) {
+            const barIndex = playheadIndex + offset;
+            if (barIndex < 0 || barIndex >= WAVE_BAR_COUNT) continue; // 端部邻域越界条跳过
+            const beat = rippleBeats[barIndex];
+            const value = rippleValues[barIndex % 3];
+            // 接管：stop→复位→重放（总长 < 节拍 ⇒ 此刻恒已归 1，无感空操作）
+            value.stopAnimation();
+            value.setValue(1);
+            Animated.sequence([
+                // 相位错落：delay 为 sequence 子节点，与 timing 同走 native
+                Animated.delay(beat.delayMs),
+                Animated.timing(value, {
+                    toValue: beat.peak,
+                    duration: RIPPLE_UP_MS,
+                    easing: Easing.out(Easing.quad),
+                    useNativeDriver: true,
+                }),
+                Animated.timing(value, {
+                    toValue: 1,
+                    duration: RIPPLE_DOWN_MS,
+                    easing: Easing.in(Easing.quad),
+                    useNativeDriver: true,
+                }),
+            ]).start();
+        }
+        // deps：playheadIndex/playing 驱动；media.id/rippleBeats 同源 memo；
+        // rippleValues/reduceMotionRef 为稳定引用
+    }, [playheadIndex, playing, media.id, rippleBeats, rippleValues, reduceMotionRef]);
+    // 暂停/播完清波纹：邻域条回落 1（静止位形），下次推进重新起波纹；
+    // useLayoutEffect 先于绘制——暂停帧不见半途缩放值
+    useLayoutEffect(() => {
         if (playing) return;
-        pulse.stopAnimation();
-        pulse.setValue(1);
-    }, [playing, pulse]);
-
-    // 播放点亮层透明度（v7「播放渐变蓝」）：isPlaying → 1（accent 层渐显）、
-    // 暂停/停止/播完/未就绪 → 0（回 text 单色）。opacity + native driver
-    // （颜色动画不适用 native driver，双层 opacity 叠加是房规替代法，见文件
-    // 头 v7 注）；重复 timing 从当前值续走——快速切播放/暂停时反向渐变平滑
-    // 接管在飞动画，无跳变（与 BouncyPressable 的 spring 复用同法）。
-    const accentGlow = useRef(new Animated.Value(0)).current;
-    useEffect(() => {
-        Animated.timing(accentGlow, {
-            toValue: playing ? 1 : 0,
-            duration: ACCENT_FADE_MS,
-            easing: Easing.linear,
-            useNativeDriver: true,
-        }).start();
-    }, [playing, accentGlow]);
+        for (const value of rippleValues) {
+            value.stopAnimation();
+            value.setValue(1);
+        }
+    }, [playing, rippleValues]);
 
     // 最后已知播放位（卸载写缓存用）：状态流里同步，卸载清理函数只读 ref
     const latestTimeRef = useRef(0);
@@ -617,8 +653,8 @@ export function AudioBlock({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [playerStatus.isLoaded, playerStatus.playing, playerStatus.currentTime, media.id, player]);
 
-    // 最后已知位随 200ms 状态流同步（卸载写会话缓存的读取源）；点亮条的
-    // 着色直接消费渲染期派生的 litCount，本 effect 不再驱动动画
+    // 最后已知位随 200ms 状态流同步（卸载写会话缓存的读取源）；波纹邻域
+    // 直接消费渲染期派生的 playheadIndex，本 effect 不再驱动动画
     useEffect(() => {
         latestTimeRef.current = currentTime;
     }, [currentTime]);
@@ -726,16 +762,15 @@ export function AudioBlock({
                     accessibilityLabel={playing ? '暂停录音' : '播放录音'}
                     style={{ height: WAVE_HEIGHT }}
                 >
-                    {/* 逐条点亮（v4/v6，v7 起为**底层**）：ready 时 index <
-                        litCount 的条 = palette.text（已播），其余 =
-                        palette.faint（未播）——单色系（深色整片白灰阶 / 亮色
-                        整片黑灰阶，无彩色，见文件头 v6 注）；loading 期整排
-                        同几何 faint 占位（哈希只吃 mediaId，解析前即出形，载入
-                        零跳变；触摸穿透到外层兜底手势层）。颜色全部从 palette
+                    {/* 单色声纹 + 播放头波纹（v8 终版）：全排 38 根恒一色
+                        palette.text（深色白/浅色黑，随主题翻转；v6 faint 双色
+                        与 v7 accent 叠加层已退役，进度由波纹动效承载，见文件头
+                        v8 注）。未就绪（loading）期 currentTime=0 ⇒ playhead=0，
+                        整排同几何同色占位（哈希只吃 mediaId，解析前即出形，
+                        载入零跳变；触摸穿透到外层兜底手势层）。颜色从 palette
                         取语义色（无固定 hex，深浅翻转由 useEffectiveTheme 驱动
-                        重渲自动换色）；跨界条整条点亮，不做半根渐变（取舍见
-                        文件头 v4 注）。播放态着色由其上的 accent 点亮层承担
-                        （v7），底层恒单色不变 */}
+                        重渲自动换色）；播放头邻域条挂共享波纹 Value，其余恒
+                        纯 View（重渲零动画开销） */}
                     <View
                         style={{
                             height: WAVE_HEIGHT,
@@ -746,41 +781,11 @@ export function AudioBlock({
                     >
                         <WaveBars
                             heights={waveHeights}
-                            litCount={ready ? litCount : 0}
-                            lit={palette.text}
-                            unlit={palette.faint}
-                            pulse={pulse}
+                            color={palette.text}
+                            playheadIndex={playheadIndex}
+                            rippleValues={rippleValues}
                         />
                     </View>
-                    {/* 播放点亮层（v7「播放渐变蓝」）：同几何 accent 条绝对定位
-                        覆盖底层，整层 opacity 随 isPlaying 120ms 渐变（native
-                        driver，双层 opacity 叠加替代颜色动画——JS 颜色插值是
-                        主线程杀手，见文件头 v7 注）。同宽同行距同垂直居中 ⇒
-                        两层条形逐根重合；pointerEvents="none" 不截触摸（触摸体
-                        是外层 BouncyPressable 整卡）。未播时 opacity 0 但保持
-                        挂载——38 根纯 View 静置零动画节点，卸载/重挂的重建成本
-                        高于静置，不做条件渲染 */}
-                    <Animated.View
-                        pointerEvents="none"
-                        style={{
-                            position: 'absolute',
-                            top: 0,
-                            left: 0,
-                            right: 0,
-                            bottom: 0,
-                            flexDirection: 'row',
-                            alignItems: 'center',
-                            gap: WAVE_BAR_GAP,
-                            opacity: accentGlow,
-                        }}
-                    >
-                        <AccentWaveBars
-                            heights={waveHeights}
-                            litCount={ready ? litCount : 0}
-                            accent={palette.accent}
-                            pulse={pulse}
-                        />
-                    </Animated.View>
                 </View>
                 {/* 下：时间行（底部水平居中）——「0:05 · 剩余 0:03」：当前
                     （text 实色）/ 分隔+剩余（muted），tabular-nums 房规；
