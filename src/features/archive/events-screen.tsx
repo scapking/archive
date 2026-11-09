@@ -134,7 +134,14 @@ export function EventsScreen() {
                         maxWidth: 560,
                     }}
                     ListHeaderComponent={
-                        <View>
+                        // pb-4(16dp)：header 与列表主体的净距（trip-detail
+                        // ListHeader 末块 mb-4 同规）。必须挂 header 根而非 chips
+                        // 行——error 横幅是 chips 之后的条件末块，挂 chips 会漏掉
+                        // 「横幅→首卡」零间距变体。缺它则首卡面与筛选轨道同为
+                        // surface 底色零间距粘连（卡片压 chips 观感），时间线轴
+                        // inset-y-0 也从 chips 底边起笔（CDP 实测 rect：chips
+                        // bottom == 首卡 row/轴顶，gap=0）
+                        <View className="pb-4">
                             {/* 搜索框（FieldInput 视觉口径：border 零 + 近色底
                                 rounded-control，聚焦亮度一档变化，#12/#13） */}
                             <View
