@@ -25,7 +25,8 @@ export default function NotFoundScreen() {
                 </Text>
                 <Link
                     href="/"
-                    className="mt-12 h-11 items-center justify-center rounded-control border border-ink-border bg-ink-surface px-6 active:bg-ink-raised dark:border-inkd-border dark:bg-inkd-surface dark:active:bg-inkd-raised"
+                    style={{ marginTop: 48 }}
+                    className="h-11 items-center justify-center rounded-control border border-ink-border bg-ink-surface px-6 active:bg-ink-raised dark:border-inkd-border dark:bg-inkd-surface dark:active:bg-inkd-raised"
                 >
                     <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
                         回到 Archive
