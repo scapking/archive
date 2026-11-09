@@ -8,6 +8,7 @@ import {
     LucideBookOpen,
     LucideCalendar,
     LucideChevronRight,
+    LucideFlag,
     LucidePlay,
 } from '@/core/icons';
 import { useArchiveRevision, useArchiveStore } from './store';
@@ -265,6 +266,11 @@ export function ArchiveScreen() {
                                 <View className="h-1.5 w-1.5 rounded-full bg-ink-accent dark:bg-inkd-accent" />
                                 <View className="h-1.5 w-1.5 rounded-full bg-ink-faint dark:bg-inkd-faint" />
                             </View>
+                            {/* 事件入口卡（v6 事件实体，deck 区下方）：对齐 Me 页
+                                EventsEntryCard 语言（icon + 题 + 副标 + chevron），
+                                → /events。typedRoutes 类型未生成 → as never 最小
+                                妥协先例（me 页 SearchEntryCard 同口径） */}
+                            <EventsEntryCard />
                         </View>
                     </View>
                 )}
@@ -362,6 +368,39 @@ function EmptyStateIcon() {
             actionLabel="写今天的日记"
             onAction={() => router.push('/write')}
         />
+    );
+}
+
+/**
+ * 事件入口卡（v6 事件实体，deck 区下方）：整卡即命中盒（≥44，hitSlop 0，四周
+ * 无相邻命中元素），按压反馈走 active: 体系（Me 页入口卡同口径）。视觉对齐 Me
+ * 的 EventsEntryCard / SearchEntryCard 语言：icon 容器 40×40 raised 底 + 题 +
+ * 副行 + chevron（faint 档）；icon 用 LucideFlag（事件/工单语义标，与 Me 卡、
+ * 插入菜单「新建事件」行同一图标语言）。
+ */
+function EventsEntryCard() {
+    const router = useRouter();
+    const palette = usePalette();
+    return (
+        <Pressable
+            onPress={() => router.push('/events' as never)}
+            className="mt-4 flex-row items-center gap-3 rounded-card bg-ink-surface px-4 py-3 active:bg-ink-raised dark:bg-inkd-surface dark:active:bg-inkd-raised"
+            accessibilityRole="button"
+            accessibilityLabel="事件"
+        >
+            <View className="h-10 w-10 items-center justify-center rounded-control bg-ink-raised dark:bg-inkd-raised">
+                <LucideFlag size={18} strokeWidth={1.9} color={palette.secondary} />
+            </View>
+            <View className="min-w-0 flex-1">
+                <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
+                    事件
+                </Text>
+                <Text numberOfLines={1} className="mt-0.5 text-[12px] text-ink-muted dark:text-inkd-muted">
+                    要跟的事记成工单，跟到完成
+                </Text>
+            </View>
+            <LucideChevronRight size={16} strokeWidth={1.9} color={palette.faint} />
+        </Pressable>
     );
 }
 

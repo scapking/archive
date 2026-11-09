@@ -35,6 +35,11 @@ import Play from 'lucide-react-native/icons/play';
 import BookOpen from 'lucide-react-native/icons/book-open';
 import TrendingUp from 'lucide-react-native/icons/trending-up';
 import Clock from 'lucide-react-native/icons/clock';
+// v6 事件实体（工单式）新增：Flag = 事件/工单语义标（事件入口卡、插入菜单「新建事件」行），
+// MapPin = GPS 定位标记（事件卡定位 icon、详情头坐标行）。per-icon 深路径同上，
+// 静态组件用法无需 __iconData（同 Calendar/Camera 先例）。
+import Flag from 'lucide-react-native/icons/flag';
+import MapPin from 'lucide-react-native/icons/map-pin';
 
 import {
     __iconData as houseData,
@@ -96,7 +101,9 @@ export {
     Play as LucidePlay,
     BookOpen as LucideBookOpen,
     TrendingUp as LucideTrendingUp,
-    Clock as LucideClock,};
+    Clock as LucideClock,
+    Flag as LucideFlag,
+    MapPin as LucideMapPin,};
 
 export { MorphIcon, type MorphIconProps, type MorphHandle } from 'morphicons/react-native';
 

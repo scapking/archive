@@ -8,6 +8,10 @@ export { SearchScreen } from './search-screen';
 export { JournalEditScreen } from './journal-edit-screen';
 export { TripFormScreen } from './trip-form-screen';
 export { TripDetailScreen } from './trip-detail-screen';
+// 事件实体（v6，工单式）：列表 / 创建 / 详情编辑三屏（app/events*.tsx 路由壳消费）
+export { EventsScreen } from './events-screen';
+export { EventFormScreen } from './event-form-screen';
+export { EventDetailScreen } from './event-detail-screen';
 export { useArchiveStore, useArchiveRevision, type TripCard } from './store';
 // 全屏查看器请求通道（中立层，app/viewer 路由屏消费；模式同 data-revision）
 export {

@@ -10,7 +10,16 @@ import { imageManipulator } from '@/core/image-manipulator';
 import { videoThumbnails } from '@/core/video-thumbnails';
 import * as db from './db';
 import { PENDING_MEDIA_ID, TRIP_OPEN_ENDED } from './db';
-import type { JournalBlock, JournalMediaKind, TripMediaKind, TripRow } from './db';
+import type {
+    EventMediaKind,
+    EventRow,
+    EventStatus,
+    EventSubjectKind,
+    JournalBlock,
+    JournalMediaKind,
+    TripMediaKind,
+    TripRow,
+} from './db';
 import {
     addDaysLocal,
     decorateTrip,
@@ -32,6 +41,21 @@ import {
     wordCount,
     type JournalRow,
 } from './journal-logic';
+// 事件纯逻辑（v6）：校验/归一化/装饰统一走纯函数模块，store 只做编排
+import {
+    EVENT_DESCRIPTION_MAX,
+    EVENT_HANDLED_BY_MAX,
+    decorateEvent,
+    isEventStatus,
+    isEventSubjectKind,
+    isValidGpsAccuracy,
+    isValidGpsCoordinate,
+    newEventBlocksJson,
+    normalizeEventSubject,
+    normalizeEventText,
+    validateEventInput,
+    type Event,
+} from './event-logic';
 // v5 require cycle 修复：store 不再从 './ui' 取任何符号（PENDING_MEDIA_ID 已下沉 db）。
 // mutation 的数据变化广播经中立层发出，ui 侧用 useDataRevision 订阅、不回头 import store
 // （依赖图见 data-revision.ts 头注）。
@@ -234,6 +258,72 @@ interface ArchiveStore {
     searchTrips(keyword: string, range?: { from?: string; to?: string }): Promise<TripCard[]>;
     /** 笔记搜索（DEV.md #5 扩展）：正文/标题 LIKE + local_date ∈ [from, to]。 */
     searchJournals(keyword: string, range?: { from?: string; to?: string }): Promise<JournalRow[]>;
+    /**
+     * 建事件（v6，类似工单）：标题必填，其余可选；正文 blocks 以单空文本段初始化；
+     * 状态恒从 'open' 起。GPS 注入不在 store（UI 层经 core/location 取好后传参）。
+     * 返回新行（deleted_at = null）；失败走 error 通道返回 null（不 throw）。
+     */
+    createEvent(input: {
+        title: string;
+        gps?: { lat: number; lng: number; accuracy?: number } | null;
+        handledBy?: string;
+        subjectKind?: EventSubjectKind;
+        subjectValue?: string;
+        description?: string;
+    }): Promise<EventRow | null>;
+    /**
+     * 事件正文保存（复用 saveJournalBlocks 语义）：pending 占位过滤 + 落库 +
+     * event_media 引用对账（未被持久化 blocks 引用且对账基准时刻前的媒体行软删
+     * + 文件尽力清理）。true = 成功；false = 失败（error 通道照旧上浮）。
+     * 注：事件表无 word_count 冗余列，字数派生走 event-logic 纯函数按需计算。
+     */
+    updateEventBlocks(eventId: string, blocks: JournalBlock[]): Promise<boolean>;
+    /**
+     * 事件元信息更新（status/handledBy/subject 对/description/gps，均可选）：
+     * - subject 为原子对：kind/value 任一侧出现在 patch 即合并当前行后整体归一化
+     *   （显式 null = 清除该侧；归一化后任一侧缺失 → 双双置空）；
+     * - gps：undefined = 不动；null = 清除；对象 = 覆盖写（非法坐标整体拒绝）；
+     * - status 仅接受 'open' | 'done'。true = 成功。
+     */
+    updateEventMeta(
+        eventId: string,
+        patch: {
+            status?: EventStatus;
+            handledBy?: string | null;
+            subjectKind?: EventSubjectKind | null;
+            subjectValue?: string | null;
+            description?: string | null;
+            gps?: { lat: number; lng: number; accuracy?: number } | null;
+        },
+    ): Promise<boolean>;
+    /**
+     * 事件媒体（v6）：对齐 attachTripMedia——落盘分流（视频 copyFromUri 直迁、
+     * 图片 manipulator 字节路径、音频字节落盘+容器嗅探）+ 落库，返回 mediaId 供
+     * blocks 引用；缩略图增强可选不做（v6 取舍）。落盘 key：
+     * event-media/<eventId>/<mediaId>.<ext>。
+     */
+    attachEventMedia(
+        eventId: string,
+        kind: EventMediaKind,
+        uri: string,
+        width: number | null,
+        height: number | null,
+        durationMs?: number | null,
+    ): Promise<string | null>;
+    /**
+     * 删单条事件媒体：行软删 + **DB 级 blocks 引用摘除**（事件正文块引用媒体，
+     * 直接删行会留死引用——参照 appendMediaBlockToJournal 的 DB 权威改写）+
+     * 文件尽力清理。true = 删除成功。
+     */
+    removeEventMedia(mediaId: string): Promise<boolean>;
+    /** 删事件（v6）：行级级联（事件 + 媒体行软删）+ 文件清理（不留孤儿引用）。 */
+    deleteEvent(id: string): Promise<boolean>;
+    /**
+     * 事件搜索（v6）：关键词四通道 LIKE（title/description/subject_value/
+     * handled_by）+ 状态筛选，updated_at DESC。空 keyword 且无 status 返回空
+     * （不做无界全量；全量列表走 db.listEvents）。返回装饰后的 Event[]。
+     */
+    searchEvents(keyword: string, filter?: { status?: EventStatus }): Promise<Event[]>;
     ensureTodayJournal(): Promise<JournalRow | null>;
     ensureJournal(tripId: string | null, date: string): Promise<JournalRow | null>;
     /**
@@ -418,12 +508,13 @@ async function removeFilesBestEffort(keys: string[]): Promise<{ key: string; mes
 // ─── 启动孤儿文件 GC（上传中断恢复）────────────────────────────────────────
 
 /**
- * GC 管辖的媒体 key 前缀：与 store 三个上传入口的 key 规则一一对应
+ * GC 管辖的媒体 key 前缀：与 store 各上传入口的 key 规则一一对应
  * （journal-media/<journalId>/<mediaId>.<ext>、trip-media/<tripId>/<mediaId>.<ext>、
- * trip-video/<tripId>.mp4）。GC 只在这些前缀内求差集，其余 key（迁移包、未来
- * 扩展等）一律不碰——前缀外文件即使无引用也绝不误删。
+ * trip-video/<tripId>.mp4、event-media/<eventId>/<mediaId>.<ext>（v6））。
+ * GC 只在这些前缀内求差集，其余 key（迁移包、未来扩展等）一律不碰——前缀外
+ * 文件即使无引用也绝不误删。
  */
-const GC_MEDIA_PREFIXES = ['journal-media/', 'trip-media/', 'trip-video/'] as const;
+const GC_MEDIA_PREFIXES = ['journal-media/', 'trip-media/', 'trip-video/', 'event-media/'] as const;
 
 /**
  * 宽限期：mtime 距今不足该时长的孤儿候选一律不删。覆盖两类窗口——
@@ -904,6 +995,302 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             return await db.searchJournals(trimmed, { from: range?.from, to: range?.to });
         } catch (error) {
             set({ error: `笔记搜索失败：${toMessage(error)}` });
+            return [];
+        }
+    },
+
+    // ─── events（v6：事件实体，类似工单）─────────────────────────────────────
+    // 刷新口径：事件不进 loadAll 的 store 状态（trips/metrics 与事件无关，loadAll
+    // 是纯浪费），mutation 成功只 bump revision——事件列表由屏层按
+    // useDataRevision 局部重载（对齐 attachTripMedia/removeTripMedia 的取径）。
+
+    async createEvent(input) {
+        // 校验先行（title 必填等）：错误文案直接进 error 通道（对齐 validateTripInput 消费方式）
+        const validationError = validateEventInput(input);
+        if (validationError) {
+            set({ error: validationError });
+            return null;
+        }
+        // row 构造留在 try 内：web 非安全上下文 crypto.randomUUID 会抛 TypeError，
+        // 失败必须走 error 通道（对齐 createTrip 的注释口径）
+        let row: EventRow | null = null;
+        try {
+            const now = Date.now();
+            const subject = normalizeEventSubject(input.subjectKind, input.subjectValue);
+            const gps = input.gps ?? null;
+            row = {
+                id: crypto.randomUUID(),
+                title: input.title.trim(),
+                status: 'open',
+                description: normalizeEventText(input.description, EVENT_DESCRIPTION_MAX),
+                blocks: newEventBlocksJson(),
+                gps_lat: gps ? gps.lat : null,
+                gps_lng: gps ? gps.lng : null,
+                gps_accuracy: gps?.accuracy ?? null,
+                handled_by: normalizeEventText(input.handledBy, EVENT_HANDLED_BY_MAX),
+                subject_kind: subject.kind,
+                subject_value: subject.value,
+                created_at: now,
+                updated_at: now,
+                deleted_at: null,
+            };
+            await db.insertEvent(row);
+        } catch (error) {
+            set({ error: `事件创建失败：${toMessage(error)}` });
+            return null;
+        }
+        set({ error: null, revision: get().revision + 1 });
+        return row;
+    },
+
+    async updateEventBlocks(eventId, blocks) {
+        // 序列化/落库前滤掉上传中的 pending 占位块（与 saveJournalBlocks 同口径：
+        // 占位 mediaId 在 event_media 无对应行，落库会让读取侧渲染坏引用）
+        const persistable = blocks.filter(
+            (block) => !(block.t === 'media' && block.mediaId === PENDING_MEDIA_ID),
+        );
+        // 对账基准时刻（回填竞态保护）：只清 created_at 早于本次 blocks 落库的媒体行
+        const persistedAt = Date.now();
+        try {
+            await db.updateEventBlocks(eventId, serializeBlocks(persistable));
+        } catch (error) {
+            set({ error: `事件保存失败：${toMessage(error)}` });
+            return false;
+        }
+        // event_media 引用对账（事件版孤儿回收，DEV.md #1.1 数据面闭环）：编辑器删
+        // 媒体块只摘 blocks 引用，孤儿行在此统一软删 + 文件尽力清理（失败聚合上浮
+        // error，不推翻已落库正文——对齐 saveJournalBlocks 口径）
+        let fileFailures: { key: string; message: string }[] = [];
+        try {
+            const referenced = new Set(
+                persistable.flatMap((block) => (block.t === 'media' ? [block.mediaId] : [])),
+            );
+            const rows = await db.listEventMediaByEvent(eventId);
+            const orphans = rows.filter(
+                (row) => !referenced.has(row.id) && row.created_at <= persistedAt,
+            );
+            if (orphans.length > 0) {
+                await db.softDeleteEventMediaByIds(orphans.map((row) => row.id), Date.now());
+                fileFailures = await removeFilesBestEffort(orphans.map((row) => row.file_key));
+            }
+        } catch (error) {
+            set({ error: `事件已保存，但孤儿媒体清理失败：${toMessage(error)}` });
+            return true;
+        }
+        set({
+            error: null,
+            revision: get().revision + 1,
+            ...(fileFailures.length > 0
+                ? {
+                      error: `事件已保存，但 ${fileFailures.length} 个媒体文件清理失败：${fileFailures[0].message}`,
+                  }
+                : {}),
+        });
+        return true;
+    },
+
+    async updateEventMeta(eventId, patch) {
+        try {
+            const current = await db.getEvent(eventId);
+            if (!current) {
+                set({ error: '事件不存在或已删除' });
+                return false;
+            }
+            // 状态仅接受合法枚举（非法值整体拒绝，避免脏状态落库）
+            let status: EventStatus | undefined;
+            if (patch.status !== undefined) {
+                if (!isEventStatus(patch.status)) {
+                    set({ error: `事件状态不合法：${String(patch.status)}` });
+                    return false;
+                }
+                status = patch.status;
+            }
+            if (
+                patch.subjectKind !== undefined &&
+                patch.subjectKind !== null &&
+                !isEventSubjectKind(patch.subjectKind)
+            ) {
+                set({ error: '对象类型不合法' });
+                return false;
+            }
+            // GPS patch 防御校验（undefined = 不动；null = 清除；对象必须含合法坐标）
+            if (patch.gps) {
+                if (!isValidGpsCoordinate(patch.gps.lat, patch.gps.lng)) {
+                    set({ error: 'GPS 经纬度不合法' });
+                    return false;
+                }
+                if (!isValidGpsAccuracy(patch.gps.accuracy)) {
+                    set({ error: '定位精度不合法' });
+                    return false;
+                }
+            }
+            // subject 原子对合并：patch 出现任一侧 → 与当前行合并后整体归一化
+            // （显式 null = 清除该侧；归一化后任一侧缺失 → 双双置空，见 event-logic）
+            const touchSubject = patch.subjectKind !== undefined || patch.subjectValue !== undefined;
+            const subject = touchSubject
+                ? normalizeEventSubject(
+                      patch.subjectKind !== undefined ? patch.subjectKind : current.subject_kind,
+                      patch.subjectValue !== undefined ? patch.subjectValue : current.subject_value,
+                  )
+                : null;
+            await db.updateEventMeta(eventId, {
+                ...(status !== undefined ? { status } : {}),
+                ...(patch.handledBy !== undefined
+                    ? { handled_by: normalizeEventText(patch.handledBy, EVENT_HANDLED_BY_MAX) }
+                    : {}),
+                ...(patch.description !== undefined
+                    ? { description: normalizeEventText(patch.description, EVENT_DESCRIPTION_MAX) }
+                    : {}),
+                ...(subject ? { subject_kind: subject.kind, subject_value: subject.value } : {}),
+                ...(patch.gps !== undefined
+                    ? {
+                          gps_lat: patch.gps ? patch.gps.lat : null,
+                          gps_lng: patch.gps ? patch.gps.lng : null,
+                          gps_accuracy: patch.gps?.accuracy ?? null,
+                      }
+                    : {}),
+            });
+        } catch (error) {
+            set({ error: `事件保存失败：${toMessage(error)}` });
+            return false;
+        }
+        set({ error: null, revision: get().revision + 1 });
+        return true;
+    },
+
+    async attachEventMedia(eventId, kind, uri, width, height, durationMs = null) {
+        try {
+            // 存在性预检（事件已删则媒体没有落点；事件无锁定语义，open/done 均可增补）
+            const event = await db.getEvent(eventId);
+            if (!event) {
+                set({ error: '事件不存在或已删除' });
+                return null;
+            }
+            const mediaId = crypto.randomUUID();
+            // 音频容器/扩展名按字节头核对（对齐 attachJournalMedia；空字节坏产物拒绝入库）
+            let ext = mediaFileExt(kind);
+            if (kind === 'audio') {
+                const bytes = await readUriBytes(uri);
+                if (bytes.byteLength === 0) {
+                    throw new Error('录音文件为空，请重试');
+                }
+                ext = audioExtFromBytes(bytes);
+            }
+            const key = `event-media/${eventId}/${mediaId}.${ext}`;
+            // 落盘分流（对齐 attachTripMedia/attachJournalMedia）：视频 copyFromUri
+            // 直迁（本签名无 moveSource 选项——事件媒体统一 copy 语义，不动源文件），
+            // 图片 manipulator 字节路径，音频字节落盘
+            if (kind === 'video') {
+                await fileStorage.copyFromUri(key, uri);
+            } else if (kind === 'audio') {
+                await fileStorage.put(key, await readUriBytes(uri));
+            } else {
+                const prepared = await prepareImageBytes(uri, width);
+                width = prepared.width;
+                height = prepared.height;
+                await fileStorage.put(key, prepared.bytes);
+            }
+            try {
+                await db.insertEventMedia({
+                    id: mediaId,
+                    event_id: eventId,
+                    file_key: key,
+                    kind,
+                    width,
+                    height,
+                    duration_ms: durationMs,
+                    created_at: Date.now(),
+                });
+            } catch (dbError) {
+                // 落库失败回滚已落盘文件（不留孤儿字节，对齐 attachJournalMedia）
+                await fileStorage.remove(key).catch(() => undefined);
+                throw dbError;
+            }
+            set({ error: null, revision: get().revision + 1 });
+            return mediaId;
+        } catch (error) {
+            set({ error: `媒体上传失败：${toMessage(error)}` });
+            return null;
+        }
+    },
+
+    async removeEventMedia(mediaId) {
+        try {
+            // ① 先取行：软删后（或行本就不存在）无法再拿 file_key（所有查询过滤 deleted_at）
+            const media = await db.getEventMedia(mediaId);
+            if (!media) {
+                set({ error: '媒体不存在或已删除' });
+                return false;
+            }
+            // ② 行级软删（单行，无 updated_at 列，对齐 softDeleteTripMedia 口径）
+            await db.softDeleteEventMedia(mediaId, Date.now());
+            // ③ DB 级 blocks 引用摘除（事件正文块引用媒体 id，直接删行会留死引用；
+            //    参照 appendMediaBlockToJournal 的 DB 权威改写）：blocks 无该引用时
+            //    no-op 不回写。摘除后补「至少一个可落笔段」不变式（removeBlock 口径）。
+            //    直写 db.updateEventBlocks 而非 updateEventBlocks action：对账已在
+            //    ② 完成，避免二次对账/重复语义
+            const event = await db.getEvent(media.event_id);
+            if (event) {
+                const blocks = parseBlocks(event.blocks);
+                const stripped = blocks.filter(
+                    (block) => !(block.t === 'media' && block.mediaId === mediaId),
+                );
+                if (stripped.length !== blocks.length) {
+                    const next = stripped.some((block) => block.t === 'p')
+                        ? stripped
+                        : [...stripped, newParagraphBlock()];
+                    await db.updateEventBlocks(event.id, serializeBlocks(next));
+                }
+            }
+            // ④ 文件清理不阻塞行删除：失败聚合上浮（行已删，孤儿文件只浪费存储）
+            const failures = await removeFilesBestEffort([media.file_key]);
+            set({
+                error: null,
+                revision: get().revision + 1,
+                ...(failures.length > 0
+                    ? { error: `记录已删除，但媒体文件清理失败：${failures[0].message}` }
+                    : {}),
+            });
+        } catch (error) {
+            set({ error: `媒体删除失败：${toMessage(error)}` });
+            return false;
+        }
+        return true;
+    },
+
+    async deleteEvent(id) {
+        try {
+            // ① 先收集文件 key：级联软删后媒体行不可见（所有查询过滤 deleted_at）
+            const mediaRows = await db.listEventMediaByEvent(id);
+            const fileKeys = mediaRows.map((row) => row.file_key);
+            // ② 行级级联一个事务（事件 + 媒体行，软删）
+            await db.softDeleteEventCascade(id, Date.now());
+            // ③ 文件清理不阻塞行删除：失败聚合上浮（行已删，引用不会复活）
+            const failures = await removeFilesBestEffort(fileKeys);
+            set({
+                error: null,
+                revision: get().revision + 1,
+                ...(failures.length > 0
+                    ? { error: `事件已删除，但 ${failures.length} 个媒体文件清理失败：${failures[0].message}` }
+                    : {}),
+            });
+        } catch (error) {
+            set({ error: `事件删除失败：${toMessage(error)}` });
+            return false;
+        }
+        return true;
+    },
+
+    async searchEvents(keyword, filter) {
+        const trimmed = keyword.trim();
+        const status = filter?.status;
+        // 空 keyword 且无 status = 无界全量，拒绝（全量列表语义走 db.listEvents）
+        if (!trimmed && !status) return [];
+        try {
+            const rows = await db.searchEvents(trimmed, status ? { status } : {});
+            return rows.map(decorateEvent);
+        } catch (error) {
+            set({ error: `事件搜索失败：${toMessage(error)}` });
             return [];
         }
     },

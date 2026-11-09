@@ -17,6 +17,13 @@
  *   本体是 trip_media 的一行（复用行程媒体上传流），指针方案让媒体行可复用
  *   既有上传/软删/级联/文件清理链路，删除语义见行注释。
  *
+ * v6 追加（事件实体，类似工单）：
+ * - events：独立可重复新建的业务条目（时间线 + 名字 + GPS + 短描述 + 块正文 +
+ *   状态 + 处理人 + 对象），blocks 复用 journal 的 JournalBlock 块 JSON 语义
+ *   （媒体行挂 event_media，正文块以 mediaId 引用）；
+ * - event_media：事件内媒体，列与 trip_media 对齐（图/视频/音频 + duration_ms），
+ *   复用行程媒体同款落盘/软删/级联/文件清理链路。
+ *
  * 约定不变：UUID 主键；日期归属用本地日期字符串 `YYYY-MM-DD`；
  * created_at/updated_at 为 epoch ms；删除一律软删除。
  */
@@ -235,4 +242,97 @@ export const TRIP_DAY_META_DDL = `CREATE TABLE IF NOT EXISTS trip_day_meta (
     background_media_id TEXT,
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (trip_id, local_date)
+)`;
+
+// ─── events（v6：事件实体，类似工单）────────────────────────────────────────
+
+/**
+ * 事件状态：open = 进行中；done = 已完成。与日记的 open/closed 无关：
+ * 事件状态由用户手动切换（类似行程的进行/结束，但不按日期派生、不锁定内容）。
+ * 约束在应用层（对齐 journals.status 风格，DDL 不加 CHECK）；判断一律走
+ * event-logic 的派生函数，禁止散落字面量比较。
+ */
+export type EventStatus = 'open' | 'done';
+
+/**
+ * 事件对象（subject）类型词表：手机 / 邮箱 / 现实地址 / GPS 坐标；NULL = 未设置。
+ * subject_kind 与 subject_value 是**原子对**：任一侧缺失即视为未设置
+ * （归一化在 event-logic.normalizeEventSubject，写入口一律成对落库）。
+ */
+export type EventSubjectKind = 'phone' | 'email' | 'address' | 'gps';
+
+/**
+ * 事件行（v6）：独立、可重复新建的工单式条目。字段语义：
+ * - description：可空短描述（用户手写的摘要行），正文细节在 blocks；
+ * - blocks：正文块 JSON（JournalBlock[]，journal 同款块模型——文本段 + 行内
+ *   媒体块，mediaId → event_media），复用 parse/serialize/摘要口径；
+ * - gps_lat/gps_lng/gps_accuracy：完整经纬度（可空——定位失败/用户不填允许
+ *   无 GPS；无地址列，地址语义走 subject 的 address/gps 词表）；
+ * - handled_by：处理人自由文本（可空）；
+ * - subject_kind/subject_value：对象类型与值（原子对，见上）。
+ */
+export interface EventRow {
+    id: string;
+    title: string;
+    status: EventStatus;
+    description: string | null;
+    blocks: string; // JSON: JournalBlock[]
+    gps_lat: number | null;
+    gps_lng: number | null;
+    gps_accuracy: number | null;
+    handled_by: string | null;
+    subject_kind: EventSubjectKind | null;
+    subject_value: string | null;
+    created_at: number;
+    updated_at: number;
+    deleted_at: number | null;
+}
+
+/** 媒体种类：kind 列为 TEXT，对齐 trip_media（图/视频/音频），新增种类无需迁移。 */
+export type EventMediaKind = JournalMediaKind;
+
+/**
+ * 事件内媒体行（v6）：列与 trip_media 完全对齐（含 duration_ms 音视频时长列——
+ * 事件媒体无「块级元数据即真身」的历史包袱，直接落列，行程侧口径）。
+ * 落盘 key 约定 `event-media/<eventId>/<mediaId>.<ext>`（store 上传入口）。
+ */
+export interface EventMediaRow {
+    id: string;
+    event_id: string;
+    file_key: string; // file-storage key
+    kind: EventMediaKind;
+    width: number | null;
+    height: number | null;
+    duration_ms: number | null;
+    created_at: number;
+    deleted_at: number | null;
+}
+
+export const EVENTS_DDL = `CREATE TABLE IF NOT EXISTS events (
+    id TEXT PRIMARY KEY NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    description TEXT,
+    blocks TEXT NOT NULL DEFAULT '[]',
+    gps_lat REAL,
+    gps_lng REAL,
+    gps_accuracy REAL,
+    handled_by TEXT,
+    subject_kind TEXT,
+    subject_value TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER
+)`;
+
+export const EVENT_MEDIA_DDL = `CREATE TABLE IF NOT EXISTS event_media (
+    id TEXT PRIMARY KEY NOT NULL,
+    event_id TEXT NOT NULL,
+    file_key TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    duration_ms INTEGER,
+    created_at INTEGER NOT NULL,
+    deleted_at INTEGER
 )`;

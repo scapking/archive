@@ -11,7 +11,13 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { BouncyPressable, LucideCalendar, LucideTrash, LucideVideo } from '@/core/icons';
+import {
+    BouncyPressable,
+    LucideCalendar,
+    LucidePlus,
+    LucideTrash,
+    LucideVideo,
+} from '@/core/icons';
 import { imagePicker } from '@/core/image-picker';
 import { useArchiveStore } from './store';
 import {
@@ -44,18 +50,6 @@ import type { TripRow } from './db';
  * 首位 🧭 与 TRIP_ICON_DEFAULT 同值，仅为展示顺序——默认值来源是具名常量，不是「取第一个」。
  */
 const ICON_CHOICES = ['🧭', '⛰️', '🌊', '🏛️', '🏙️', '🚗', '✈️', '🚄', '🏕️', '🍜', '📷', '🎡', '⛷️', '🏝️', '🧳', '🗺️'];
-
-/** 分区容器：13px 小节标题 + 内容（分组是信息结构，不是装饰）。 */
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-    return (
-        <View className="mt-5">
-            <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                {title}
-            </Text>
-            {children}
-        </View>
-    );
-}
 
 /**
  * 结束日期语义分段切换（DEV.md #4：结束日期可选，默认「持续进行」）。
@@ -151,12 +145,25 @@ function DeleteTripControl({
 }
 
 /**
- * 行程表单（新建 / 编辑双模式，DEV.md #4 工作台口径的「创建像笔记一样轻量」）：
- * 标题 + 出发日期必填；结束日期可选——分段切换「持续进行（默认）/ 设定结束」；
- * 描述可选；图标保留（TripBadge 选择格）。提交统一走 endDate: string | null
- * 语义（null = 持续进行，store 落 TRIP_OPEN_ENDED 哨兵），日期原值透传
- * （#2：date-input 的自然输入归一已在组件内完成，表单不再二次加工）。
- * 已结束行程（isTripLocked）整表只读锁定：直达深链在此拦下，删除入口保留。
+ * 行程表单（新建 / 编辑双模式，DEV.md #4 工作台口径的「创建像笔记一样轻量」）。
+ *
+ * 极简化口径（用户需求「较少不必要的描述、减少步骤」）：
+ * - 无分区标题：名称/日期/描述字段全部自说明（placeholder、分段标签、入口文案
+ *   即说明），Section 标题属「不必要的描述」整层移除；留白节奏 = 字段组间 mt-5；
+ * - 图标 = 默认徽章 + 点击换：当前图标以 TripBadge 常驻名称行左侧，点徽章展开
+ *   一行横滑选择格（选完即收，一步完成）——替代旧 2 行 16 格平铺（首屏高度 -56，
+ *   选择是低频动作，不该常驻两行）；
+ * - 描述默认收起：一行「添加描述」轻量入口，点击展开 FieldInput；编辑模式已有
+ *   描述则默认展开（内容在场不折叠）。展开为单向（不提供收起）——空描述随表单
+ *   提交即可，收起按钮是多余的 chrome；
+ * - 封面视频（编辑模式）视觉降级：104px 大虚线框 → 与「添加描述」同语言的一行
+ *   轻量入口；已有视频保留预览 + 更换/移除（预览是内容不是步骤，必保）。
+ *
+ * 字段契约不变：标题 + 出发日期必填；结束日期可选——分段切换「持续进行（默认）/
+ * 设定结束」；提交统一走 endDate: string | null 语义（null = 持续进行，store 落
+ * TRIP_OPEN_ENDED 哨兵），日期原值透传（#2：date-input 的自然输入归一已在组件内
+ * 完成，表单不再二次加工）。已结束行程（isTripLocked）整表只读锁定：直达深链在
+ * 此拦下，删除入口保留。
  */
 export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
     const router = useRouter();
@@ -186,6 +193,14 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
     const [submitting, setSubmitting] = useState(false);
     const [videoBusy, setVideoBusy] = useState(false);
     const [confirmDelete, setConfirmDelete] = useState(false);
+    // 图标选择格展开态：默认收起（徽章已展示当前图标）；选完即收（一步完成）
+    const [iconPickerOpen, setIconPickerOpen] = useState(false);
+    // 描述展开态：新建默认收起（轻量入口）；编辑模式已有描述则默认展开
+    //（内容在场不折叠——折叠已有内容等于隐藏用户数据）
+    const [descExpanded, setDescExpanded] = useState(() => Boolean(trip?.description));
+    // 展开 ≠ 聚焦：autoFocus 只跟随「用户点了入口」这条路径——编辑模式默认展开时
+    // 若也 autoFocus，打开编辑表单即弹键盘盖住上部主字段（回归级体验问题）
+    const [descAutoFocus, setDescAutoFocus] = useState(false);
 
     const isEdit = Boolean(trip);
     // 锁定（#7）：已结束行程只读。store.updateTrip 无锁预检，UI 是唯一闸门——
@@ -369,41 +384,25 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                 }}
                 keyboardShouldPersistTaps="handled"
             >
-
-                {/* 图标 + 名称 */}
-                <Section title="图标与名称">
-                    {/* 选择格：44×44（360dp 宽下 6 列/行），命中区=格本体（Pressable 无 slop，
-                        gap-2 = 8px 停车距，互不交叠）；按压反馈沿用 active: 体系（格内
-                        TripBadge 不透明底会盖住 active:bg，故用整格降透明度）；选中态由
-                        TripBadge 呈现（accent 框/底/图形，条件类变量集恒等）。 */}
-                    <View className="flex-row flex-wrap gap-2">
-                        {ICON_CHOICES.map((choice) => {
-                            const active = icon === choice;
-                            return (
-                                <Pressable
-                                    key={choice}
-                                    onPress={() => setIcon(choice)}
-                                    className="active:opacity-80"
-                                    accessibilityRole="button"
-                                    accessibilityLabel={`图标 ${choice}`}
-                                    accessibilityState={{ selected: active }}
-                                >
-                                    <TripBadge icon={choice} size="cell" selected={active} />
-                                </Pressable>
-                            );
-                        })}
-                    </View>
-                    <View className="mt-3">
-                        {/* #1 推广收口：标题输入换 FieldInput（tone surface，容器承载
-                            视觉 + 聚焦亮度一档 + 平台 props 单点收口），表单逻辑零改动。
-                        标题输入放大（#尺寸组反馈，二轮纠正）：用户要的是「盒子大了、
-                        字不变」——容器保持 h-14（56dp）档，文字不传 style 覆盖即回落
-                        FIELD_TONE_TEXT.surface 默认 15/22 normal（撤销上一轮
-                        20/semibold/lineHeight-28 覆盖）。containerClassName 追加到
-                        容器（height 56 与默认 min-h-44 并存取大者）；输入体在容器内
-                        stretch 填满（field-input 填充轮），点击区/视觉与容器一致，
-                        文字垂直居中由输入体承担，props 覆盖即可、其他调用点
-                        （描述/内联计划输入）不受影响 */}
+                {/* ── 名称：当前图标徽章 + 名称输入同行（无分区标题，字段自说明）──
+                    徽章 44×44 即命中盒（Pressable hitSlop 0，右邻输入容器非按压体）；
+                    按压反馈走 active: 体系（TripBadge 不透明底会盖住 active:bg，
+                    整格降透明度，与旧选择格同口径） */}
+                <View className="flex-row items-center gap-2.5">
+                    <Pressable
+                        onPress={() => setIconPickerOpen((open) => !open)}
+                        className="active:opacity-80"
+                        accessibilityRole="button"
+                        accessibilityLabel={iconPickerOpen ? '收起图标选择' : '更换图标'}
+                        accessibilityState={{ expanded: iconPickerOpen }}
+                    >
+                        <TripBadge icon={icon} size="cell" />
+                    </Pressable>
+                    <View className="flex-1">
+                        {/* #1 推广收口：标题输入走 FieldInput（tone surface，容器承载
+                            视觉 + 聚焦亮度一档 + 平台 props 单点收口）。容器 h-14（56dp）
+                            档，文字回落 FIELD_TONE_TEXT.surface 默认 15/22 normal；
+                            输入体在容器内 stretch 填满，点击区/视觉与容器一致 */}
                         <FieldInput
                             tone="surface"
                             value={title}
@@ -414,10 +413,44 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                             containerClassName="h-14"
                         />
                     </View>
-                </Section>
+                </View>
 
-                {/* 日期：结束可选（DEV.md #4）——分段切换「持续进行 / 设定结束」 */}
-                <Section title="日期">
+                {/* 图标选择：一行横滑（默认徽章 + 点击换的展开态）。外层垂直滚动，
+                    内层水平滚动正交不冲突；contentContainer gap-2（8px 停车距）+
+                    命中区 = 格本体（无 hitSlop，互不交叠）；选中态由 TripBadge
+                    accent 框呈现（条件类变量集恒等在组件内收口）。选完即收：
+                    选择是单步动作，收起让表单回到「名称 + 日期」的最小形态 */}
+                {iconPickerOpen ? (
+                    <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        className="mt-3"
+                        contentContainerStyle={{ gap: 8, paddingRight: 8 }}
+                        keyboardShouldPersistTaps="handled"
+                    >
+                        {ICON_CHOICES.map((choice) => {
+                            const active = icon === choice;
+                            return (
+                                <Pressable
+                                    key={choice}
+                                    onPress={() => {
+                                        setIcon(choice);
+                                        setIconPickerOpen(false);
+                                    }}
+                                    className="active:opacity-80"
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`图标 ${choice}`}
+                                    accessibilityState={{ selected: active }}
+                                >
+                                    <TripBadge icon={choice} size="cell" selected={active} />
+                                </Pressable>
+                            );
+                        })}
+                    </ScrollView>
+                ) : null}
+
+                {/* ── 日期：结束可选（DEV.md #4）——分段切换「持续进行 / 设定结束」── */}
+                <View className="mt-5">
                     <EndModeSwitch mode={endMode} onChange={switchEndMode} />
                     {endMode === 'open' ? (
                         <View className="mt-3">
@@ -438,99 +471,107 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                             </View>
                         </View>
                     )}
-                    {endMode === 'open' ? (
-                        <Text className="mt-2 text-[12px] text-ink-secondary dark:text-inkd-secondary">
-                            持续进行 · 不设固定结束，从出发日开始累积
-                        </Text>
-                    ) : (
+                    {/* 天数反馈仅固定结束态保留（数据性信息，必保）；持续进行的
+                        「不设固定结束」说明已删——分段标签「持续进行」自说明 */}
+                    {endMode === 'fixed' && dayCount !== null ? (
                         <Text
                             className="mt-2 text-[12px] text-ink-secondary dark:text-inkd-secondary"
                             style={{ fontVariant: ['tabular-nums'] }}
                         >
-                            {dayCount !== null ? `共 ${dayCount} 天，每天会自动生成一格` : '填完返回日期自动算天数'}
+                            共 {dayCount} 天，每天会自动生成一格
                         </Text>
-                    )}
-                </Section>
+                    ) : null}
+                </View>
 
-                {/* 描述（可选） */}
-                <Section title="描述">
-                    {/* 多行起手高度 + 顶距（#尺寸组反馈，二轮纠正）：描述首行与容器顶缘
-                        间距明显加大——多行态文字从顶部排，在调用侧给 TextInput
-                        paddingTop 16（pt-4 档）：调用侧 style 位于合并数组末位，且 Yoga
-                        中具体边缘属性 paddingTop 覆盖 INPUT_TRANSPARENT_STYLE 的简写
-                        paddingVertical:0 → 生效顶距 = 容器 py-2 上沿 8 + 内衬 16 =
-                        24（修前 8）。minHeight 80 为 Yoga border-box（含内衬），三行
-                        16+66=82 微超即自然撑开一档，自动增高与光标位置不受影响，
-                        继续增高仍随内容自然撑开；填充轮后输入体在容器内 stretch，
-                        多行内容增长时容器随内容撑开的语义不变 */}
-                    <FieldInput
-                        tone="surface"
-                        multiline
-                        value={description}
-                        onChangeText={setDescription}
-                        placeholder="一句话说明这次出行（可选）"
-                        maxLength={500}
-                        style={{ minHeight: 80, paddingTop: 16 }}
-                    />
-                </Section>
+                {/* ── 描述：默认收起，「添加描述」轻量入口点击展开 ── */}
+                {descExpanded ? (
+                    <View className="mt-5">
+                        {/* 多行起手高度 + 顶距：容器随内容自然撑开（minHeight 80 为
+                            Yoga border-box 口径），调用侧 paddingTop 16 让首行与容器
+                            顶缘有呼吸（调用侧 style 位于合并数组末位，覆盖
+                            INPUT_TRANSPARENT_STYLE 的 paddingVertical: 0 简写）；
+                            FieldInput 口径与标题输入同源（tone surface） */}
+                        <FieldInput
+                            tone="surface"
+                            multiline
+                            value={description}
+                            onChangeText={setDescription}
+                            placeholder="一句话说明这次出行（可选）"
+                            maxLength={500}
+                            autoFocus={descAutoFocus}
+                            style={{ minHeight: 80, paddingTop: 16 }}
+                        />
+                    </View>
+                ) : (
+                    // 入口行 h-11 即命中盒（无 hitSlop；上下均为留白，无重叠核算项）
+                    <Pressable
+                        onPress={() => {
+                            setDescExpanded(true);
+                            setDescAutoFocus(true);
+                        }}
+                        className="mt-5 h-11 flex-row items-center gap-1.5"
+                        accessibilityRole="button"
+                        accessibilityLabel="添加描述"
+                    >
+                        <LucidePlus size={16} strokeWidth={1.9} color={palette.muted} />
+                        <Text className="text-[13px] text-ink-secondary dark:text-inkd-secondary">
+                            添加描述
+                        </Text>
+                    </Pressable>
+                )}
 
-                {/* 封面视频（编辑模式；锁定态整表已提前返回，不会到这里） */}
+                {/* ── 封面视频（编辑模式；锁定态整表已提前返回，不会到这里）──
+                    视觉降级取舍：大虚线框 → 一行轻量入口（与「添加描述」同语言，
+                    视频是低频增强项，不该占一屏的首屏高度）；已有视频保留预览 +
+                    更换/移除（预览是内容不是步骤） */}
                 {isEdit ? (
-                    <Section title="封面视频">
-                        {videoKey ? (
-                            <View className="gap-2">
-                                <TripCoverVideo fileKey={videoKey} height={176} />
-                                {/* 更换/移除并排：两钮同高 44 且「更换」闭 slop（0）——原 40 高 +
-                                    BouncyPressable 默认 hitSlop 10 会跨过 8px gap 压进「移除」左缘
-                                    2px，边缘点击误触发更换；44 高本体已达命中规范，slop 无必要 */}
-                                <View className="flex-row gap-2">
-                                    <BouncyPressable onPress={() => void pickVideo()} scaleTo={0.97} hitSlop={0}>
-                                        <View className="h-11 items-center justify-center rounded-control border border-ink-border bg-ink-surface px-4 dark:border-inkd-border dark:bg-inkd-surface">
-                                            <Text className="text-[13px] text-ink-secondary dark:text-inkd-secondary">
-                                                更换
-                                            </Text>
-                                        </View>
-                                    </BouncyPressable>
-                                    <Pressable
-                                        onPress={() => void removeVideo()}
-                                        className="h-11 items-center justify-center rounded-control border border-ink-border bg-ink-surface px-4 dark:border-inkd-border dark:bg-inkd-surface"
-                                    >
-                                        <Text className="text-[13px] text-ink-negative dark:text-inkd-negative">
-                                            移除
+                    videoKey ? (
+                        <View className="mt-5 gap-2">
+                            <TripCoverVideo fileKey={videoKey} height={176} />
+                            {/* 更换/移除并排：两钮同高 44 且「更换」闭 slop（0）——原 40 高 +
+                                BouncyPressable 默认 hitSlop 10 会跨过 8px gap 压进「移除」左缘
+                                2px，边缘点击误触发更换；44 高本体已达命中规范，slop 无必要 */}
+                            <View className="flex-row gap-2">
+                                <BouncyPressable onPress={() => void pickVideo()} scaleTo={0.97} hitSlop={0}>
+                                    <View className="h-11 items-center justify-center rounded-control border border-ink-border bg-ink-surface px-4 dark:border-inkd-border dark:bg-inkd-surface">
+                                        <Text className="text-[13px] text-ink-secondary dark:text-inkd-secondary">
+                                            更换
                                         </Text>
-                                    </Pressable>
-                                </View>
-                            </View>
-                        ) : (
-                            <BouncyPressable onPress={() => void pickVideo()} scaleTo={0.98}>
-                                {/* 按压反馈由外层 BouncyPressable 弹跳承担：内层 View 不用
-                                    active: 伪类（css-interop 会把 View 升级成 Pressable
-                                    首帧后 remount，触摸中途被杀——同 ChooserRow/MenuRow 口径） */}
-                                <View
-                                    className={`h-[104px] items-center justify-center gap-1.5 rounded-control border border-dashed border-ink-border bg-ink-surface dark:border-inkd-border dark:bg-inkd-surface ${
-                                        videoBusy ? 'opacity-50' : ''
-                                    }`}
-                                    accessibilityRole="button"
-                                    accessibilityLabel="选择封面视频"
+                                    </View>
+                                </BouncyPressable>
+                                <Pressable
+                                    onPress={() => void removeVideo()}
+                                    className="h-11 items-center justify-center rounded-control border border-ink-border bg-ink-surface px-4 dark:border-inkd-border dark:bg-inkd-surface"
                                 >
-                                    <LucideVideo size={20} strokeWidth={1.9} color={palette.muted} />
-                                    <Text className="text-[13px] text-ink-secondary dark:text-inkd-secondary">
-                                        {videoBusy ? '上传中…' : '从相册选择视频'}
+                                    <Text className="text-[13px] text-ink-negative dark:text-inkd-negative">
+                                        移除
                                     </Text>
-                                    <Text className="text-[11px] text-ink-muted dark:text-inkd-muted">
-                                        展示在行程页顶部
-                                    </Text>
-                                </View>
-                            </BouncyPressable>
-                        )}
-                    </Section>
+                                </Pressable>
+                            </View>
+                        </View>
+                    ) : (
+                        // 入口行 h-11 即命中盒；busy 态禁按（pickVideo 内亦有守卫，双道闸）
+                        <Pressable
+                            onPress={() => void pickVideo()}
+                            disabled={videoBusy}
+                            className={`mt-5 h-11 flex-row items-center gap-1.5${videoBusy ? ' opacity-50' : ''}`}
+                            accessibilityRole="button"
+                            accessibilityLabel="添加封面视频"
+                            accessibilityState={{ busy: videoBusy }}
+                        >
+                            <LucideVideo size={16} strokeWidth={1.9} color={palette.muted} />
+                            <Text className="text-[13px] text-ink-secondary dark:text-inkd-secondary">
+                                {videoBusy ? '上传中…' : '添加封面视频'}
+                            </Text>
+                        </Pressable>
+                    )
                 ) : null}
 
                 {validation ? (
-                    <Text className="mt-4 text-[12px] text-ink-negative dark:text-inkd-negative">{validation}</Text>
+                    <Text className="mt-3 text-[12px] text-ink-negative dark:text-inkd-negative">{validation}</Text>
                 ) : null}
                 {!validation && storeError ? (
-                    <Text className="mt-4 text-[12px] text-ink-negative dark:text-inkd-negative">{storeError}</Text>
+                    <Text className="mt-3 text-[12px] text-ink-negative dark:text-inkd-negative">{storeError}</Text>
                 ) : null}
 
                 <View className="mt-6">

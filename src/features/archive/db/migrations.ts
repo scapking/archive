@@ -1,6 +1,8 @@
 import type { SchemaMigration } from '@/core/database';
 import {
     DAY_PLANS_DDL,
+    EVENTS_DDL,
+    EVENT_MEDIA_DDL,
     JOURNALS_DDL,
     JOURNAL_MEDIA_DDL,
     TRIP_DAY_META_DDL,
@@ -105,6 +107,21 @@ export const ARCHIVE_MIGRATIONS: SchemaMigration[] = [
             // 无需额外二级索引。指针行无内容、清除 = 删行，故不设 deleted_at
             // （对域约定的显式例外，决策与删除链路见 schema.ts 注释）。
             TRIP_DAY_META_DDL,
+        ],
+    },
+    {
+        version: 6,
+        statements: [
+            // v6（事件实体，类似工单）：独立可重复新建的业务条目（时间线 + 名字 +
+            // GPS + 短描述 + 块正文 + 状态 + 处理人 + 对象）。blocks 复用 journal
+            // 块 JSON 语义（媒体引用挂 event_media），event_media 列与 trip_media
+            // 对齐（含 duration_ms），复用既有落盘/软删/级联/文件清理链路。
+            // 纯新增两张表 + 两个索引，不动历史表（append-only，无数据回填）。
+            EVENTS_DDL,
+            EVENT_MEDIA_DDL,
+            // 列表按状态筛选（进行中/已完成）与按事件取媒体的常规路径
+            'CREATE INDEX IF NOT EXISTS idx_events_status ON events(status)',
+            'CREATE INDEX IF NOT EXISTS idx_event_media_event ON event_media(event_id)',
         ],
     },
 ];

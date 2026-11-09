@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { BackHandler, Keyboard, Pressable, Text, View } from 'react-native';
+import { useRouter } from 'expo-router';
 import {
     BouncyPressable,
     LucideCamera,
     LucideCheck,
+    LucideFlag,
     LucideImage,
     LucideMic,
     LucidePlus,
@@ -52,6 +54,12 @@ export type InsertAction =
     | 'library-image'
     | 'library-video'
     | 'append-text'
+    /** 新建事件（v6 事件实体入口）：**组件内直推 /events/new 路由**，不经
+     *  onAction 分发——本菜单的宿主屏（journal-edit-screen）的 runInsert 词表
+     *  未同步扩展（本轮不改屏逻辑结构的约束），且该动作是「离开当前编辑上下文
+     *  去建工单」的导航语义而非编辑器动作，路由收口在本组件内最诚实（事件组
+     *  接线报告项）。 */
+    | 'new-event'
     | 'complete';
 
 /** 全局录制会话状态行数据（屏层从会话 store 投影；本组件不 import 会话模块
@@ -76,6 +84,9 @@ export function InsertMenu({
     activeCapture?: ActiveCaptureStatus | null;
 }) {
     const palette = usePalette();
+    // 「新建事件」行的路由出口（组件内直推，见 InsertAction 'new-event' 注——
+    // 宿主屏 runInsert 词表不动，导航语义收口在本组件）
+    const router = useRouter();
     // 收笔确认步：行卡片 → 确认卡（同卡替换内容，仍是条件渲染遮罩）
     const [confirming, setConfirming] = useState(false);
 
@@ -112,6 +123,9 @@ export function InsertMenu({
             : []),
         // 「+」语言一致（添加语义同 FAB 罗盘本钮）；排在媒体行之后、完成收笔之前（#11）
         { action: 'append-text', icon: <LucidePlus size={20} strokeWidth={1.9} />, title: '添加输入框', hint: '末尾另起一段继续写' },
+        // v6 事件实体入口（任务口径 LucideFlag）：工单式记录独立于日记，行位在
+        // 输入之后、完成收笔压轴之前（创建动作不入终态区）
+        { action: 'new-event', icon: <LucideFlag size={20} strokeWidth={1.9} />, title: '新建事件', hint: '工单式记录，独立于这篇笔记' },
         { action: 'complete', icon: <LucideCheck size={20} strokeWidth={1.9} />, title: '完成收笔', hint: '收笔后不可再修改' },
     ];
 
@@ -122,6 +136,13 @@ export function InsertMenu({
             return;
         }
         onClose();
+        // 新建事件 = 组件内直推路由（不经 onAction——宿主屏分发词表未扩展，
+        // 见 InsertAction 'new-event' 注）；typedRoutes 类型未生成 → as never
+        // 最小妥协先例（me 页 SearchEntryCard 同口径）
+        if (action === 'new-event') {
+            router.push('/events/new' as never);
+            return;
+        }
         onAction(action);
     };
 

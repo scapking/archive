@@ -4,6 +4,9 @@ import { ARCHIVE_MIGRATIONS } from './migrations';
 import { PENDING_MEDIA_ID } from './schema';
 import type {
     DayPlanRow,
+    EventMediaRow,
+    EventRow,
+    EventStatus,
     JournalMediaRow,
     JournalRow,
     TripMediaRow,
@@ -12,6 +15,11 @@ import type {
 
 export type {
     DayPlanRow,
+    EventMediaKind,
+    EventMediaRow,
+    EventRow,
+    EventStatus,
+    EventSubjectKind,
     JournalBlock,
     JournalMediaKind,
     JournalMediaRow,
@@ -568,22 +576,222 @@ export async function detachTripDayBackgroundByMediaId(mediaId: string, at: numb
     );
 }
 
+// ─── events（v6：事件实体，类似工单）────────────────────────────────────────
+
+/**
+ * 插入事件行（store.createEvent 编排，blocks 由调用方初始化为单空文本段 JSON）。
+ * created_at/updated_at 由调用方统一给同一时刻（时间线审计口径）。
+ */
+export async function insertEvent(row: Omit<EventRow, 'deleted_at'>): Promise<void> {
+    const db = await getDb();
+    await db.run(
+        `INSERT INTO events (id, title, status, description, blocks, gps_lat, gps_lng, gps_accuracy, handled_by, subject_kind, subject_value, created_at, updated_at, deleted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        [
+            row.id,
+            row.title,
+            row.status,
+            row.description,
+            row.blocks,
+            row.gps_lat,
+            row.gps_lng,
+            row.gps_accuracy,
+            row.handled_by,
+            row.subject_kind,
+            row.subject_value,
+            row.created_at,
+            row.updated_at,
+        ],
+    );
+}
+
+export async function getEvent(id: string): Promise<EventRow | null> {
+    const db = await getDb();
+    const row = await db.getFirst<EventRow>('SELECT * FROM events WHERE id = ? AND deleted_at IS NULL', [id]);
+    // 载入消毒（上传中断恢复）：与 getJournal 同口径，单条载入入口统一摘 PENDING 占位块
+    return row ? { ...row, blocks: sanitizeBlocksJson(row.blocks) } : null;
+}
+
+/**
+ * 事件正文落库（store.updateEventBlocks 编排）：blocks 为已序列化 JSON。
+ * 事件表无 word_count 冗余列（v6 字段设计：字数按需由 blocks 派生），故只落
+ * blocks + updated_at（对齐 updateJournalBlocks 的 updated_at 口径）。
+ */
+export async function updateEventBlocks(id: string, blocks: string): Promise<void> {
+    const db = await getDb();
+    await db.run('UPDATE events SET blocks = ?, updated_at = ? WHERE id = ?', [blocks, Date.now(), id]);
+}
+
+/**
+ * updateEventMeta 的可变字段集合：状态 / 短描述 / GPS 三列 / 处理人 / 对象对。
+ * 原子对与 GPS 的清空语义由 store 层归一化后落库（db 层只认列值，不做解析）。
+ */
+export type EventMetaPatch = Partial<
+    Pick<
+        EventRow,
+        | 'status'
+        | 'description'
+        | 'gps_lat'
+        | 'gps_lng'
+        | 'gps_accuracy'
+        | 'handled_by'
+        | 'subject_kind'
+        | 'subject_value'
+    >
+>;
+
+/** 事件元信息更新（动态 patch，对齐 updateTrip 风格）：任一写入都 bump updated_at。 */
+export async function updateEventMeta(id: string, patch: EventMetaPatch): Promise<void> {
+    const db = await getDb();
+    const fields: string[] = [];
+    const params: (string | number | null)[] = [];
+    for (const [column, value] of Object.entries(patch)) {
+        fields.push(`${column} = ?`);
+        params.push(value as string | number | null);
+    }
+    if (fields.length === 0) return;
+    fields.push('updated_at = ?');
+    params.push(Date.now(), id);
+    await db.run(`UPDATE events SET ${fields.join(', ')} WHERE id = ?`, params);
+}
+
+/**
+ * 删除事件的行级级联（对齐 softDeleteJournalCascade 的事务语义）：事件行 + 其
+ * 媒体行在一个事务内软删；文件清理由 store 层在事务外尽力执行（失败不回滚
+ * 行删除，见 store.deleteEvent）。调用方必须先收集 file_key——本函数之后行
+ * 已不可见（所有语句过滤 deleted_at IS NULL）。
+ * @param at 统一的删除时间戳（同一事件一个时间，审计口径一致）
+ */
+export async function softDeleteEventCascade(id: string, at: number): Promise<void> {
+    const db = await getDb();
+    await db.withTransaction(async () => {
+        await db.run('UPDATE event_media SET deleted_at = ? WHERE event_id = ? AND deleted_at IS NULL', [at, id]);
+        await db.run('UPDATE events SET deleted_at = ?, updated_at = ? WHERE id = ?', [at, at, id]);
+    });
+}
+
+/**
+ * 事件列表（updated_at DESC = 最近活动在前，v6 时间线排序口径）。
+ * status 缺省 = 全量（未删行）；status 传 'open' | 'done' 按状态过滤。
+ */
+export async function listEvents(filter: { status?: EventStatus } = {}): Promise<EventRow[]> {
+    const db = await getDb();
+    if (filter.status) {
+        return db.getAll<EventRow>(
+            'SELECT * FROM events WHERE deleted_at IS NULL AND status = ? ORDER BY updated_at DESC',
+            [filter.status],
+        );
+    }
+    return db.getAll<EventRow>(
+        'SELECT * FROM events WHERE deleted_at IS NULL ORDER BY updated_at DESC',
+    );
+}
+
+/**
+ * 事件搜索（v6）：关键词四通道 LIKE（title / description / subject_value /
+ * handled_by）+ 可选状态过滤，updated_at DESC LIMIT。
+ * 空 keyword 允许（= 纯状态筛选查询）；keyword 与 status 均缺省时不做无界全量
+ * （返回空——全量列表语义走 listEvents，防调用方误用扫全表）。
+ */
+export async function searchEvents(
+    keyword: string,
+    filter: { status?: EventStatus } = {},
+    limit = 20,
+): Promise<EventRow[]> {
+    const db = await getDb();
+    const conditions: string[] = ['deleted_at IS NULL'];
+    const params: (string | number | null)[] = [];
+    const trimmed = keyword.trim();
+    if (trimmed.length > 0) {
+        conditions.push(
+            "(title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' OR subject_value LIKE ? ESCAPE '\\' OR handled_by LIKE ? ESCAPE '\\')",
+        );
+        const needle = `%${escapeLike(trimmed)}%`;
+        params.push(needle, needle, needle, needle);
+    }
+    if (filter.status) {
+        conditions.push('status = ?');
+        params.push(filter.status);
+    }
+    if (conditions.length === 1) return [];
+    params.push(String(limit));
+    return db.getAll<EventRow>(
+        `SELECT * FROM events WHERE ${conditions.join(' AND ')}
+         ORDER BY updated_at DESC LIMIT ?`,
+        params,
+    );
+}
+
+// ─── event media（v6：事件内媒体，列对齐 trip_media）────────────────────────
+
+export async function insertEventMedia(row: Omit<EventMediaRow, 'deleted_at'>): Promise<void> {
+    const db = await getDb();
+    await db.run(
+        'INSERT INTO event_media (id, event_id, file_key, kind, width, height, duration_ms, created_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)',
+        [row.id, row.event_id, row.file_key, row.kind, row.width, row.height, row.duration_ms, row.created_at],
+    );
+}
+
+export async function getEventMedia(id: string): Promise<EventMediaRow | null> {
+    const db = await getDb();
+    return db.getFirst<EventMediaRow>('SELECT * FROM event_media WHERE id = ? AND deleted_at IS NULL', [id]);
+}
+
+/** 事件内媒体时间线（旧→新，事件详情按此顺序铺卡片，对齐 listTripMediaByTrip）。 */
+export async function listEventMediaByEvent(eventId: string): Promise<EventMediaRow[]> {
+    const db = await getDb();
+    return db.getAll<EventMediaRow>(
+        'SELECT * FROM event_media WHERE deleted_at IS NULL AND event_id = ? ORDER BY created_at ASC, rowid ASC',
+        [eventId],
+    );
+}
+
+/**
+ * 单条事件媒体软删（事件媒体卡删除入口；表无 updated_at 列，仅落 deleted_at，
+ * 对齐 softDeleteTripMedia 口径）。文件清理由 store 层在行删除后尽力执行。
+ * @param at 统一的删除时间戳（同一事件一个时间，审计口径一致）
+ */
+export async function softDeleteEventMedia(id: string, at: number): Promise<void> {
+    const db = await getDb();
+    await db.run('UPDATE event_media SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL', [at, id]);
+}
+
+/**
+ * 批量软删事件媒体行（store.updateEventBlocks 落库后的引用对账专用，对齐
+ * softDeleteJournalMediaByIds）：事件正文删媒体块只摘 blocks 引用，孤儿行由
+ * 对账统一回收。单条 UPDATE 原子完成，无需事务；表无 updated_at 列，仅落
+ * deleted_at。
+ * @param at 统一的删除时间戳（同一事件一个时间，审计口径一致）
+ */
+export async function softDeleteEventMediaByIds(ids: string[], at: number): Promise<void> {
+    if (ids.length === 0) return;
+    const db = await getDb();
+    const placeholders = ids.map(() => '?').join(', ');
+    await db.run(
+        `UPDATE event_media SET deleted_at = ? WHERE deleted_at IS NULL AND id IN (${placeholders})`,
+        [at, ...ids],
+    );
+}
+
 // ─── 启动孤儿文件 GC（上传中断恢复）─────────────────────────────────────────
 
 /**
  * 孤儿文件 GC 的引用集（存续文件白名单，元素 = file-storage key）。
- * 四路 UNION（UNION 自带去重，同一文件被多处引用只出现一次）：
+ * 五路 UNION（UNION 自带去重，同一文件被多处引用只出现一次）：
  * ① 日记媒体：journal_media 未删 且 所属 journals 未删——日记已删时其媒体行即使
  *    因级联中断残留存活，文件也不再受保护（读取侧本就不可见，交 GC 回收）；
  * ② 行程媒体：trip_media 未删（日卡背景图本体也是 trip_media 行，随此覆盖）；
  * ③ 行程封面视频：未删行程的 video_key（可空列，NULL 不产生行）；
  * ④ 日卡背景指针兜底：trip_day_meta.background_media_id → 未删 trip_media 的
  *    file_key。与 ② 当前恒等（活指针必指向活行，编排顺序见 upsertTripDayBackground），
- *    属防御性冗余：防未来指针/行编排改动把背景文件漏出引用集。
+ *    属防御性冗余：防未来指针/行编排改动把背景文件漏出引用集；
+ * ⑤ 事件媒体（v6）：event_media 未删（对齐 ② 的行程媒体口径——级联软删保证
+ *    事件删除后媒体行同批失效，残留行不保护文件，交 GC 回收）。
  *
  * 语义边界：孤儿媒体行（行未删但 blocks JSON 不再引用，如保存对账前的窗口态）
- * 的文件仍在白名单内——行级对账归 saveJournalBlocks（该日记下次保存时触发），
- * GC 只负责「已落盘但无任何行引用」的孤儿文件（put 落盘后被杀、insert 未及执行的窗口态）。
+ * 的文件仍在白名单内——行级对账归 saveJournalBlocks / updateEventBlocks（该容器
+ * 下次保存时触发），GC 只负责「已落盘但无任何行引用」的孤儿文件（put 落盘后被杀、
+ * insert 未及执行的窗口态）。
  */
 export async function listReferencedMediaFileKeys(): Promise<Set<string>> {
     const db = await getDb();
@@ -600,7 +808,9 @@ export async function listReferencedMediaFileKeys(): Promise<Set<string>> {
          SELECT pm.file_key
          FROM trip_day_meta d
          JOIN trip_media pm ON pm.id = d.background_media_id AND pm.deleted_at IS NULL
-         WHERE d.background_media_id IS NOT NULL`,
+         WHERE d.background_media_id IS NOT NULL
+         UNION
+         SELECT em.file_key FROM event_media em WHERE em.deleted_at IS NULL`,
     );
     return new Set(rows.map((row) => row.file_key));
 }
