@@ -85,7 +85,9 @@ export function EventCard({ event, onPress }: { event: Event; onPress: () => voi
                     }`}
                 />
             </View>
-            <View className="min-w-0 flex-1 pb-3 pl-2">
+            {/* 卡间距挂内容列（mb-4）：轴线列 self-stretch 随行高延伸，间隙内
+                时间线不断裂；末卡的尾段线属时间线收尾观感，可接受 */}
+            <View className="mb-4 min-w-0 flex-1 pb-3 pl-2">
                 <BouncyPressable onPress={onPress} scaleTo={0.985}>
                     <View
                         className="rounded-card bg-ink-surface px-4 py-3.5 dark:bg-inkd-surface"
