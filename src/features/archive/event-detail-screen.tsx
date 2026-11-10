@@ -10,15 +10,18 @@ import {
     View,
     type ScrollViewInstance,
 } from 'react-native';
+import { Path } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams } from 'expo-router';
 import {
     BouncyPressable,
+    createIcon,
     LucideBell,
     LucideCheck,
     LucideMapPin,
     LucidePlus,
     LucideSettings,
+    LucideTrash,
 } from '@/core/icons';
 import { clipboard } from '@/core/clipboard';
 import { imagePicker } from '@/core/image-picker';
@@ -35,13 +38,18 @@ import {
 } from './recording-session';
 // 深路径注记：tintIcon 未入 ui/index.ts 出口（域内深取纪律，同 editor-icons 先例）。
 // 事件屏本轮已复用共享 InsertMenu（actions 过滤词表），不再自带图标上色面。
-// 深路径注记：节奏表 / 画布句柄 / 键盘动态垫高 hook / EventSettingsCard 未在
+// 深路径注记：节奏表 / 画布句柄 / 键盘动态垫高 hook / 堆叠单元判定（findDeckUnit，
+// 分组规则单一事实源 buildRenderUnits 的屏层取数口）/ EventSettingsCard 未在
 // ui/index.ts 出口（域内深取纪律，先例同 journal-edit / trip-detail）。
 import {
+    findDeckUnit,
     useKeyboardCanvasBottomPadding,
     type BlockEditorHandle,
     type EditorCanvasHandle,
 } from './ui/editor';
+// 深路径注记：ChevronUp/Down 未在 ui/index.ts 出口（域内深取纪律，
+// journal-edit 块操作卡同款先例）。
+import { ChevronDownIcon, ChevronUpIcon } from './ui/editor-icons';
 import * as db from './db';
 import type { EventMediaRow, EventRow, EventStatus, EventSubjectKind, JournalMediaRow } from './db';
 import { ensureVideoThumbnail, useArchiveRevision, useArchiveStore } from './store';
@@ -53,10 +61,12 @@ import {
 import {
     insertPendingBlock,
     moveBlock,
+    moveBlockRun,
     newBlockId,
     newParagraphBlock,
     parseBlocks,
     removeBlock,
+    removeBlocks,
     resolvePendingBlock,
     wordCount,
     type JournalBlock,
@@ -94,6 +104,12 @@ import { EventSettingsCard } from './ui/event-settings-card';
  *   800ms 防抖 updateEventBlocks + 失焦即存双通道 + 卸载兜底 flush（含在途
  *   上传 allSettled 收敛后再存——比 journal-edit 的裸 flush 多一层在途回填
  *   保护，防「上传完成于卸载之后，块引用永不落库」的对账误杀）；
+ * - **块操作卡与堆叠操作（2026-11-11 反馈①补齐，journal-edit 同词表同构）**：
+ *   堆叠锚块「上移/下移」= 整组移动（moveBlockRun 连续段同进退，hint 标
+ *   「整组 N 张」）、「指定删除」进入 deckDelete 勾选模式（顶栏多选，白名单
+ *   = 组内成员）、「删除整组」批量摘除（danger）、「删除」改义「删除当前张」；
+ *   单块路径行为不变。落库统一走既有防抖链（applyBlocks → blocks effect →
+ *   800ms updateEventBlocks），与文本编辑同一条保存通道；
  * - **插入后台异步并行**（完整对齐 journal-edit 的 attach 模式）：doAttach 同步
  *   插 pending 占位即返回，attachEventMedia 落盘+落库为后台任务（pendingUploadsRef
  *   注册表，多任务并行；taskId = 占位 id → 占位卡进度百分比，journal 同口径）；
@@ -165,6 +181,37 @@ function toJournalMediaRow(row: EventMediaRow): JournalMediaRow {
         deleted_at: row.deleted_at,
     };
 }
+
+/**
+ * 事件多选模式状态（deckDelete 单用途，journal-edit SelectModeState 的
+ * deckDelete 分支同构）：deckIds 白名单 = 目标堆叠成员块 id（编辑器内组外
+ * 媒体回常态渲染，见 BlockEditor selection 的 selectableIds 注；音频成员恒
+ * 不可选），orderedIds = 勾选清单（选择顺序），勾完经顶栏「删除」确认。
+ * purpose 字段与 journal 侧形状对齐（后续若平移合并堆叠语义直接扩 union）。
+ */
+type EventSelectMode = {
+    purpose: 'deckDelete';
+    orderedIds: string[];
+    deckIds: ReadonlySet<string>;
+};
+
+/* ------------------------------------------------------------------ */
+/* 图标（块操作卡堆叠行；journal-edit 块操作卡同词表同图标）              */
+/* ------------------------------------------------------------------ */
+
+/** 指定删除（块操作卡堆叠行；list-checks，lucide 1.64 官方 path 数据）。与
+ *  journal-edit 的 ListChecksIcon 同源同形——该屏文件为上一波成果（禁改），
+ *  其字面量未抽共享模块，事件侧镜像同 path 数据保持两边一致（词表一致性
+ *  选法见 EventBlockActionCard 注）。 */
+const ListChecksIcon = createIcon(
+    <>
+        <Path d="M13 5h8" />
+        <Path d="M13 12h8" />
+        <Path d="M13 19h8" />
+        <Path d="m3 17 2 2 4-4" />
+        <Path d="m3 7 2 2 4-4" />
+    </>,
+);
 
 export function EventDetailScreen() {
     const { id } = useLocalSearchParams<{ id: string }>();
@@ -533,6 +580,12 @@ export function EventDetailScreen() {
     const [focusTextId, setFocusTextId] = useState<string | null>(null);
     const [menuOpen, setMenuOpen] = useState(false);
     const [actionBlockId, setActionBlockId] = useState<string | null>(null);
+    // 多选模式（堆叠「指定删除」，journal-edit 同构）：deckIds 白名单 = 目标
+    // 堆叠成员块 id，orderedIds = 勾选清单；勾完经顶栏「删除」确认落库
+    const [selectMode, setSelectMode] = useState<EventSelectMode | null>(null);
+    // 多选模式 ref 镜像（离开屏/确认回调读取，journal-edit 同款）
+    const selectModeRef = useRef(selectMode);
+    selectModeRef.current = selectMode;
     // 在途媒体上传注册表（进程内 Map）：pendingId → { promise, kind }——多任务
     // 并行互不影响；任务收敛即自摘除
     const pendingUploadsRef = useRef(
@@ -797,24 +850,138 @@ export function EventDetailScreen() {
         editorRef.current?.dismissKeyboard();
     }, []);
 
-    /** 离开屏：卸载 flush 兜底补存（含在途上传收敛）。 */
+    /**
+     * 离开屏（journal-edit 同构）：多选中 = 先退出选择态（返回不直接丢路由，
+     * 防误触把勾选面整页带走）；其余路径 safeBack（卸载 flush 兜底补存，含
+     * 在途上传收敛）。Android 硬件返回在此收口——操作卡/设置卡各自注册的
+     * BackHandler 在其展开时优先响应（后注册先派发），落不到本 effect。
+     */
     const handleLeave = useCallback(() => {
+        if (selectModeRef.current) {
+            setSelectMode(null);
+            return;
+        }
         safeBack();
     }, []);
 
+    useEffect(() => {
+        const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+            handleLeave();
+            return true;
+        });
+        return () => sub.remove();
+    }, [handleLeave]);
+
+    // ─── 块操作卡 + 多选模式（堆叠整组/指定删除，journal-edit 同词表同构）──────
     // 块操作卡定位（上移/下移禁用态与当前块）
     const actionIndex = actionBlockId ? blocks.findIndex((block) => block.id === actionBlockId) : -1;
+    // 操作卡的堆叠单元投影（journal-edit 同款取数口）：操作块落在某媒体堆内 →
+    // deck 单元（组界下标 + 全员块 id，分组判定复用编辑器 buildRenderUnits——
+    // 渲染与整组操作口径天然锁步）；null = 单块路径（单张媒体/文本/组内孤员）
+    const actionDeckUnit = useMemo(
+        () => (actionBlockId ? findDeckUnit(blocks, mediaById, actionBlockId) : null),
+        [blocks, mediaById, actionBlockId],
+    );
+
+    /** 多选切换（journal-edit toggleSelect 同构）：指定删除白名单守卫——目标
+     *  堆叠之外的块不可勾（编辑器侧已用 selectableIds 限制，屏层兜底防直调）。 */
+    const toggleSelect = useCallback((blockId: string) => {
+        setSelectMode((current) => {
+            if (!current || !current.deckIds.has(blockId)) return current;
+            const exists = current.orderedIds.includes(blockId);
+            return {
+                ...current,
+                orderedIds: exists
+                    ? current.orderedIds.filter((id) => id !== blockId)
+                    : [...current.orderedIds, blockId],
+            };
+        });
+    }, []);
+
+    const cancelSelect = useCallback(() => setSelectMode(null), []);
+
+    /** 指定删除确认（journal-edit confirmDeckDelete 同构）：删除勾选清单——
+     *  媒体堆是独立块序列，按块 id 摘除即可；「至少留一个可落笔段」兜底与
+     *  单块删除同口径（journal-logic.removeBlocks，软删除语义：媒体行/二进制
+     *  不删）。落库走事件侧既有防抖链（applyBlocks → blocks effect → 800ms
+     *  updateEventBlocks），与文本编辑同一条保存通道，无需额外落库面。 */
+    const confirmDeckDelete = useCallback(() => {
+        const current = selectModeRef.current;
+        if (!current || current.orderedIds.length === 0) return;
+        const ids = current.orderedIds;
+        setSelectMode(null);
+        applyBlocks((blocks) => removeBlocks(blocks, ids));
+    }, [applyBlocks]);
+
+    /**
+     * 块操作卡「指定删除」行（journal-edit openDeckDeleteSelect 同构，仅堆叠
+     * 锚块出现）：进入堆叠勾选模式——白名单 = 目标堆叠成员（组外媒体在编辑器
+     * 内回常态渲染可照常查看，不进勾选面）；入口即收键盘 + 关操作卡（与
+     * journal 多选同口径：选择优先，画布让位给勾选交互）。
+     */
+    const openDeckDeleteSelect = () => {
+        if (!actionDeckUnit) return;
+        setActionBlockId(null);
+        Keyboard.dismiss();
+        setSelectMode({
+            purpose: 'deckDelete',
+            orderedIds: [],
+            deckIds: new Set(actionDeckUnit.blockIds),
+        });
+    };
+
+    /**
+     * 块操作卡动作（上移/下移，journal-edit 同构「堆叠时全部移动不是单张」）：
+     * 操作块落在媒体堆内 → **整组移动**（组首/组尾连续段同进退，组内顺序与
+     * 连续性零变化——journal-logic.moveBlockRun 按段换位）；单块（单张媒体/
+     * 文本/组内孤员）走原单块移动。读 blocksRef 权威镜像（后台回填同帧写入
+     * 不丢）。
+     */
     const moveActionBlock = (direction: -1 | 1) => {
         if (!actionBlockId) return;
-        const blockId = actionBlockId;
-        applyBlocks((current) => moveBlock(current, blockId, direction));
+        const id = actionBlockId;
+        const unit = findDeckUnit(blocksRef.current, mediaById, id);
+        applyBlocks((current) =>
+            unit
+                ? moveBlockRun(current, unit.firstIndex, unit.lastIndex, direction)
+                : moveBlock(current, id, direction),
+        );
     };
+
+    /** 块操作卡动作（删除；堆叠锚块词表改义「删除当前张」，行为=删前卡成员）：
+     *  删到空时 removeBlock 会补一个可落笔空段。 */
     const removeActionBlock = () => {
         if (!actionBlockId) return;
         const blockId = actionBlockId;
         setActionBlockId(null);
         applyBlocks((current) => removeBlock(current, blockId));
     };
+
+    /** 块操作卡动作（「删除整组」，journal-edit removeActionDeck 同构）：堆叠
+     *  全员一次摘除（deck = 独立块序列，按组内块 id 清单删；软删除语义与单块
+     *  删除一致——媒体行与二进制不删）。删除后组内剩余成员自动重派生。 */
+    const removeActionDeck = () => {
+        if (!actionDeckUnit) return;
+        setActionBlockId(null);
+        applyBlocks((current) => removeBlocks(current, actionDeckUnit.blockIds));
+    };
+
+    // 多选编辑器面（journal-edit 同构）：选择态屏蔽文本聚焦（editable=false
+    // 下传），媒体勾选数据 + 指定删除白名单透传——音频置灰不可选、组外媒体
+    // 回常态渲染由编辑器内部处理（selection/selectedIds/selectableIds 契约，
+    // 事件画布复用零假设破裂：mediaById 已是同构适配行）。
+    const editorEditable = event != null && !selectMode;
+    const selection = useMemo(
+        () =>
+            selectMode
+                ? {
+                      selectedIds: new Set(selectMode.orderedIds),
+                      onToggle: toggleSelect,
+                      selectableIds: selectMode.deckIds,
+                  }
+                : null,
+        [selectMode, toggleSelect],
+    );
 
     /**
      * 画布内容子树（children 直传垫高层）：useMemo 把引用稳定到真正影响内容的
@@ -829,9 +996,10 @@ export function EventDetailScreen() {
                     ref={editorRef}
                     blocks={blocks}
                     mediaById={mediaById}
-                    editable={event != null}
+                    editable={editorEditable}
                     focusTextId={focusTextId}
                     canvas={canvas}
+                    selection={selection}
                     onChange={(next) => applyBlocks(() => next)}
                     onFocusText={() => setFocusTextId(null)}
                     onBlurText={() => void saveNow()}
@@ -840,7 +1008,7 @@ export function EventDetailScreen() {
             </View>
         ),
         // eslint-disable-next-line react-hooks/exhaustive-deps -- 闭包读取项已尽数列入（applyBlocks/saveNow/稳定 setter/editorRef 稳定引用）
-        [blocks, mediaById, event, focusTextId, canvas, applyBlocks, saveNow],
+        [blocks, mediaById, editorEditable, selection, focusTextId, canvas, applyBlocks, saveNow],
     );
 
     // ─── 失败 / 加载门（hooks 全部之后，条件渲染不涉 hook 顺序）──────────────
@@ -1102,32 +1270,100 @@ export function EventDetailScreen() {
                     </CanvasDismissLayer>
                 </ScrollView>
 
-                {/* 罗盘 + 号（插入媒体/输入框）：后台并行模型不因上传禁用 */}
-                <View
-                    className="absolute right-6 z-10"
-                    style={{ bottom: insets.bottom + 24 }}
-                    pointerEvents="box-none"
-                >
-                    <BouncyPressable onPress={() => setMenuOpen(true)} scaleTo={0.88}>
-                        <View
-                            className="h-14 w-14 items-center justify-center rounded-full"
-                            style={{ backgroundColor: palette.primaryBtn }}
-                            accessibilityRole="button"
-                            accessibilityLabel="插入内容"
-                        >
-                            <LucidePlus size={24} color={palette.onPrimaryBtn} strokeWidth={2.2} />
-                        </View>
-                    </BouncyPressable>
-                </View>
+                {/* 罗盘 + 号（插入媒体/输入框）：后台并行模型不因上传禁用；多选
+                    模式隐藏（选择优先，journal-edit 同口径） */}
+                {!selectMode ? (
+                    <View
+                        className="absolute right-6 z-10"
+                        style={{ bottom: insets.bottom + 24 }}
+                        pointerEvents="box-none"
+                    >
+                        <BouncyPressable onPress={() => setMenuOpen(true)} scaleTo={0.88}>
+                            <View
+                                className="h-14 w-14 items-center justify-center rounded-full"
+                                style={{ backgroundColor: palette.primaryBtn }}
+                                accessibilityRole="button"
+                                accessibilityLabel="插入内容"
+                            >
+                                <LucidePlus size={24} color={palette.onPrimaryBtn} strokeWidth={2.2} />
+                            </View>
+                        </BouncyPressable>
+                    </View>
+                ) : null}
             </View>
 
-            {/* 块操作卡（上移/下移/删除，浮层居中弹出，条件渲染禁 RN Modal） */}
+            {/* 多选选择栏（顶部，选择优先；堆叠「指定删除」模式，journal-edit
+                同词表同构）：44 命中双钮 + 已选计数（带「/ 总数」）；覆盖在报头
+                之上但不遮画布（bar 以下区域全部留给媒体勾选点按）；确认钮 =
+                负色「删除」，0 选中禁用。 */}
+            {selectMode ? (
+                <View className="absolute inset-x-0 top-0 z-40" style={{ paddingTop: insets.top }}>
+                    <View className="flex-row items-center gap-1 border-b border-ink-rule bg-ink-base px-3 py-1 dark:border-inkd-rule dark:bg-inkd-base">
+                        <Text
+                            className="px-1 text-[13px] font-medium text-ink-text dark:text-inkd-text"
+                            style={{ fontVariant: ['tabular-nums'] }}
+                        >
+                            {`已选 ${selectMode.orderedIds.length} / ${selectMode.deckIds.size}`}
+                        </Text>
+                        <View className="flex-1" />
+                        <BouncyPressable onPress={cancelSelect} scaleTo={0.95}>
+                            <View
+                                className="h-11 items-center justify-center rounded-control px-3"
+                                accessibilityRole="button"
+                                accessibilityLabel="取消指定删除"
+                            >
+                                <Text className="text-[14px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    取消
+                                </Text>
+                            </View>
+                        </BouncyPressable>
+                        <BouncyPressable
+                            onPress={confirmDeckDelete}
+                            disabled={selectMode.orderedIds.length === 0}
+                            scaleTo={0.95}
+                        >
+                            <View
+                                className={`h-11 items-center justify-center rounded-control px-4 ${
+                                    selectMode.orderedIds.length === 0 ? 'opacity-40' : ''
+                                }`}
+                                style={{ backgroundColor: palette.negative }}
+                                accessibilityRole="button"
+                                accessibilityLabel="删除所选单张"
+                                accessibilityState={{
+                                    disabled: selectMode.orderedIds.length === 0,
+                                }}
+                            >
+                                <Text
+                                    className="text-[14px] font-semibold"
+                                    style={{ color: '#FFFFFF' }}
+                                >
+                                    删除
+                                </Text>
+                            </View>
+                        </BouncyPressable>
+                    </View>
+                </View>
+            ) : null}
+
+            {/* 块操作卡（上移/下移/删除 + 堆叠「指定删除/删除整组」，浮层居中
+                弹出，条件渲染禁 RN Modal） */}
             {actionBlockId && actionIndex >= 0 ? (
                 <EventBlockActionCard
                     index={actionIndex}
                     total={blocks.length}
+                    deck={
+                        actionDeckUnit
+                            ? {
+                                  firstIndex: actionDeckUnit.firstIndex,
+                                  lastIndex: actionDeckUnit.lastIndex,
+                                  size: actionDeckUnit.blockIds.length,
+                              }
+                            : null
+                    }
                     onMove={moveActionBlock}
                     onDelete={removeActionBlock}
+                    onDeleteDeck={removeActionDeck}
+                    onSelectDelete={openDeckDeleteSelect}
                     onClose={() => setActionBlockId(null)}
                 />
             ) : null}
@@ -1212,26 +1448,52 @@ const CanvasDismissLayer = memo(function CanvasDismissLayer({
 });
 
 /* ------------------------------------------------------------------ */
-/* 块操作卡（上移/下移/删除）                                            */
+/* 块操作卡（上移/下移/删除 + 堆叠「指定删除/删除整组」）                 */
 /* ------------------------------------------------------------------ */
 
 /**
  * 事件块操作卡（媒体长按/双击、文本聚焦 ⋯ 钮 → 屏根浮层，条件渲染禁 RN Modal）：
- * 保留编辑器的核心块操作（上移/下移/删除——删到空补可落笔段，journal-logic
- * removeBlock 口径）。合并堆叠/保存到手机等 journal 编辑器专属动作未纳入事件
- * 块操作卡（本轮范围；块模型同构，后续可平移）。
+ * 编辑器核心块操作（上移/下移/删除——删到空补可落笔段，journal-logic removeBlock
+ * 口径）+ 堆叠锚块分档（deck prop 非 null 时，与 journal-edit BlockActionCard
+ * **同词表 / 同 hint / 同图标 / 同行结构**——日记与事件的媒体块行为一致，用户
+ * 口径「作用是全部笔记编辑。和事件操作」）：
+ * - 「上移/下移」= **整组移动**（组首/组尾连续段同进退，journal-logic
+ *   .moveBlockRun；禁用态按组界判定而非锚块下标），hint 标「整组 N 张」；
+ * - 「指定删除」：进入堆叠勾选模式（白名单 = 组内成员，组外媒体照常可查看，
+ *   勾完经顶栏「删除」确认——屏层 openDeckDeleteSelect/confirmDeckDelete）；
+ * - 「删除整组」：批量删除组内全部块（danger，hint「N 张全部删除」，软删除
+ *   语义与单块删除一致）；
+ * - 「删除」行改义为「删除当前张」（只删当前显示的前卡成员）。
+ *
+ * 词表一致性选法（回报项）：journal-edit-screen.tsx 为上一波成果（禁改），其
+ * 行词表/hint 为卡内字面量、未抽共享模块——事件侧取「两边同字面量」，行词表 /
+ * hint / 图标（ChevronUp/Down、ListChecks、Trash）逐项对齐并各自挂注释锚点；
+ * 改动任一侧行词表时两侧必须同改（后续若建共享词表模块再一并收口）。
+ *
+ * 合并堆叠/解散堆叠/保存到手机等 journal 编辑器专属动作未纳入事件块操作卡
+ * （既有范围决策；块模型同构，后续可平移）。
  */
 function EventBlockActionCard({
     index,
     total,
+    deck,
     onMove,
     onDelete,
+    onDeleteDeck,
+    onSelectDelete,
     onClose,
 }: {
+    /** 当前块下标（单块路径决定上移/下移禁用态；堆叠路径按 deck 组界判定）。 */
     index: number;
+    /** 块总数。 */
     total: number;
+    /** 当前块所属堆叠单元（null = 单块路径）：整组移动/批量删除/指定删除行
+     *  的开关与组界禁用态依据（size = 组内块数）。 */
+    deck: { firstIndex: number; lastIndex: number; size: number } | null;
     onMove(direction: -1 | 1): void;
     onDelete(): void;
+    onDeleteDeck(): void;
+    onSelectDelete(): void;
     onClose(): void;
 }) {
     const palette = usePalette();
@@ -1245,18 +1507,73 @@ function EventBlockActionCard({
         return () => sub.remove();
     }, [onClose]);
 
-    const canUp = index > 0;
-    const canDown = index < total - 1;
+    // 堆叠路径禁用态按**组界**判定（整组同进退：组首块之上无块才能上移、
+    // 组尾块之下无块才能下移）；单块路径按锚块下标（原口径）
+    const canUp = deck ? deck.firstIndex > 0 : index > 0;
+    const canDown = deck ? deck.lastIndex < total - 1 : index < total - 1;
+    // 整组移动的提示语（堆叠锚块行 hint，journal-edit 同字面量）
+    const moveHint = deck ? `整组 ${deck.size} 张` : null;
     const rows: Array<{
         key: string;
+        icon: React.ReactNode;
         label: string;
+        hint?: string | null;
         danger?: boolean;
         disabled: boolean;
         onPress(): void;
     }> = [
-        { key: 'up', label: '上移', disabled: !canUp, onPress: () => onMove(-1) },
-        { key: 'down', label: '下移', disabled: !canDown, onPress: () => onMove(1) },
-        { key: 'delete', label: '删除', danger: true, disabled: false, onPress: onDelete },
+        {
+            key: 'up',
+            icon: <ChevronUpIcon size={18} strokeWidth={1.9} color={palette.secondary} />,
+            label: '上移',
+            hint: moveHint,
+            disabled: !canUp,
+            onPress: () => onMove(-1),
+        },
+        {
+            key: 'down',
+            icon: <ChevronDownIcon size={18} strokeWidth={1.9} color={palette.secondary} />,
+            label: '下移',
+            hint: moveHint,
+            disabled: !canDown,
+            onPress: () => onMove(1),
+        },
+        ...(deck
+            ? [
+                  {
+                      key: 'select-delete',
+                      icon: (
+                          <ListChecksIcon size={18} strokeWidth={1.9} color={palette.secondary} />
+                      ),
+                      label: '指定删除',
+                      hint: '勾选堆叠内单张',
+                      disabled: false,
+                      onPress: onSelectDelete,
+                  },
+                  {
+                      // 尺寸档收敛：16/18/20/24 档内，stroke 1.9 全仓图标口径
+                      key: 'delete-deck',
+                      icon: <LucideTrash size={16} strokeWidth={1.9} color={palette.negative} />,
+                      label: '删除整组',
+                      hint: `${deck.size} 张全部删除`,
+                      danger: true,
+                      disabled: false,
+                      onPress: onDeleteDeck,
+                  },
+              ]
+            : []),
+        {
+            // 尺寸档收敛：16/18/20/24 档内，stroke 1.9 全仓图标口径
+            key: 'delete',
+            icon: <LucideTrash size={16} strokeWidth={1.9} color={palette.negative} />,
+            // 堆叠锚块：本行只删当前显示的前卡成员（整组走「删除整组」、逐张
+            // 勾选走「指定删除」——三条删除路径语义互斥不打架；journal-edit
+            // 同字面量）
+            label: deck ? '删除当前张' : '删除',
+            danger: true,
+            disabled: false,
+            onPress: onDelete,
+        },
     ];
 
     return (
@@ -1267,16 +1584,20 @@ function EventBlockActionCard({
                 accessibilityLabel="关闭块操作"
             >
                 <Pressable className="w-full max-w-xs rounded-card bg-ink-base p-2 dark:bg-inkd-base">
-                    {/* 卡头（关闭语言统一 #8）：题 + 右上关闭钮 */}
+                    {/* 卡头（关闭语言统一 #8）：题 + 右上关闭钮；堆叠锚块标明
+                        「这一堆」（操作语义 = 整组），单块保持「这一块」 */}
                     <View className="flex-row items-center justify-between pl-4 pr-1.5 pt-0.5">
                         <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">
-                            调整这一块
+                            {deck ? `调整这一堆（${deck.size} 张）` : '调整这一块'}
                         </Text>
+                        {/* 44 视觉盒：左邻题文字非按压体，右侧贴卡内边距，无重叠核算项 */}
                         <CloseButton onPress={onClose} />
                     </View>
                     <View className="gap-0.5">
                         {/* 行高 44 视觉盒 ≥44：不传 hitSlop（0）；行间 gap-0.5(2px)
-                            为不可点间隙。onPress 恒挂接 + disabled 显式传导（#3） */}
+                            为不可点间隙，命中盒无重叠。onPress 恒挂接 + disabled
+                            显式传导（#3 条件置空显式化）：row.disabled 随移动操作
+                            翻转，条件置空会在翻转瞬间重配置 Pressability 吞首点 */}
                         {rows.map((row) => (
                             <BouncyPressable
                                 key={row.key}
@@ -1285,12 +1606,13 @@ function EventBlockActionCard({
                                 scaleTo={0.98}
                             >
                                 <View
-                                    className={`h-11 flex-row items-center rounded-control bg-ink-surface px-3.5 dark:bg-inkd-surface ${
+                                    className={`h-11 flex-row items-center gap-3 rounded-control bg-ink-surface px-3.5 dark:bg-inkd-surface ${
                                         row.disabled ? 'opacity-30' : ''
                                     }`}
                                     accessibilityRole="button"
                                     accessibilityLabel={row.label}
                                 >
+                                    <View pointerEvents="none">{row.icon}</View>
                                     <Text
                                         className={`text-[15px] font-medium ${
                                             row.danger
@@ -1300,6 +1622,14 @@ function EventBlockActionCard({
                                     >
                                         {row.label}
                                     </Text>
+                                    {row.hint ? (
+                                        <Text
+                                            numberOfLines={1}
+                                            className="ml-auto shrink text-[11px] text-ink-muted dark:text-inkd-muted"
+                                        >
+                                            {row.hint}
+                                        </Text>
+                                    ) : null}
                                 </View>
                             </BouncyPressable>
                         ))}
