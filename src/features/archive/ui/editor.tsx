@@ -39,7 +39,7 @@ import {
     useBlockActionGestures,
     useVideoThumbState,
 } from './media-view';
-import { usePalette } from './theme';
+import { usePalette, useMediaAlignPref } from './theme';
 import { useFileUrlState } from './use-file-url';
 // 全屏查看请求汇点（中立层，谁引都不成环，见其文件头）
 import { requestViewer } from '../viewer-request';
@@ -1031,6 +1031,40 @@ function buildRenderUnits(
     return units;
 }
 
+/** 堆叠单元在 blocks 数组中的位置投影（屏层「整组移动 / 整组删除」的取数口）：
+ *  firstIndex/lastIndex = 组首/组尾块的全局下标（连续段）；blockIds = 组内全部
+ *  成员块 id（批量删除清单）。null = 该块不在任何堆叠里（单张渲染路径）。 */
+export type DeckUnitRange = {
+    firstIndex: number;
+    lastIndex: number;
+    blockIds: readonly string[];
+};
+
+/**
+ * 求含指定块 id 的堆叠单元（屏层整组操作的判定入口）：直接跑 buildRenderUnits
+ * 再按 id 命中——分组规则的**单一事实源**仍是 buildRenderUnits（显式 groupId 组
+ * + 自然相邻同 kind 组），此处零规则复制，渲染与整组操作的分组口径天然锁步。
+ * 每次调用 O(n) 重派生（编辑器画布每帧本就重算，屏层操作卡入口一次调用，成本
+ * 可忽略）。找不到 deck 单元（单张/文本/pending）返回 null，调用方回退单块操作。
+ */
+export function findDeckUnit(
+    blocks: JournalBlock[],
+    mediaById: Map<string, JournalMediaRow>,
+    blockId: string,
+): DeckUnitRange | null {
+    for (const unit of buildRenderUnits(blocks, mediaById)) {
+        if (unit.kind !== 'deck') continue;
+        const ids = unit.items.map((item) => item.block.id);
+        if (!ids.includes(blockId)) continue;
+        return {
+            firstIndex: unit.items[0].index,
+            lastIndex: unit.items[unit.items.length - 1].index,
+            blockIds: ids,
+        };
+    }
+    return null;
+}
+
 /** deck 槽位动画容器（deck.tsx AnimatedSlot 同款）：模块级创建——组件级
  *  createAnimatedComponent 会在每次渲染重建 native 组件（整槽重挂），是
  *  手势窗口内的原生层扰动源（deck.tsx #9 同源教训）。 */
@@ -1045,8 +1079,10 @@ const DeckAnimatedSlot = Animated.createAnimatedComponent(View);
  * 裁决「直接固定长度宽度以及最低宽度长度，固定长度」），宽度 = clamp(列宽 ×
  * 66%, DECK_CARD_MIN_WIDTH, 列宽 − 2×DECK_PETAL_MARGIN)，高 = DECK_CARD_HEIGHT
  * 固定常量——比例只决定首选值，上下限夹取后与列宽一起构成全部几何（见
- * MediaDeckStack 几何注）；居中构图（用户认可保留项），两侧留白由相纸堆的
- * 留白节奏承担。
+ * MediaDeckStack 几何注）。水平构图（2026-11-11 用户反馈②「图片视频单张和
+ * 堆叠都改成靠左边不再居中」）：默认**靠左**（useMediaAlignPref 对齐偏好，
+ * left/center/right 三档，deck 与单张卡同源消费）；center 档保留 v11 的居中
+ * 构图作为可选项（偏好收口在 ui/theme，Me 外观卡可切）。
  */
 const DECK_FRONT_WIDTH_RATIO = 0.66;
 
@@ -1649,8 +1685,10 @@ function SelectionCheck({ selected }: { selected: boolean }) {
  * 行 ≈ 20dp 不会被裁成直角）：
  *   中卡（v11 固定画幅，用户裁决「直接固定长度宽度以及最低宽度长度，固定
  *       长度」）：宽 C = clamp(列宽 × 66%, 240 下限, 列宽 − 2×16 花瓣余量)，
- *       高 = DECK_CARD_HEIGHT 420 固定（三槽同固定 frame，居中 frame left =
- *       (列宽 − C)/2）。夹取序 = 先 66% 比例、再 240 下限、后花瓣上限——
+ *       高 = DECK_CARD_HEIGHT 420 固定（三槽同固定 frame，frame 横向锚点按
+ *       useMediaAlignPref 对齐偏好：默认 left 贴列缘（2026-11-11 反馈②「堆
+ *       叠靠左不居中」），center 居中（left = (列宽 − C)/2）/ right 贴右缘
+ *       为可选项）。夹取序 = 先 66% 比例、再 240 下限、后花瓣上限——
  *       上限最后压（溢出防护 > 体量下限）：花瓣角点横向越出中卡 ≤9.3dp
  *       （旋转包围盒，见 DECK_PETAL_MARGIN 注），上限钳制下两侧留白恒 =
  *       16dp ≥ 越出量，花瓣永不触列缘被裁；下限钳制（手机窄列 272~363dp
@@ -1772,14 +1810,20 @@ function MediaDeckStack({
 }: {
     items: DeckItem[];
     editable: boolean;
-    /** 多选模式（合并堆叠）：非 null 时前卡点按 = 切换选中（全屏/长按被
-     *  选中覆盖层屏蔽），勾选角标随选中态渲染；音频成员不可选（置灰 + 触摸
-     *  吸收）；底缘楔形带仍可点按换位（循环翻看选中成员）。 */
+    /** 多选模式（合并堆叠 / 堆叠指定删除——白名单外堆叠由 BlockEditor 不透传
+     *  处理，见其 selection prop 注）：非 null 时前卡点按 = 切换选中（全屏/
+     *  长按被选中覆盖层屏蔽），勾选角标随选中态渲染；音频成员不可选（置灰 +
+     *  触摸吸收）；底缘楔形带仍可点按换位（循环翻看选中成员）。 */
     selection?: { selectedIds: ReadonlySet<string>; onToggle(blockId: string): void } | null;
     /** 请求弹出当前中卡的块操作卡（屏层渲染，作用于该块）。 */
     onBlockAction(blockId: string): void;
 }) {
     const itemCount = items.length;
+    // 媒体块水平对齐偏好（2026-11-11 反馈②，hook 直读自生效——调用方零改动，
+    // Me 外观卡切换实时生效）：left 靠左（默认）/ center 居中（v11 原构图）/
+    // right 靠右。只改卡组的**内容流位置**（cardSlot 横向锚点），卡体尺寸/
+    // 圆角/描边/位形零变化。
+    const [mediaAlign] = useMediaAlignPref();
     // 组内容 ref 镜像：换位闭包读取最新组（手势/转场窗口内组可能增删）
     const itemsRef = useRef(items);
     itemsRef.current = items;
@@ -1845,7 +1889,8 @@ function MediaDeckStack({
     //       体量下限）；
     //   cardHeight = 中卡高 = DECK_CARD_HEIGHT 420 固定常量（最小高下限并
     //       入固定值，前卡自然比例派生整轨撤销）；
-    //   stripWidth = 中卡居中留白 = (列宽 − 中卡宽) / 2（中卡 frame 锚定；
+    //   stripWidth = 中卡居中留白 = (列宽 − 中卡宽) / 2（仅 center 对齐档
+    //       消费——默认 left/right 档卡 frame 贴列缘，见 cardLeft 注；
     //       上限/下限钳制下恒 ≥ 16dp ≥ 花瓣角点横向越出上界 9.3dp，见
     //       DECK_PETAL_MARGIN 注）；
     //   wedgeDepth = 相纸楔形带深 = 倾斜后卡最低点越过中卡底缘的量（几何
@@ -1871,6 +1916,19 @@ function MediaDeckStack({
             : 0;
     const cardHeight = DECK_CARD_HEIGHT;
     const stripWidth = (containerWidth - cardWidth) / 2;
+    // 中卡 frame 的横向锚点（对齐偏好消费点）：center = 原居中 strip；left =
+    // 贴内容列左缘（left 0——与正文同列线，「不再居中」的反馈落点）；right =
+    // 贴列右缘。夹取几何不变（cardWidth 只由列宽派生），flush 侧的相纸越出量
+    // （旋转包围盒 ≤9.3dp，见 DECK_PETAL_MARGIN 注）会被容器 overflow-hidden
+    // 裁掉角尖——靠边构图的固有代价，楔形主体（底缘露出带）完整呈现。
+    const cardLeft =
+        containerWidth > 0
+            ? mediaAlign === 'left'
+                ? 0
+                : mediaAlign === 'right'
+                    ? containerWidth - cardWidth
+                    : stripWidth
+            : 0;
     const backTiltRad = (DECK_BACK_ROTATE_DEG * Math.PI) / 180;
     const wedgeDepth =
         DECK_BACK_DROP -
@@ -2208,17 +2266,18 @@ function MediaDeckStack({
     );
 
     // 卡槽 frame（deck.tsx 同款「静态几何全在普通 wrapper」铁律）：三槽同
-    // 固定 frame（中卡/左右相纸同宽同高，left 锚定中位居中），相纸位全由
-    // transform 表达；几何只随列宽变化（v11 固定画幅），换张零重建零重排
+    // 固定 frame（中卡/左右相纸同宽同高，left 锚定按对齐偏好：默认靠左贴列
+    // 缘、center 居中、right 贴右缘），相纸位全由 transform 表达；几何只随
+    // 列宽/对齐档变化（v11 固定画幅），换张零重建零重排
     const cardSlot = useMemo(
         () => ({
             position: 'absolute' as const,
             top: 0,
-            left: stripWidth,
+            left: cardLeft,
             width: cardWidth,
             height: cardHeight,
         }),
-        [stripWidth, cardWidth],
+        [cardLeft, cardWidth],
     );
     // 手势面 frame：满宽卡区（横滑起手覆盖中卡；底缘楔形带点按体 zIndex 4
     // 与本面纵向零重叠，见组件注层级段）；高 = 固定卡高（模块常量），恒定
@@ -2249,19 +2308,20 @@ function MediaDeckStack({
         [],
     );
     // 计数行 frame：楔形带之下——top = 中卡高 + 楔形带 + 呼吸缝（与相纸
-    // 楔形渲染底不重叠），横向锚定中卡两缘、内容右对齐（行落在中卡 frame
-    // 之内；alignItems 落实右对齐——页码语义锚在「下一张」侧，与右相纸
-    // 楔形深端同侧收边，左侧楔形薄片不与计数行争读）
+    // 楔形渲染底不重叠），横向锚定**中卡两缘**（left/right 由 cardLeft 对齐
+    // 锚点派生——页码跟着卡走，靠左构图下不脱锚到列缘）、内容右对齐（行落
+    // 在中卡 frame 之内；alignItems 落实右对齐——页码语义锚在「下一张」侧，
+    // 与右相纸楔形深端同侧收边，左侧楔形薄片不与计数行争读）
     const counterSlot = useMemo(
         () => ({
             position: 'absolute' as const,
             top: cardHeight + pileBand,
-            left: stripWidth,
-            right: stripWidth,
+            left: cardLeft,
+            right: Math.max(0, containerWidth - cardWidth - cardLeft),
             height: DECK_COUNTER_LINE,
             alignItems: 'flex-end' as const,
         }),
-        [pileBand, stripWidth],
+        [pileBand, cardLeft, containerWidth, cardWidth],
     );
 
     // 防御性回退（置于全部 hook 之后：条件 return 不得跨越 hook 调用；
@@ -2412,7 +2472,7 @@ function MediaDeckStack({
                                     frontItem.deckKind === 'audio' ? (
                                         <Pressable
                                             style={SELECTION_OVERLAY_STYLE}
-                                            accessibilityLabel="录音不参与合并堆叠"
+                                            accessibilityLabel="录音不参与本次勾选"
                                         />
                                     ) : (
                                         <>
@@ -2572,12 +2632,20 @@ type BlockEditorProps = {
     /** 画布滚动协作句柄（#12/#12b 聚焦定位；屏层 useMemo 固定传入）。 */
     canvas?: EditorCanvasHandle;
     /**
-     * 多选模式（合并堆叠，屏层持有状态）：null = 未开启。开启时媒体块（图/
-     * 视频就绪媒体）点按 = 切换选中（覆盖层屏蔽全屏/长按），音频置灰不可选，
-     * 文本块由屏层以 editable=false 传入实现「选择优先」。selectedIds 为
-     * **有序**清单的 Set 投影（合并保持选择顺序）。
+     * 多选模式（合并堆叠 / 堆叠指定删除，屏层持有状态）：null = 未开启。开启
+     * 时媒体块（图/视频就绪媒体）点按 = 切换选中（覆盖层屏蔽全屏/长按），音频
+     * 置灰不可选，文本块由屏层以 editable=false 传入实现「选择优先」。
+     * selectedIds 为**有序**清单的 Set 投影（合并保持选择顺序）。
+     * selectableIds（可选，2026-11-11 堆叠「指定删除」模式新增）：可选成员白名
+     * 单——省略 = 全部媒体可选（合并模式原口径）；传入时白名单外的媒体块**回
+     * 常态渲染**（点按照常全屏查看，无选中覆盖层无死点），整组全不可选的堆叠
+     * 单元同样回常态（selection 对该组不透传）。音频恒不可选（置灰口径不变）。
      */
-    selection?: { selectedIds: ReadonlySet<string>; onToggle(blockId: string): void } | null;
+    selection?: {
+        selectedIds: ReadonlySet<string>;
+        onToggle(blockId: string): void;
+        selectableIds?: ReadonlySet<string>;
+    } | null;
     /**
      * pending 占位块的落盘进度表（2026-11-08 进度可视化）：key = pending 占位
      * 块 id（store.mediaUploadProgress 注册表的 pending 键投影，屏层负责过滤
@@ -2669,6 +2737,10 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(funct
     /** 媒体块 margin 按邻居分档（节奏表派生值）：邻媒体 6dp / 邻文本 12dp。 */
     const mediaMargin = (neighbor: JournalBlock | undefined): number =>
         isMediaLike(neighbor) ? MEDIA_MARGIN_MEDIA : MEDIA_MARGIN_TEXT;
+    /** 多选可选判定（指定删除模式白名单口）：省略 selectableIds = 全可选
+     *  （合并模式原口径）；白名单外媒体块回常态渲染（见 selection prop 注）。 */
+    const isSelectable = (blockId: string): boolean =>
+        !selection?.selectableIds || selection.selectableIds.has(blockId);
 
     return (
         // 根栈 gap = 节奏表 blockToBlock（段↔段净间距；媒体块 margin 在块级叠加）
@@ -2685,13 +2757,22 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(funct
                         marginTop: mediaMargin(blocks[firstIndex - 1]),
                         marginBottom: mediaMargin(blocks[lastIndex + 1]),
                     };
+                    // 指定删除模式（selectableIds）：组内无一可选（白名单外的
+                    // 堆叠）→ selection 不透传给该组——组回常态渲染，点前卡
+                    // 照常全屏查看（零死点零置灰）；组内有可选成员（指定删除
+                    // 的目标堆叠 / 合并模式任意组）→ 原样透传（音频成员置灰
+                    // 不可选，既有口径）
+                    const deckSelection =
+                        selection && unit.items.some((item) => isSelectable(item.block.id))
+                            ? selection
+                            : null;
                     return (
                         <BlockReveal key={unit.items[0].block.id} index={firstIndex}>
                             <View style={groupMargin}>
                                 <MediaDeckStack
                                     items={unit.items}
                                     editable={editable}
-                                    selection={selection}
+                                    selection={deckSelection}
                                     onBlockAction={openActionBlock}
                                 />
                             </View>
@@ -2761,29 +2842,32 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(funct
                     );
                 const media = mediaById.get(block.mediaId);
                 if (!media) return null;
-                // 多选模式（合并堆叠）：媒体块点按 = 切换选中，全屏/长按被选中
-                // 覆盖层屏蔽（absolute 后绘制在上，压住 MediaBlock 自身的
-                // Pressability 链）；音频置灰不可选（同位吸收层吞触摸 + 0.55
-                // 降透明，inline style 不落条件类）；pending 占位不参与（上方
-                // 原样渲染）。文本块的多选屏蔽由屏层 editable=false 传入实现。
-                if (selection) {
+                // 多选模式（合并堆叠 / 堆叠指定删除）：可选媒体块点按 = 切换
+                // 选中，全屏/长按被选中覆盖层屏蔽（absolute 后绘制在上，压住
+                // MediaBlock 自身的 Pressability 链）；音频置灰不可选（同位吸收
+                // 层吞触摸 + 0.55 降透明，inline style 不落条件类，既有口径）；
+                // 白名单外媒体块（指定删除的目标堆叠之外）**不进多选分支**——
+                // 落到下方常态渲染，点按照常全屏查看（零死点零置灰）；pending
+                // 占位不参与（上方原样渲染）。文本块的多选屏蔽由屏层
+                // editable=false 传入实现。
+                if (selection && media.kind === 'audio') {
+                    return (
+                        <BlockReveal key={block.id} index={index}>
+                            <View
+                                className="relative"
+                                style={[verticalMargin, { opacity: 0.55 }]}
+                            >
+                                <MediaBlock media={media} durationMs={block.durationMs} />
+                                <Pressable
+                                    style={SELECTION_OVERLAY_STYLE}
+                                    accessibilityLabel="录音不参与本次勾选"
+                                />
+                            </View>
+                        </BlockReveal>
+                    );
+                }
+                if (selection && isSelectable(block.id)) {
                     const selected = selection.selectedIds.has(block.id);
-                    if (media.kind === 'audio') {
-                        return (
-                            <BlockReveal key={block.id} index={index}>
-                                <View
-                                    className="relative"
-                                    style={[verticalMargin, { opacity: 0.55 }]}
-                                >
-                                    <MediaBlock media={media} durationMs={block.durationMs} />
-                                    <Pressable
-                                        style={SELECTION_OVERLAY_STYLE}
-                                        accessibilityLabel="录音不参与合并堆叠"
-                                    />
-                                </View>
-                            </BlockReveal>
-                        );
-                    }
                     return (
                         <BlockReveal key={block.id} index={index}>
                             <View className="relative" style={verticalMargin}>

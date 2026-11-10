@@ -7,7 +7,7 @@ import { AudioBlock } from './audio-player';
 import { requestViewer } from '../viewer-request';
 import { useFileUrlState, type FileUrlState } from './use-file-url';
 import { useVideoNaturalSize } from './use-video-natural-size';
-import { usePalette } from './theme';
+import { usePalette, useMediaAlignPref, type MediaAlign } from './theme';
 import type { JournalMediaRow } from '../db';
 
 /**
@@ -62,6 +62,21 @@ const VIDEO_RATIO = 16 / 9;
 
 /** 双击判定窗口（ms，web 桌面端块操作入口）。 */
 const DOUBLE_PRESS_WINDOW = 320;
+
+/**
+ * 单张媒体卡水平对齐映射（2026-11-11 反馈②「单张和堆叠都改成靠左边不再居中」
+ * 的单张落点）：自适应画幅收窄（竖版触高上限后宽度收窄）时卡的内容流位置按
+ * useMediaAlignPref 对齐偏好落位——left 靠左贴内容列左缘（默认，与正文同列
+ * 线）/ center 居中（v10 原构图，保留为可选档）/ right 靠右。横版满列宽时
+ * alignSelf 无可见效果（宽度已撑满列）。inline style 表达（不走 className 条
+ * 件三元，css-interop 铁律无涉）；只改内容流位置，卡体样式（圆角/底色/尺寸）
+ * 零变化。deck 堆叠的同源消费在 editor.tsx MediaDeckStack（cardLeft 锚点）。
+ */
+const MEDIA_ALIGN_SELF: Record<MediaAlign, 'flex-start' | 'center' | 'flex-end'> = {
+    left: 'flex-start',
+    center: 'center',
+    right: 'flex-end',
+};
 
 /* ------------------------------------------------------------------ */
 /* 视频缩略图（deck 露边层真封面，2026-11-08）                           */
@@ -177,6 +192,9 @@ export function MediaImage({
 }) {
     const { status, uri } = useFileUrlState(media.file_key);
     const palette = usePalette();
+    // 水平对齐偏好（hook 直读自生效，调用方零改动；默认 left 靠左，见
+    // MEDIA_ALIGN_SELF 注）
+    const [mediaAlign] = useMediaAlignPref();
     // 自然比例：picker 落库的宽高优先，缺元数据回退 4:3（v10 自适应画幅）。
     // 约束模型 = maxWidth(420×r) + maxHeight(420) 双上限 + aspectRatio：
     // 竖版 height = 列宽/r 超 420 时，width 被 maxWidth = 420×r 压窄、height
@@ -186,8 +204,8 @@ export function MediaImage({
     // 钳定后的 used width 派生高，同结果）。「maxHeight 钳高但定宽不回缩」
     // 的旧 cover 裁切问题就此消除（旧式 aspectRatio + maxHeight 组合在竖版
     // 上产生 390×420 裁切盒）。
-    // alignSelf center：收窄后水平居中；横版 maxWidth ≥ 420×1.33 = 560 >
-    // 手机列宽，恒满列宽不受影响。
+    // alignSelf：收窄后的内容流位置按对齐偏好落位（默认靠左）；横版
+    // maxWidth ≥ 420×1.33 = 560 > 手机列宽，恒满列宽不受影响。
     const ratio =
         media.width && media.height ? media.width / media.height : FALLBACK_IMAGE_RATIO;
     const ready = status === 'ready' && uri != null;
@@ -218,7 +236,7 @@ export function MediaImage({
                     aspectRatio: ratio,
                     maxWidth: MEDIA_MAX_HEIGHT * ratio,
                     maxHeight: MEDIA_MAX_HEIGHT,
-                    alignSelf: 'center',
+                    alignSelf: MEDIA_ALIGN_SELF[mediaAlign],
                 }}
             >
                 {status === 'ready' && uri ? (
@@ -264,6 +282,9 @@ export function MediaVideo({
 }) {
     const { status, uri } = useFileUrlState(media.file_key);
     const palette = usePalette();
+    // 水平对齐偏好（与 MediaImage 同源；仅自适应画幅分支消费——外部传 height
+    // 的封面场景保持满宽 cover 原行为，见 TripCoverVideo）
+    const [mediaAlign] = useMediaAlignPref();
     // source 直传 uri（可能为 null，VideoSource 合法值）：文件未解析/缺失时是空
     // player 而非空串——空串会让 web 的 <video src=""> 触发整页重下载告警（已修坑，勿回潮）
     const player = useVideoPlayer(uri, (p) => {
@@ -327,11 +348,12 @@ export function MediaVideo({
                         : {
                               // v10 自适应画幅（与 MediaImage 同式，见其注）：
                               // maxWidth/maxHeight 双上限 + aspectRatio，竖版
-                              // 收窄居中、终盒比例恒等于媒体比例
+                              // 收窄后内容流位置按对齐偏好落位（默认靠左）、
+                              // 终盒比例恒等于媒体比例
                               aspectRatio: ratio,
                               maxWidth: MEDIA_MAX_HEIGHT * ratio,
                               maxHeight: MEDIA_MAX_HEIGHT,
-                              alignSelf: 'center',
+                              alignSelf: MEDIA_ALIGN_SELF[mediaAlign],
                           }
                 }
             >

@@ -96,12 +96,50 @@ export function moveBlock(blocks: JournalBlock[], id: string, direction: -1 | 1)
 }
 
 /**
+ * 稳定排序（**连续段版**，2026-11-11 堆叠「整组移动」）：把 [firstIndex,
+ * lastIndex] 闭区间整段上移/下移一格（-1/+1），段与相邻的**段外单块**换位
+ * ——媒体堆（deck）由多个相邻独立块构成（渲染层合并、数据仍是独立块），
+ * 整段同进退 = 堆叠作为一组越过相邻块，组内顺序与连续性零变化（组不解散、
+ * 不重排）。越界/非法区间原样返回。单块段的退化行为与 moveBlock 逐位一致
+ * （段长 1 时本函数即 moveBlock 的下标直传版）。
+ */
+export function moveBlockRun(
+    blocks: JournalBlock[],
+    firstIndex: number,
+    lastIndex: number,
+    direction: -1 | 1,
+): JournalBlock[] {
+    if (firstIndex < 0 || firstIndex > lastIndex || lastIndex >= blocks.length) return blocks;
+    const target = direction === -1 ? firstIndex - 1 : lastIndex + 1;
+    if (target < 0 || target >= blocks.length) return blocks;
+    const next = [...blocks];
+    const run = next.splice(firstIndex, lastIndex - firstIndex + 1);
+    // 上移：段插到原前邻块（移除后位于 firstIndex - 1）之前；下移：段插到
+    // 原后邻块（移除后位于 firstIndex + 1）之后——两种方向都恰好换过一位
+    const insertAt = direction === -1 ? firstIndex - 1 : firstIndex + 1;
+    next.splice(insertAt, 0, ...run);
+    return next;
+}
+
+/**
  * 删除块（移块不删文件：媒体行与二进制保留，软删除语义防误删丢失）。
  * 编辑器至少留一个可落笔段：删到空、或删完只剩媒体块（无任何文本段，
  * 用户将永远无法再写字）时，补一个空文本段兜底。
  */
 export function removeBlock(blocks: JournalBlock[], id: string): JournalBlock[] {
-    const next = blocks.filter((block) => block.id !== id);
+    return removeBlocks(blocks, [id]);
+}
+
+/**
+ * 批量删块（2026-11-11 堆叠「批量删除」）：一次摘除多个块引用——媒体堆整组
+ * 删除即传入组内全部块 id（deck 是独立块序列，删除 = 全员摘引用；媒体行与
+ * 二进制不删，与单块删除同一软删除语义）。ids 内不存在的 id 忽略（幂等）。
+ * 「至少留一个可落笔段」兜底与 removeBlock 完全同口径（本函数是其批量事实源，
+ * 单块版委托至此防双实现漂移）。
+ */
+export function removeBlocks(blocks: JournalBlock[], ids: readonly string[]): JournalBlock[] {
+    const idSet = new Set(ids);
+    const next = blocks.filter((block) => !idSet.has(block.id));
     if (next.length === 0 || !next.some((block) => block.t === 'p')) {
         return [...next, newParagraphBlock()];
     }
