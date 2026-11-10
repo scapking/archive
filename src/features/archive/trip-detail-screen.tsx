@@ -29,7 +29,6 @@ import * as db from './db';
 // 屏层直连 db 的数据变化广播（同 me-screen 头像先例）：计划增/勾/删走屏层直连
 // db 的轻量行级取径，落库后经中立层 notifyDataRevision 广播（use-file-url 等
 // 订阅者复验失效；store mutation 则由 store 内部转发，两条通道同源不漂移）。
-import { notifyDataRevision } from './data-revision';
 import { useArchiveRevision, useArchiveStore } from './store';
 import {
     dayDiff,
@@ -419,7 +418,7 @@ const DayCard = memo(function DayCard({
             onChanged();
             // 中立层广播（屏层直连 db 取径的配套）：archive 首页 deck 的计划完成度
             // 统计据此重载（首页卡不再滞留旧计划数），use-file-url 等订阅者复验
-            notifyDataRevision();
+            useArchiveStore.setState((s) => ({ revision: s.revision + 1 }));
         } catch (caught) {
             // 失败可见：crypto/db 抛错（如 web 非安全上下文）不能静默吞掉，draft 保留不丢输入
             setActionError(`计划添加失败：${caught instanceof Error ? caught.message : String(caught)}`);
@@ -434,7 +433,7 @@ const DayCard = memo(function DayCard({
             setActionError(null);
             onChanged();
             // 中立层广播（同 submitPlan）：计划完成度变化上浮到首页 deck 统计
-            notifyDataRevision();
+            useArchiveStore.setState((s) => ({ revision: s.revision + 1 }));
         } catch (caught) {
             // 勾选态由父级 reload 数据派生（非乐观更新），失败无需回滚本地状态，但要可见报错
             setActionError(`计划状态更新失败：${caught instanceof Error ? caught.message : String(caught)}`);
@@ -834,7 +833,7 @@ export function TripDetailScreen() {
      * 落库 = 屏层直连 db.softDeleteDayPlan（软删域约定，轻量行级操作不经
      * store——同本屏 insertDayPlan / setDayPlanDone 的既有取径变体）；
      * 刷新 = onChanged 本屏列表重载（同计划添加/勾选通道）+
-     * notifyDataRevision 中立层广播（首页 deck 统计、use-file-url 等订阅者
+     * store revision 推进（首页 deck 统计、use-file-url 等订阅者
      * 复验；store mutation 的广播由 store 内部转发，两条通道同源）。
      * 失败走 store.error 通道（同背景设置/清除失败口径），行未删不弹横幅。
      */
@@ -844,7 +843,7 @@ export function TripDetailScreen() {
                 await db.softDeleteDayPlan(planId, Date.now());
                 setDeleteNotice({ text: `已删除计划「${content}」`, at: Date.now() });
                 void reload();
-                notifyDataRevision();
+                useArchiveStore.setState((s) => ({ revision: s.revision + 1 }));
             } catch (caught) {
                 useArchiveStore.setState({
                     error: `计划删除失败：${caught instanceof Error ? caught.message : String(caught)}`,
