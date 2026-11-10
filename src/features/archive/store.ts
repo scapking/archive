@@ -44,7 +44,9 @@ import {
 // 事件纯逻辑（v6）：校验/归一化/装饰统一走纯函数模块，store 只做编排
 import {
     EVENT_DESCRIPTION_MAX,
+    EVENT_EMAIL_MAX,
     EVENT_HANDLED_BY_MAX,
+    EVENT_PHONE_MAX,
     EVENT_TITLE_MAX,
     decorateEvent,
     isEventStatus,
@@ -52,6 +54,7 @@ import {
     isValidGpsAccuracy,
     isValidGpsCoordinate,
     newEventBlocksJson,
+    normalizeEventEmail,
     normalizeEventSubject,
     normalizeEventText,
     validateEventInput,
@@ -277,6 +280,10 @@ interface ArchiveStore {
         handledBy?: string;
         subjectKind?: EventSubjectKind;
         subjectValue?: string;
+        /** 手机号（v7，可选独立联系方式；自由文本，不做格式校验）。 */
+        phone?: string;
+        /** 邮箱（v7，可选；值内明显空白由 normalizeEventEmail 剥除）。 */
+        email?: string;
         description?: string;
     }): Promise<EventRow | null>;
     /**
@@ -303,6 +310,10 @@ interface ArchiveStore {
             handledBy?: string | null;
             subjectKind?: EventSubjectKind | null;
             subjectValue?: string | null;
+            /** 手机号（v7，可空 = 清除；自由文本，不做格式校验）。 */
+            phone?: string | null;
+            /** 邮箱（v7，可空 = 清除；值内明显空白由 normalizeEventEmail 剥除）。 */
+            email?: string | null;
             description?: string | null;
             gps?: { lat: number; lng: number; accuracy?: number } | null;
         },
@@ -334,8 +345,9 @@ interface ArchiveStore {
     /** 删事件（v6）：行级级联（事件 + 媒体行软删）+ 文件清理（不留孤儿引用）。 */
     deleteEvent(id: string): Promise<boolean>;
     /**
-     * 事件搜索（v6）：关键词四通道 LIKE（title/description/subject_value/
-     * handled_by）+ 状态筛选，updated_at DESC。空 keyword 且无 status 返回空
+     * 事件搜索（v6，v7 扩充为六通道）：关键词 LIKE（title/description/
+     * subject_value/handled_by/phone/email——联系方式可被搜索）+ 状态筛选，
+     * updated_at DESC。空 keyword 且无 status 返回空
      * （不做无界全量；全量列表走 db.listEvents）。返回装饰后的 Event[]。
      */
     searchEvents(keyword: string, filter?: { status?: EventStatus }): Promise<Event[]>;
@@ -1059,6 +1071,8 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 handled_by: normalizeEventText(input.handledBy, EVENT_HANDLED_BY_MAX),
                 subject_kind: subject.kind,
                 subject_value: subject.value,
+                phone: normalizeEventText(input.phone, EVENT_PHONE_MAX),
+                email: normalizeEventEmail(input.email, EVENT_EMAIL_MAX),
                 created_at: now,
                 updated_at: now,
                 deleted_at: null,
@@ -1185,6 +1199,14 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                     : {}),
                 ...(patch.description !== undefined
                     ? { description: normalizeEventText(patch.description, EVENT_DESCRIPTION_MAX) }
+                    : {}),
+                // 联系方式（v7）：undefined = 不动；null/空串 = 清除（normalize
+                // 口径）；邮箱经 normalizeEventEmail 剥净值内空白
+                ...(patch.phone !== undefined
+                    ? { phone: normalizeEventText(patch.phone, EVENT_PHONE_MAX) }
+                    : {}),
+                ...(patch.email !== undefined
+                    ? { email: normalizeEventEmail(patch.email, EVENT_EMAIL_MAX) }
                     : {}),
                 ...(subject ? { subject_kind: subject.kind, subject_value: subject.value } : {}),
                 ...(patch.gps !== undefined

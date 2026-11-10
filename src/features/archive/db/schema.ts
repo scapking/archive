@@ -24,6 +24,13 @@
  * - event_media：事件内媒体，列与 trip_media 对齐（图/视频/音频 + duration_ms），
  *   复用行程媒体同款落盘/软删/级联/文件清理链路。
  *
+ * v7 追加（事件联系方式）：
+ * - events.phone / events.email：可空文本列（ALTER 追加；EVENTS_DDL 常量保持
+ *   v6 建表形状——journals.title 同款先例，全新装先跑 v6 建表再跑 v7 ALTER，
+ *   DDL 若提前带新列会与 ALTER 撞列名崩迁移链）；独立于 subject 对象词表的
+ *   联系方式字段（工单语义：能直接拨/能直接发），可被搜索（db.searchEvents
+ *   六通道 LIKE）。
+ *
  * 约定不变：UUID 主键；日期归属用本地日期字符串 `YYYY-MM-DD`；
  * created_at/updated_at 为 epoch ms；删除一律软删除。
  */
@@ -271,7 +278,9 @@ export type EventSubjectKind = 'custom' | 'phone' | 'email' | 'address' | 'gps';
  * - gps_lat/gps_lng/gps_accuracy：完整经纬度（可空——定位失败/用户不填允许
  *   无 GPS；无地址列，地址语义走 subject 的 address/gps 词表）；
  * - handled_by：处理人自由文本（可空）；
- * - subject_kind/subject_value：对象类型与值（原子对，见上）。
+ * - subject_kind/subject_value：对象类型与值（原子对，见上）；
+ * - phone/email：联系方式（v7 ALTER 追加，可空 = 未填；独立于 subject——对象
+ *   是「跟谁有关」的自由描述，手机号/邮箱是可直接触达的联系通道，各自成列）。
  */
 export interface EventRow {
     id: string;
@@ -285,6 +294,8 @@ export interface EventRow {
     handled_by: string | null;
     subject_kind: EventSubjectKind | null;
     subject_value: string | null;
+    phone: string | null; // v7 ALTER 追加（EVENTS_DDL 保持 v6 建表形状，见头注）
+    email: string | null; // v7 ALTER 追加
     created_at: number;
     updated_at: number;
     deleted_at: number | null;

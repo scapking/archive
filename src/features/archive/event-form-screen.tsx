@@ -18,11 +18,15 @@ import { location } from '@/core/location';
 import { FieldInput } from './ui/field-input';
 import {
     EVENT_DESCRIPTION_MAX,
+    EVENT_EMAIL_MAX,
     EVENT_HANDLED_BY_MAX,
+    EVENT_PHONE_MAX,
     EVENT_SUBJECT_VALUE_MAX,
     EVENT_TITLE_MAX,
     EVENT_DESCRIPTION_PLACEHOLDERS,
+    EVENT_EMAIL_PLACEHOLDERS,
     EVENT_HANDLED_BY_PLACEHOLDERS,
+    EVENT_PHONE_PLACEHOLDERS,
     EVENT_SUBJECT_PLACEHOLDERS,
     normalizeEventSubject,
     pickEventCopy,
@@ -33,15 +37,19 @@ import { PrimaryButton, ScreenHeader, usePalette } from './ui';
 /**
  * 新建事件页（/events/new，极简表单）：
  *
- * - 字段即需求词表（全字段完整铺开，顺序 = 标题 / 位置 / 处理人 / 对象 / 描述）：
+ * - 字段即需求词表（全字段完整铺开，顺序 = 标题 / 位置 / 处理人 / 对象 /
+ *   手机号 / 邮箱 / 描述）：
  *   标题（必填，FieldInput，maxLength 与 EVENT_TITLE_MAX 同源）/
  *   GPS（进页自动经 core/location 取当前位置，**不可手输**——自动定位行保留，
  *   已定位展示**完整 GPS 信息**（状态行「已定位 · ±Nm」+ 原始经纬度行）；失败/
  *   拒绝降级为 muted「未定位」行，创建时 gps 置 null）/ 处理人（可选）/ 对象
  *   （自定义自由文本单输入，kind 固定 'custom'，原子对由 normalizeEventSubject
- *   在提交前归一——留空即整对清除）/ 描述（可选，multiline 自然增高收起式）；
- *   placeholder = event-logic 随机话术池（对象/处理人/描述各自一池，useState
- *   初始化器**每挂载固定一条**，语义指向不规定格式）；created_at 时间由 store
+ *   在提交前归一——留空即整对清除）/ 手机号、邮箱（v7 可选独立联系方式，排在
+ *   对象之后——对象=跟谁有关，手机号/邮箱=联系通道语义相邻；phone-pad/email
+ *   键盘、autoCapitalize none，无强格式校验，trim 与邮箱空白剥除收口在 store）/
+ *   描述（可选，multiline 自然增高收起式）；
+ *   placeholder = event-logic 随机话术池（对象/处理人/手机号/邮箱/描述各自
+ *   一池，useState 初始化器**每挂载固定一条**，语义指向不规定格式）；created_at 时间由 store
  *   落库时统一打，表单不出现时间字段；行间距统一 4dp 网格（组间 gap-4=16、
  *   标签 mb-2=8、提示 mt-1=4、提交 mt-2=8）；
  * - 定位可靠性：权限预检（已授权跳过弹窗）→ 系统服务检查 → 8s 超时兜底
@@ -66,6 +74,8 @@ export function EventFormScreen() {
     const [title, setTitle] = useState('');
     const [handledBy, setHandledBy] = useState('');
     const [subjectValue, setSubjectValue] = useState('');
+    const [phone, setPhone] = useState('');
+    const [email, setEmail] = useState('');
     const [description, setDescription] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const submittingRef = useRef(false);
@@ -74,6 +84,8 @@ export function EventFormScreen() {
     //     内直调会每次渲染换文案、placeholder 抖动；池与挑选函数在 event-logic）──
     const [subjectPlaceholder] = useState(() => pickEventCopy(EVENT_SUBJECT_PLACEHOLDERS));
     const [handledByPlaceholder] = useState(() => pickEventCopy(EVENT_HANDLED_BY_PLACEHOLDERS));
+    const [phonePlaceholder] = useState(() => pickEventCopy(EVENT_PHONE_PLACEHOLDERS));
+    const [emailPlaceholder] = useState(() => pickEventCopy(EVENT_EMAIL_PLACEHOLDERS));
     const [descriptionPlaceholder] = useState(() => pickEventCopy(EVENT_DESCRIPTION_PLACEHOLDERS));
 
     // ─── GPS 自动定位（不可手输；失败/拒绝 → null + muted 行）────────────────
@@ -157,6 +169,11 @@ export function EventFormScreen() {
                 handledBy,
                 subjectKind: subject.kind ?? undefined,
                 subjectValue: subject.value ?? undefined,
+                // 手机号/邮箱（v7）：原样上交（可选、无格式校验），trim 与邮箱
+                // 值内空白剥除由 store 归一化统一收口（normalizeEventText /
+                // normalizeEventEmail），表单不做第二套清洗
+                phone,
+                email,
                 description,
             });
             if (row) {
@@ -312,6 +329,49 @@ export function EventFormScreen() {
                                 placeholder={subjectPlaceholder}
                                 maxLength={EVENT_SUBJECT_VALUE_MAX}
                                 accessibilityLabel="对象"
+                            />
+                        </View>
+
+                        {/* 手机号（v7 可选独立联系方式）：phone-pad 数字键盘 +
+                            inputMode 'tel'（RN 0.88 InputModeOptions 词表无
+                            'phone-pad'，tel 是 HTML inputmode 手机号档）；不做
+                            强格式校验——号码排版空格/横线是合法书写习惯，按
+                            原样入库 */}
+                        <View>
+                            <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                手机号
+                            </Text>
+                            <FieldInput
+                                value={phone}
+                                onChangeText={setPhone}
+                                placeholder={phonePlaceholder}
+                                maxLength={EVENT_PHONE_MAX}
+                                keyboardType="phone-pad"
+                                inputMode="tel"
+                                autoCapitalize="none"
+                                autoCorrect={false}
+                                accessibilityLabel="手机号"
+                            />
+                        </View>
+
+                        {/* 邮箱（v7 可选）：email 键盘 + autoCapitalize none——
+                            邮箱地址不分大小写歧义，禁掉 iOS 首字母自动大写坏掉
+                            地址；值内明显空白由 store 归一化剥除（宽容收下手滑，
+                            不做格式拒绝） */}
+                        <View>
+                            <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                邮箱
+                            </Text>
+                            <FieldInput
+                                value={email}
+                                onChangeText={setEmail}
+                                placeholder={emailPlaceholder}
+                                maxLength={EVENT_EMAIL_MAX}
+                                keyboardType="email-address"
+                                inputMode="email"
+                                autoCapitalize="none"
+                                autoCorrect={false}
+                                accessibilityLabel="邮箱"
                             />
                         </View>
 

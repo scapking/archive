@@ -86,7 +86,8 @@ import { EventSettingsCard } from './ui/event-settings-card';
  *   状态片（点按打开设置卡——元信息编辑统一收口，不再直切）+ 时间线（创建/
  *   最近更新，event-logic.eventTimeline 单一口径）+ GPS 坐标行（**点按复制**
  *   clipboard——只读快捷动作保留，编辑（重定位/清除）在设置卡）+ 处理人/对象
- *   行（点按打开设置卡）+ 字数/保存 meta 行；
+ *   行（点按打开设置卡）+ 手机号/邮箱行（v7，有值才显示——独立联系方式字段，
+ *   文字前缀「电话/邮箱」同一轻量解剖，点按打开设置卡）+ 字数/保存 meta 行；
  * - **正文 = BlockEditor 复用**（事件 blocks 与 journal 块模型同构，JournalBlock
  *   不变；mediaId → event_media 行经 toJournalMediaRow 适配器喂编辑器的
  *   mediaById 契约——行结构同构，仅 journal_id 槽位以 event_id 占位）：
@@ -112,8 +113,8 @@ import { EventSettingsCard } from './ui/event-settings-card';
  * - **设置卡（EventSettingsCard，scrim + 居中卡，MetaEditCard 模式）**：标题
  *   行右上设置钮进入，整合全部元信息编辑——名称（title，store.updateEventMeta
  *   v6.1 扩展 title patch）/ 状态（open/done/failed 三分段）/ GPS（重定位/清除）/
- *   处理人 / 对象（类型+值，原子对归一在 store）/ 描述 / 时间线（只读）/
- *   删除事件（negative → 卡内确认步）；字段变更**即时落库**（updateEventMeta
+ *   处理人 / 对象（类型+值，原子对归一在 store）/ 手机号 / 邮箱（v7）/
+ *   描述 / 时间线（只读）/ 删除事件（negative → 卡内确认步）；字段变更**即时落库**（updateEventMeta
  *   + revision bump + refreshMeta 权威回读），文本字段 blur 保存、分段/按钮
  *   点按即存；删除为级联软删 + safeBack，deletedRef 闸防删除后的卸载 flush
  *   把 blocks 写回已删行；
@@ -445,6 +446,32 @@ export function EventDetailScreen() {
                 subjectKind: kind,
                 subjectValue: kind === null ? null : value,
             });
+            if (ok) void refreshMeta();
+            return ok;
+        },
+        [store, refreshMeta],
+    );
+
+    /** 设置卡：手机号（v7，空串经 store 归一为 null = 清除，normalizeEventText
+     *  口径；自由文本无格式校验）。 */
+    const savePhone = useCallback(
+        async (value: string) => {
+            const row = eventRef.current;
+            if (!row || deletedRef.current) return false;
+            const ok = await store.getState().updateEventMeta(row.id, { phone: value });
+            if (ok) void refreshMeta();
+            return ok;
+        },
+        [store, refreshMeta],
+    );
+
+    /** 设置卡：邮箱（v7，空串 = 清除；值内明显空白由 store 的 normalizeEventEmail
+     *  剥除——单一清洗点在 store，屏层不复制口径）。 */
+    const saveEmail = useCallback(
+        async (value: string) => {
+            const row = eventRef.current;
+            if (!row || deletedRef.current) return false;
+            const ok = await store.getState().updateEventMeta(row.id, { email: value });
             if (ok) void refreshMeta();
             return ok;
         },
@@ -1007,6 +1034,49 @@ export function EventDetailScreen() {
                             </Text>
                         </Pressable>
                     </View>
+                    {/* 手机号/邮箱展示行（v7，有值才显示——独立联系方式字段，
+                        与处理人/对象行同一轻量解剖：文字前缀「电话/邮箱」+
+                        12px secondary 档 + 点按打开设置卡编辑；core/icons 无
+                        LucidePhone/LucideMail，不自造图标沿用文字前缀；三端
+                        纯文本展示，不做 tel:/mailto: 链接——展示口径一致）：
+                        hitSlop 6 = 12px 命中外扩，段间距 gap-3(12) ≥ 6+6 相切
+                        不重叠（与上行同口径） */}
+                    {event.phone || event.email ? (
+                        <View className="mt-2 flex-row items-center gap-3">
+                            {event.phone ? (
+                                <Pressable
+                                    onPress={() => setSettingsOpen(true)}
+                                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                    className="min-w-0 flex-row items-center active:opacity-70"
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`电话：${event.phone}，点按在设置中编辑`}
+                                >
+                                    <Text
+                                        numberOfLines={1}
+                                        className="shrink text-[12px] text-ink-secondary dark:text-inkd-secondary"
+                                    >
+                                        {`电话 ${event.phone}`}
+                                    </Text>
+                                </Pressable>
+                            ) : null}
+                            {event.email ? (
+                                <Pressable
+                                    onPress={() => setSettingsOpen(true)}
+                                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                    className="min-w-0 flex-1 flex-row items-center active:opacity-70"
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`邮箱：${event.email}，点按在设置中编辑`}
+                                >
+                                    <Text
+                                        numberOfLines={1}
+                                        className="shrink text-[12px] text-ink-secondary dark:text-inkd-secondary"
+                                    >
+                                        {`邮箱 ${event.email}`}
+                                    </Text>
+                                </Pressable>
+                            ) : null}
+                        </View>
+                    ) : null}
                     {/* meta 行：字数 + 保存状态（journal masthead meta 同语言） */}
                     <Text
                         className="mt-2 text-[11px] text-ink-muted dark:text-inkd-muted"
@@ -1081,6 +1151,8 @@ export function EventDetailScreen() {
                     onSaveGps={(gps) => saveGps(gps)}
                     onSaveHandledBy={(value) => saveHandledBy(value)}
                     onSaveSubject={(kind, value) => saveSubject(kind, value)}
+                    onSavePhone={(value) => savePhone(value)}
+                    onSaveEmail={(value) => saveEmail(value)}
                     onSaveDescription={(value) => saveDescription(value)}
                     onDelete={() => performDelete()}
                     onSurfaceError={surfaceError}

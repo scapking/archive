@@ -10,7 +10,9 @@ import { usePalette } from './theme';
 // 类型经 event-logic 的 db re-export 取得（db 不依赖 ui，type-only 无环）。
 import {
     EVENT_DESCRIPTION_MAX,
+    EVENT_EMAIL_MAX,
     EVENT_HANDLED_BY_MAX,
+    EVENT_PHONE_MAX,
     EVENT_TITLE_MAX,
     EVENT_SUBJECT_VALUE_MAX,
     EVENT_STATUS_LABELS,
@@ -42,7 +44,10 @@ import {
  *   互切——标记失败 / 从失败重新打开 / 失败转完成同一交互）；GPS = 坐标只读
  *   行 + 「重新定位」（权限/服务预检 → 8s 超时兜底，新建表单同口径）/「清除」
  *   点按即存；处理人 = blur 保存（空串 = 清除）；对象 = 类型分段 + 值输入，
- *   类型点按即存整对（原子对归一在 store）、值 blur 保存整对；描述 = multiline
+ *   类型点按即存整对（原子对归一在 store）、值 blur 保存整对；手机号 / 邮箱 =
+ *   v7 可选联系方式，blur 保存（空串 = 清除；email 键盘 + autoCapitalize none，
+ *   值内空白由 store 剥除）——两字段随 onSavePhone/onSaveEmail **接线才渲染**
+ *  （详情屏已接线；列表页长按入口接线前不出死编辑面）；描述 = multiline
  *   blur 保存（空串 = 清除）；时间线 = 只读展示（event-logic.eventTimeline，
  *   保存后随调用方回读刷新）；删除事件 = negative 行 → 卡内确认步
  *   （正文/媒体一并删除警示 + 删除在途 spinner）；
@@ -70,6 +75,8 @@ export function EventSettingsCard({
     onSaveGps,
     onSaveHandledBy,
     onSaveSubject,
+    onSavePhone,
+    onSaveEmail,
     onSaveDescription,
     onDelete,
     onSurfaceError,
@@ -83,6 +90,11 @@ export function EventSettingsCard({
     onSaveGps(gps: { lat: number; lng: number; accuracy?: number } | null): Promise<boolean>;
     onSaveHandledBy(value: string): Promise<boolean>;
     onSaveSubject(kind: EventSubjectKind | null, value: string): Promise<boolean>;
+    /** 手机号保存（v7，可选：未接线 = 字段不渲染——编辑面必须带落库通道，
+     *  防「可编辑但不保存」的死相；列表页长按入口接线后可转必选收口）。 */
+    onSavePhone?(value: string): Promise<boolean>;
+    /** 邮箱保存（v7，可选；可选性口径同 onSavePhone）。 */
+    onSaveEmail?(value: string): Promise<boolean>;
     onSaveDescription(value: string): Promise<boolean>;
     /** 删除（确认步触发；true = 成功——调用方关卡/返回，本卡随条件渲染消失）。 */
     onDelete(): Promise<boolean>;
@@ -100,6 +112,8 @@ export function EventSettingsCard({
     const [statusDraft, setStatusDraft] = useState<EventStatus>(event.status);
     const [handledByDraft, setHandledByDraft] = useState(event.handled_by ?? '');
     const [valueDraft, setValueDraft] = useState(event.subject_value ?? '');
+    const [phoneDraft, setPhoneDraft] = useState(event.phone ?? '');
+    const [emailDraft, setEmailDraft] = useState(event.email ?? '');
     const [descriptionDraft, setDescriptionDraft] = useState(event.description ?? '');
     /** 成功保存后的基线（blur 比对用；失败不推进——下次 blur 可重试）。 */
     const baselineRef = useRef({
@@ -107,6 +121,8 @@ export function EventSettingsCard({
         handledBy: event.handled_by ?? '',
         kind: event.subject_kind,
         value: event.subject_value ?? '',
+        phone: event.phone ?? '',
+        email: event.email ?? '',
         description: event.description ?? '',
     });
     const [deleting, setDeleting] = useState(false);
@@ -159,6 +175,21 @@ export function EventSettingsCard({
             baselineRef.current.kind = kind;
             baselineRef.current.value = kind === null ? '' : trimmed;
         }
+    };
+
+    /** 手机号保存（v7，blur 保存，空串 = 清除；自由文本无格式校验）。 */
+    const savePhoneDraft = async () => {
+        if (phoneDraft === baselineRef.current.phone) return;
+        const ok = await onSavePhone?.(phoneDraft);
+        if (ok) baselineRef.current.phone = phoneDraft;
+    };
+
+    /** 邮箱保存（v7，blur 保存，空串 = 清除；值内明显空白由 store 的
+     *  normalizeEventEmail 剥除——基线比对用原草稿，剥除口径不在卡内复制）。 */
+    const saveEmailDraft = async () => {
+        if (emailDraft === baselineRef.current.email) return;
+        const ok = await onSaveEmail?.(emailDraft);
+        if (ok) baselineRef.current.email = emailDraft;
     };
 
     const saveDescriptionDraft = async () => {
@@ -455,6 +486,52 @@ export function EventSettingsCard({
                                         onBlur={() => void saveSubjectDraft(valueDraft)}
                                     />
                                 </View>
+
+                                {/* 手机号（v7，blur 保存，空串 = 清除）：字段随
+                                    onSavePhone 接线才渲染（列表页长按入口未
+                                    接线时不出现死编辑面） */}
+                                {onSavePhone ? (
+                                    <View>
+                                        <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                            手机号
+                                        </Text>
+                                        <FieldInput
+                                            value={phoneDraft}
+                                            onChangeText={setPhoneDraft}
+                                            placeholder="手机号（留空清除）"
+                                            maxLength={EVENT_PHONE_MAX}
+                                            keyboardType="phone-pad"
+                                            inputMode="tel"
+                                            autoCapitalize="none"
+                                            autoCorrect={false}
+                                            accessibilityLabel="手机号"
+                                            onBlur={() => void savePhoneDraft()}
+                                        />
+                                    </View>
+                                ) : null}
+
+                                {/* 邮箱（v7，blur 保存，空串 = 清除）：email 键盘 +
+                                    autoCapitalize none（禁首字母自动大写坏地址）；
+                                    接线门控口径同手机号 */}
+                                {onSaveEmail ? (
+                                    <View>
+                                        <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                            邮箱
+                                        </Text>
+                                        <FieldInput
+                                            value={emailDraft}
+                                            onChangeText={setEmailDraft}
+                                            placeholder="邮箱（留空清除）"
+                                            maxLength={EVENT_EMAIL_MAX}
+                                            keyboardType="email-address"
+                                            inputMode="email"
+                                            autoCapitalize="none"
+                                            autoCorrect={false}
+                                            accessibilityLabel="邮箱"
+                                            onBlur={() => void saveEmailDraft()}
+                                        />
+                                    </View>
+                                ) : null}
 
                                 {/* 描述（multiline，blur 保存，空串 = 清除） */}
                                 <View>

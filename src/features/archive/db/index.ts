@@ -656,8 +656,8 @@ export async function detachTripDayBackgroundByMediaId(mediaId: string, at: numb
 export async function insertEvent(row: Omit<EventRow, 'deleted_at'>): Promise<void> {
     const db = await getDb();
     await db.run(
-        `INSERT INTO events (id, title, status, description, blocks, gps_lat, gps_lng, gps_accuracy, handled_by, subject_kind, subject_value, created_at, updated_at, deleted_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        `INSERT INTO events (id, title, status, description, blocks, gps_lat, gps_lng, gps_accuracy, handled_by, subject_kind, subject_value, phone, email, created_at, updated_at, deleted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
         [
             row.id,
             row.title,
@@ -670,6 +670,8 @@ export async function insertEvent(row: Omit<EventRow, 'deleted_at'>): Promise<vo
             row.handled_by,
             row.subject_kind,
             row.subject_value,
+            row.phone,
+            row.email,
             row.created_at,
             row.updated_at,
         ],
@@ -695,8 +697,9 @@ export async function updateEventBlocks(id: string, blocks: string): Promise<voi
 
 /**
  * updateEventMeta 的可变字段集合：标题（v6.1 设置卡改名）/ 状态 / 短描述 /
- * GPS 三列 / 处理人 / 对象对。原子对与 GPS 的清空语义由 store 层归一化后落库
- * （db 层只认列值，不做解析）；title 的必填/长度校验同样在 store 层。
+ * GPS 三列 / 处理人 / 对象对 / 联系方式（v7：phone/email）。原子对与 GPS 的
+ * 清空语义由 store 层归一化后落库（db 层只认列值，不做解析）；title 的必填/
+ * 长度校验同样在 store 层。
  */
 export type EventMetaPatch = Partial<
     Pick<
@@ -710,6 +713,8 @@ export type EventMetaPatch = Partial<
         | 'handled_by'
         | 'subject_kind'
         | 'subject_value'
+        | 'phone'
+        | 'email'
     >
 >;
 
@@ -761,8 +766,9 @@ export async function listEvents(filter: { status?: EventStatus } = {}): Promise
 }
 
 /**
- * 事件搜索（v6）：关键词四通道 LIKE（title / description / subject_value /
- * handled_by）+ 可选状态过滤，updated_at DESC LIMIT。
+ * 事件搜索（v6，v7 扩充为六通道）：关键词 LIKE（title / description /
+ * subject_value / handled_by / phone / email——联系方式可被搜索，工单语义
+ * 自然）+ 可选状态过滤，updated_at DESC LIMIT。
  * 空 keyword 允许（= 纯状态筛选查询）；keyword 与 status 均缺省时不做无界全量
  * （返回空——全量列表语义走 listEvents，防调用方误用扫全表）。
  */
@@ -777,10 +783,10 @@ export async function searchEvents(
     const trimmed = keyword.trim();
     if (trimmed.length > 0) {
         conditions.push(
-            "(title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' OR subject_value LIKE ? ESCAPE '\\' OR handled_by LIKE ? ESCAPE '\\')",
+            "(title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' OR subject_value LIKE ? ESCAPE '\\' OR handled_by LIKE ? ESCAPE '\\' OR phone LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\')",
         );
         const needle = `%${escapeLike(trimmed)}%`;
-        params.push(needle, needle, needle, needle);
+        params.push(needle, needle, needle, needle, needle, needle);
     }
     if (filter.status) {
         conditions.push('status = ?');

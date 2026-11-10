@@ -124,4 +124,19 @@ export const ARCHIVE_MIGRATIONS: SchemaMigration[] = [
             'CREATE INDEX IF NOT EXISTS idx_event_media_event ON event_media(event_id)',
         ],
     },
+    {
+        version: 7,
+        statements: [
+            // v7（事件联系方式，用户反馈「新建事件增加手机号以及邮箱」）：events
+            // 追加两个可选文本列 phone / email——独立于 subject 对象词表（对象 =
+            // 跟谁有关的一句话；手机号/邮箱 = 可直接触达的联系方式，各自成列利
+            // 检索与展示）。可空、无默认值：存量行 ALTER 后自动 NULL（未填），
+            // 无需数据回填；LIKE 搜索通道在 db.searchEvents 同步扩充（联系方式
+            // 可被搜索，工单语义自然）。schema.ts 的 EVENTS_DDL 保持 v6 建表形状
+            // 不动（journals.title 同款先例：全新装 v6 建表后再跑本迁移 ALTER，
+            // DDL 若带新列会 duplicate column 崩迁移链）。append-only，不改历史。
+            'ALTER TABLE events ADD COLUMN phone TEXT',
+            'ALTER TABLE events ADD COLUMN email TEXT',
+        ],
+    },
 ];

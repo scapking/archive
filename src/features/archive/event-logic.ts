@@ -99,6 +99,12 @@ export const EVENT_HANDLED_BY_MAX = 60;
 /** 短描述长度上限（description 定位是摘要行，正文细节在 blocks）。 */
 export const EVENT_DESCRIPTION_MAX = 200;
 
+/** 手机号长度上限（自由文本口径：容纳国际区号 + 空格/横线排版）。 */
+export const EVENT_PHONE_MAX = 40;
+
+/** 邮箱长度上限。 */
+export const EVENT_EMAIL_MAX = 120;
+
 /**
  * 可选文本字段归一化：trim 后空串视为清除（返回 null）；超长钳制。
  * 对齐 normalizeJournalTitle 的「截断优于失败」口径（UI maxLength 只是第一道闸）。
@@ -107,6 +113,16 @@ export function normalizeEventText(value: string | null | undefined, max: number
     const trimmed = value?.trim() ?? '';
     if (trimmed.length === 0) return null;
     return trimmed.slice(0, max);
+}
+
+/**
+ * 邮箱归一化（写入口单一清洗点）：邮箱地址不含空白字符——本地自由文本哲学
+ * 下不做格式校验拒绝，值内出现明显空白（手滑多敲的空格/换行）直接剥掉再走
+ * normalizeEventText 口径（trim 兜底 + 长度钳制 + 空串清除）。手机号不走这里
+ * （号码排版空格/横线是合法书写习惯，按原样入库）。
+ */
+export function normalizeEventEmail(value: string | null | undefined, max: number): string | null {
+    return normalizeEventText(value?.replace(/\s+/g, ''), max);
 }
 
 // ─── GPS ────────────────────────────────────────────────────────────────────
@@ -137,6 +153,10 @@ export interface EventInput {
     handledBy?: string;
     subjectKind?: EventSubjectKind;
     subjectValue?: string;
+    /** 手机号（v7，可选独立联系方式；自由文本，不做格式校验）。 */
+    phone?: string;
+    /** 邮箱（v7，可选；值内明显空白由 normalizeEventEmail 在 store 剥除）。 */
+    email?: string;
     description?: string;
 }
 
@@ -162,6 +182,14 @@ export function validateEventInput(input: EventInput): string | null {
     if (input.gps && !isValidGpsAccuracy(input.gps.accuracy)) return '定位精度不合法';
     if (input.handledBy != null && input.handledBy.trim().length > EVENT_HANDLED_BY_MAX) {
         return `处理人最多 ${EVENT_HANDLED_BY_MAX} 个字`;
+    }
+    // 手机号/邮箱（v7，可选）：长度校验口径与入库归一化同源——手机号 trim 后
+    // 计长、邮箱剥净空白后计长（邮箱地址本就不含空白）
+    if (input.phone != null && input.phone.trim().length > EVENT_PHONE_MAX) {
+        return `手机号最多 ${EVENT_PHONE_MAX} 个字`;
+    }
+    if (input.email != null && input.email.replace(/\s+/g, '').length > EVENT_EMAIL_MAX) {
+        return `邮箱最多 ${EVENT_EMAIL_MAX} 个字`;
     }
     if (input.description != null && input.description.trim().length > EVENT_DESCRIPTION_MAX) {
         return `描述最多 ${EVENT_DESCRIPTION_MAX} 个字`;
@@ -197,6 +225,20 @@ export const EVENT_DESCRIPTION_PLACEHOLDERS: readonly string[] = [
     '一句话说清这事。',
     '先随便记一句，细节进正文。',
     '概括一下，回头好找。',
+];
+
+/** 手机号 placeholder 池（v7 可选字段口径：填了方便联系，空着不碍事）。 */
+export const EVENT_PHONE_PLACEHOLDERS: readonly string[] = [
+    '选填，方便直接联系。',
+    '留个号码，有事直接打。',
+    '手机号随手填，空着也行。',
+];
+
+/** 邮箱 placeholder 池（同一口味：填了找得到你，空着不碍事）。 */
+export const EVENT_EMAIL_PLACEHOLDERS: readonly string[] = [
+    '选填，发邮件找得到你。',
+    '留个邮箱，材料发过来。',
+    '邮箱随手填，空着也行。',
 ];
 
 /** /events 页头副标池（事件/工单语义的轻文案，每次进页固定一条）。 */
