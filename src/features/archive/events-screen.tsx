@@ -57,7 +57,7 @@ export function EventsScreen() {
     const revision = useArchiveRevision();
 
     const [query, setQuery] = useState('');
-    const [statusFilter, setStatusFilter] = useState<EventStatusFilter>('all');
+    const [statusFilter, setStatusFilter] = useState<EventStatusFilter>('open');
     const [inputFocused, setInputFocused] = useState(false);
     // 检索结果（null = 首载未完成 → LoadingView；[] = 已查无果 → 空态分流）
     const [results, setResults] = useState<Event[] | null>(null);
