@@ -6,8 +6,12 @@ import { BouncyPressable, LucideClose, LucideSearch } from '@/core/icons';
 import * as db from './db';
 import { useArchiveRevision, useArchiveStore, type TripCard } from './store';
 import { parseBlocks, previewText, type JournalRow } from './journal-logic';
+// 事件结果：store.searchEvents 返回已装饰行（decorateEvent 在 store 内统一做，
+// 与 /events 列表同口径），此处只消费 Event 类型与状态片。
+import { type Event } from './event-logic';
 import { addDaysLocal, formatDateParts, formatTripSpan, todayLocal, tripDayList } from './trip-logic';
 import { Calendar, type CalendarDayMark } from './ui/calendar';
+import { EventStatusChip } from './ui/event-card';
 import {
     DateInput,
     isDateInputComplete,
@@ -18,16 +22,20 @@ import {
 } from './ui';
 
 /**
- * 独立搜索页（DEV.md #5）：关键词 + 时间范围 + 日历点选 → 分组的笔记/行程结果。
+ * 独立搜索页（DEV.md #5）：关键词 + 时间范围 + 日历点选 → 分组的笔记/行程/事件结果。
  *
  * 三种检索输入的合并语义（单一出口 runSearch）：
- * - 关键词：标题/正文（笔记）、标题/描述（行程）LIKE；
+ * - 关键词：标题/正文（笔记）、标题/描述（行程）、标题/描述/对象/处理人（事件）LIKE；
  * - 时间范围分段（全部/近7天/近30天/自定义）：约束搜索窗口；
  * - 日历选中日：比范围更具体的「单日窗口」{ from: d, to: d }，选中即覆盖分段范围
  *   （点分段或清空关键词不动它；再点同日反选）；关键词可与之叠加。
  *
+ * 事件通道（自 /events 页内搜索迁入，与笔记/行程同口径）：仅关键词驱动——
+ * db.searchEvents 无时间范围参数（日期窗口对工单域不可用），空关键词直接短路
+ * 不发起查询（db 层对空关键词查询返回空，工单没有「按日期列全部」的语义）。
+ *
  * 可靠性口径（沿用 me 页旧 SearchSection 的成规）：300ms 防抖 + 请求序号守卫
- * （慢的旧 in-flight 响应不得覆盖新结果）+ 错误上浮 store.error 通道（store 两个
+ * （慢的旧 in-flight 响应不得覆盖新结果）+ 错误上浮 store.error 通道（store
  * search 方法自身已接通道，屏内 catch 只兜 store 之外的异常）。
  *
  * 性能口径（#15）：日历整体 memo（marks/useCallback 稳定引用，输入打字不重渲日历）；
@@ -46,6 +54,8 @@ const RANGE_OPTIONS: Array<{ key: RangeMode; label: string }> = [
 interface SearchResults {
     journals: JournalRow[];
     trips: TripCard[];
+    /** 事件结果（store 层已装饰：statusLabel/preview/timeline 齐备）。 */
+    events: Event[];
 }
 
 export function SearchScreen() {
@@ -158,12 +168,17 @@ export function SearchScreen() {
         const seq = ++searchSeq.current;
         setSearching(true);
         try {
-            const [journals, foundTrips] = await Promise.all([
+            const [journals, foundTrips, foundEvents] = await Promise.all([
                 useArchiveStore.getState().searchJournals(keyword, searchRange),
                 useArchiveStore.getState().searchTrips(keyword, searchRange),
+                // 事件通道仅关键词驱动：db.searchEvents 无时间范围参数，日期窗口
+                // 对工单域不可用；空关键词短路（db 层空关键词查询恒返回空，不发起）
+                keyword.length > 0
+                    ? useArchiveStore.getState().searchEvents(keyword, {})
+                    : Promise.resolve<Event[]>([]),
             ]);
             if (seq !== searchSeq.current) return; // 期间已有更新的查询，丢弃本次结果
-            setResults({ journals, trips: foundTrips });
+            setResults({ journals, trips: foundTrips, events: foundEvents });
         } catch (caught) {
             if (seq !== searchSeq.current) return;
             setResults(null);
@@ -210,15 +225,23 @@ export function SearchScreen() {
         (id: string) => router.push({ pathname: '/trip/[id]', params: { id } }),
         [router],
     );
+    // 事件详情跳转：与 /events 列表同口径（typedRoutes 路由联合未含 /events/[id]
+    // 时以 `as never` 最小妥协，类型生成后可整体删除）
+    const openEvent = useCallback(
+        (id: string) => router.push(`/events/${id}` as never),
+        [router],
+    );
 
     if (!ready) return <LoadingView />;
 
-    const hasResults = results !== null && (results.journals.length > 0 || results.trips.length > 0);
+    const hasResults =
+        results !== null &&
+        (results.journals.length > 0 || results.trips.length > 0 || results.events.length > 0);
 
     return (
         <View className="flex-1 bg-ink-base dark:bg-inkd-base">
             <View style={{ paddingTop: insets.top }} className="flex-1">
-                <ScreenHeader title="搜索" subtitle="按关键词与日期，翻找笔记和行程" />
+                <ScreenHeader title="搜索" subtitle="按关键词与日期，翻找笔记、行程和事件" />
                 {/* 阅读列宽约束（mx-auto + max-w-[560px]）：与 Me 页同口径 */}
                 <ScrollView
                     className="mx-auto w-full max-w-[560px]"
@@ -238,7 +261,7 @@ export function SearchScreen() {
                         <LucideSearch size={16} strokeWidth={1.9} color={palette.muted} />
                         <TextInput
                             className="h-full min-w-0 flex-1 text-[15px] text-ink-text dark:text-inkd-text"
-                            placeholder="搜日记正文、标题或行程…"
+                            placeholder="搜日记、行程或事件…"
                             placeholderTextColor={palette.muted}
                             value={query}
                             onChangeText={setQuery}
@@ -346,7 +369,7 @@ export function SearchScreen() {
                     ) : !hasResults ? (
                         <View className="items-center py-12">
                             <Text className="text-[15px] font-medium text-ink-text dark:text-inkd-text">
-                                没有匹配的日记或行程
+                                没有匹配的日记、行程或事件
                             </Text>
                             <Text className="mt-1.5 text-center text-[13px] leading-5 text-ink-muted dark:text-inkd-muted">
                                 换个关键词，或放宽时间范围再试
@@ -377,6 +400,20 @@ export function SearchScreen() {
                                                 key={trip.id}
                                                 trip={trip}
                                                 onPress={() => openTrip(trip.id)}
+                                            />
+                                        ))}
+                                    </View>
+                                </View>
+                            ) : null}
+                            {results.events.length > 0 ? (
+                                <View className="mt-5">
+                                    <ResultSectionHeader label="事件" count={results.events.length} />
+                                    <View className="gap-2">
+                                        {results.events.map((event) => (
+                                            <EventResultRow
+                                                key={event.id}
+                                                event={event}
+                                                onPress={() => openEvent(event.id)}
                                             />
                                         ))}
                                     </View>
@@ -457,6 +494,47 @@ function TripResultRow({ trip, onPress }: { trip: TripCard; onPress(): void }) {
                     style={{ fontVariant: ['tabular-nums'] }}
                 >
                     {formatTripSpan(trip)}
+                </Text>
+            </View>
+        </Pressable>
+    );
+}
+
+/** 事件行（工单语义，自 /events 页内搜索迁入）：状态片（EventStatusChip，与
+ *  事件卡同源组件）+ 标题/摘要/时间线三段——EventCard 解剖的搜索行压缩版，
+ *  摘要空则整体退化为标题 + 时间线两段。时间线短口径：编辑过报更新时刻、
+ *  否则报创建时刻（eventTimeline 语义，不渲染假更新位）。 */
+function EventResultRow({ event, onPress }: { event: Event; onPress(): void }) {
+    const timelineText = event.timeline.edited
+        ? `更新 ${event.timeline.updatedText}`
+        : `创建 ${event.timeline.createdText}`;
+    return (
+        <Pressable
+            onPress={onPress}
+            // 行卡无边框 + px-4 py-3：与笔记行 / 行程行同一行语言（同层级同值）；
+            // a11y label 带状态语义（进行中/已完成/已失败）
+            className="flex-row items-center gap-3 rounded-control bg-ink-surface px-4 py-3 active:bg-ink-raised dark:bg-inkd-surface dark:active:bg-inkd-raised"
+            accessibilityRole="button"
+            accessibilityLabel={`事件：${event.title}，${event.statusLabel}`}
+        >
+            <EventStatusChip status={event.status} />
+            <View className="min-w-0 flex-1">
+                <Text numberOfLines={1} className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
+                    {event.title}
+                </Text>
+                {event.preview ? (
+                    <Text
+                        numberOfLines={1}
+                        className="mt-0.5 text-[12px] text-ink-secondary dark:text-inkd-secondary"
+                    >
+                        {event.preview}
+                    </Text>
+                ) : null}
+                <Text
+                    className="mt-0.5 text-[11px] text-ink-muted dark:text-inkd-muted"
+                    style={{ fontVariant: ['tabular-nums'] }}
+                >
+                    {timelineText}
                 </Text>
             </View>
         </Pressable>
