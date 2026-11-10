@@ -19,12 +19,10 @@ import { FieldInput } from './ui/field-input';
 import {
     EVENT_DESCRIPTION_MAX,
     EVENT_HANDLED_BY_MAX,
-    EVENT_SUBJECT_KINDS,
     EVENT_SUBJECT_KIND_LABELS,
     EVENT_SUBJECT_VALUE_MAX,
     EVENT_TITLE_MAX,
     normalizeEventSubject,
-    type EventSubjectKind,
 } from './event-logic';
 import { useArchiveStore } from './store';
 import { PrimaryButton, ScreenHeader, usePalette } from './ui';
@@ -63,7 +61,6 @@ export function EventFormScreen() {
     // ─── 表单字段 ────────────────────────────────────────────────────────────
     const [title, setTitle] = useState('');
     const [handledBy, setHandledBy] = useState('');
-    const [subjectKind, setSubjectKind] = useState<EventSubjectKind | null>(null);
     const [subjectValue, setSubjectValue] = useState('');
     const [description, setDescription] = useState('');
     const [submitting, setSubmitting] = useState(false);
@@ -131,15 +128,6 @@ export function EventFormScreen() {
 
     const titleValid = title.trim().length > 0;
 
-    /** 对象值占位文案按类型分流（工单语言：字段说明跟着类型走）。 */
-    const subjectPlaceholder =
-        subjectKind === 'phone'
-            ? '手机号或备注'
-            : subjectKind === 'email'
-                ? '邮箱地址'
-                : subjectKind === 'address'
-                    ? '街道地址'
-                    : '坐标或位置描述';
 
     const submit = async () => {
         if (!titleValid || submittingRef.current) return;
@@ -149,7 +137,10 @@ export function EventFormScreen() {
             // 键盘先收（replace 转场不留键盘）
             Keyboard.dismiss();
             // 对象原子对在提交前归一（与 store 落库同源口径；「无」→ 双双置 null）
-            const subject = normalizeEventSubject(subjectKind, subjectValue);
+            const subject = normalizeEventSubject(
+                subjectValue.trim() ? 'custom' : null,
+                subjectValue,
+            );
             const row = await useArchiveStore.getState().createEvent({
                 title,
                 gps,
@@ -299,60 +290,19 @@ export function EventFormScreen() {
                             />
                         </View>
 
-                        {/* 对象（类型分段 + 值，可选；「无」= 整对清除） */}
+                        {/* 对象（可选，自定义自由文本：一句话描述这个事件针对
+                            的对象——手机号 / 邮箱 / 地址 / 坐标皆可） */}
                         <View>
                             <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                 对象
                             </Text>
-                            {/* 类型分段（无/手机/邮箱/地址/GPS）：轨道语言与列表页
-                                状态分段同构；hitSlop 横向归 0（gap-1 间距） */}
-                            <View className="flex-row gap-1 rounded-control bg-ink-surface p-1 dark:bg-inkd-surface">
-                                {([null, ...EVENT_SUBJECT_KINDS] as const).map((kind) => {
-                                    const active = subjectKind === kind;
-                                    const label = kind === null ? '无' : EVENT_SUBJECT_KIND_LABELS[kind];
-                                    return (
-                                        <Pressable
-                                            key={label}
-                                            onPress={() => {
-                                                setSubjectKind(kind);
-                                                // 切回「无」时清值草稿：避免残留值被
-                                                // 下次选择静默带走
-                                                if (kind === null) setSubjectValue('');
-                                            }}
-                                            hitSlop={{ top: 4, bottom: 4, left: 0, right: 0 }}
-                                            className={`h-9 flex-1 items-center justify-center rounded-thumb active:bg-ink-raised dark:active:bg-inkd-raised ${
-                                                active
-                                                    ? 'bg-ink-raised dark:bg-inkd-raised'
-                                                    : 'bg-ink-surface dark:bg-inkd-surface'
-                                            }`}
-                                            accessibilityRole="button"
-                                            accessibilityState={{ selected: active }}
-                                        >
-                                            <Text
-                                                className={`text-[12px] ${
-                                                    active
-                                                        ? 'font-medium text-ink-text dark:text-inkd-text'
-                                                        : 'text-ink-muted dark:text-inkd-muted'
-                                                }`}
-                                            >
-                                                {label}
-                                            </Text>
-                                        </Pressable>
-                                    );
-                                })}
-                            </View>
-                            {subjectKind !== null ? (
-                                // 选了类型才出现值输入（条件渲染；focus 态由输入自身承担）
-                                <View className="mt-2">
-                                    <FieldInput
-                                        value={subjectValue}
-                                        onChangeText={setSubjectValue}
-                                        placeholder={subjectPlaceholder}
-                                        maxLength={EVENT_SUBJECT_VALUE_MAX}
-                                        accessibilityLabel="对象值"
-                                    />
-                                </View>
-                            ) : null}
+                            <FieldInput
+                                value={subjectValue}
+                                onChangeText={setSubjectValue}
+                                placeholder="针对的对象：手机号 / 邮箱 / 地址 / 坐标（可选）"
+                                maxLength={EVENT_SUBJECT_VALUE_MAX}
+                                accessibilityLabel="对象"
+                            />
                         </View>
 
                         {/* 描述（可选，multiline 收起式：单行高度起步、随内容长高） */}

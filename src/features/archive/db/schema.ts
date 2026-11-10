@@ -259,7 +259,7 @@ export type EventStatus = 'open' | 'done';
  * subject_kind 与 subject_value 是**原子对**：任一侧缺失即视为未设置
  * （归一化在 event-logic.normalizeEventSubject，写入口一律成对落库）。
  */
-export type EventSubjectKind = 'phone' | 'email' | 'address' | 'gps';
+export type EventSubjectKind = 'custom' | 'phone' | 'email' | 'address' | 'gps';
 
 /**
  * 事件行（v6）：独立、可重复新建的工单式条目。字段语义：

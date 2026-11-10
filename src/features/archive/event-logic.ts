@@ -39,10 +39,12 @@ export function isEventStatus(value: unknown): value is EventStatus {
 // ─── 对象（subject）：词表与展示映射 ────────────────────────────────────────
 
 /** subject 类型词表（与 schema.EventSubjectKind 一一对应，展示顺序即词表顺序）。 */
-export const EVENT_SUBJECT_KINDS = ['phone', 'email', 'address', 'gps'] as const;
+export const EVENT_SUBJECT_KINDS = ['custom', 'phone', 'email', 'address', 'gps'] as const;
 
-/** subject 类型展示文案（需求口径：手机 / 邮箱 / 现实地址 / GPS）。 */
+/** subject 类型展示文案：custom = 自由文本（展示仅值，label 空）；其余为历史
+    词表兼容（旧数据既有 kind 仍按原文案显示）。 */
 export const EVENT_SUBJECT_KIND_LABELS: Record<EventSubjectKind, string> = {
+    custom: '',
     phone: '手机',
     email: '邮箱',
     address: '地址',

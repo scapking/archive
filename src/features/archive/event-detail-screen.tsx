@@ -995,7 +995,11 @@ export function EventDetailScreen() {
                             accessibilityRole="button"
                             accessibilityLabel={`对象：${
                                 event.subject_kind && event.subject_value
-                                    ? `${eventSubjectKindLabel(event.subject_kind)} ${event.subject_value}`
+                                    ? `${
+                                          eventSubjectKindLabel(event.subject_kind)
+                                              ? `${eventSubjectKindLabel(event.subject_kind)} `
+                                              : ''
+                                      }${event.subject_value}`
                                     : '未设置'
                             }，点按在设置中编辑`}
                         >
@@ -1004,7 +1008,11 @@ export function EventDetailScreen() {
                                 className="shrink text-[12px] text-ink-secondary dark:text-inkd-secondary"
                             >
                                 {event.subject_kind && event.subject_value
-                                    ? `对象 ${eventSubjectKindLabel(event.subject_kind)} ${event.subject_value}`
+                                    ? `对象 ${
+                                          eventSubjectKindLabel(event.subject_kind)
+                                              ? `${eventSubjectKindLabel(event.subject_kind)} `
+                                              : ''
+                                      }${event.subject_value}`
                                     : '对象 未设置'}
                             </Text>
                         </Pressable>
@@ -1313,7 +1321,6 @@ function EventSettingsCard({
     const [titleDraft, setTitleDraft] = useState(event.title);
     const [statusDraft, setStatusDraft] = useState<EventStatus>(event.status);
     const [handledByDraft, setHandledByDraft] = useState(event.handled_by ?? '');
-    const [kindDraft, setKindDraft] = useState<EventSubjectKind | null>(event.subject_kind);
     const [valueDraft, setValueDraft] = useState(event.subject_value ?? '');
     const [descriptionDraft, setDescriptionDraft] = useState(event.description ?? '');
     /** 成功保存后的基线（blur 比对用；失败不推进——下次 blur 可重试）。 */
@@ -1364,13 +1371,15 @@ function EventSettingsCard({
         if (ok) baselineRef.current.handledBy = handledByDraft;
     };
 
-    /** 对象整对保存（类型点按 / 值 blur 两条路径共用；归一化在 store）。 */
-    const saveSubjectDraft = async (kind: EventSubjectKind | null, value: string) => {
-        if (kind === baselineRef.current.kind && value === baselineRef.current.value) return;
-        const ok = await onSaveSubject(kind, value);
+    /** 对象保存（自定义自由文本；空 = 清除，归一化在 store）。 */
+    const saveSubjectDraft = async (value: string) => {
+        const trimmed = value.trim();
+        const kind: EventSubjectKind | null = trimmed ? 'custom' : null;
+        if (kind === baselineRef.current.kind && trimmed === baselineRef.current.value) return;
+        const ok = await onSaveSubject(kind, trimmed);
         if (ok) {
             baselineRef.current.kind = kind;
-            baselineRef.current.value = value;
+            baselineRef.current.value = kind === null ? '' : trimmed;
         }
     };
 
@@ -1443,16 +1452,6 @@ function EventSettingsCard({
             setDeleting(false);
         }
     };
-
-    /** 对象值占位文案按类型分流（工单语言：字段说明跟着类型走）。 */
-    const subjectPlaceholder =
-        kindDraft === 'phone'
-            ? '手机号或备注'
-            : kindDraft === 'email'
-                ? '邮箱地址'
-                : kindDraft === 'address'
-                    ? '街道地址'
-                    : '坐标或位置描述';
 
     return (
         <View className="absolute inset-0 z-50">
@@ -1662,64 +1661,19 @@ function EventSettingsCard({
                                     />
                                 </View>
 
-                                {/* 对象（类型分段点按即存整对 + 值 blur 保存整对；原子对
-                                    归一在 store） */}
+                                {/* 对象（可选，自定义自由文本：blur 保存，空 = 清除） */}
                                 <View>
                                     <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                         对象
                                     </Text>
-                                    <View className="flex-row gap-1 rounded-control bg-ink-surface p-1 dark:bg-inkd-surface">
-                                        {([null, ...EVENT_SUBJECT_KINDS] as const).map((option) => {
-                                            const active = kindDraft === option;
-                                            const label = option === null ? '无' : EVENT_SUBJECT_KIND_LABELS[option];
-                                            return (
-                                                <Pressable
-                                                    key={label}
-                                                    onPress={() => {
-                                                        setKindDraft(option);
-                                                        if (option === null) setValueDraft('');
-                                                        // 类型点按即存整对：值草稿空 = 归一化清除
-                                                        void saveSubjectDraft(option, option === null ? '' : valueDraft);
-                                                    }}
-                                                    hitSlop={{ top: 4, bottom: 4, left: 0, right: 0 }}
-                                                    className={`h-9 flex-1 items-center justify-center rounded-thumb active:bg-ink-raised dark:active:bg-inkd-raised ${
-                                                        active
-                                                            ? 'bg-ink-raised dark:bg-inkd-raised'
-                                                            : 'bg-ink-surface dark:bg-inkd-surface'
-                                                    }`}
-                                                    accessibilityRole="button"
-                                                    accessibilityState={{ selected: active }}
-                                                    accessibilityLabel={`对象类型：${label}`}
-                                                >
-                                                    <Text
-                                                        className={`text-[12px] ${
-                                                            active
-                                                                ? 'font-medium text-ink-text dark:text-inkd-text'
-                                                                : 'text-ink-muted dark:text-inkd-muted'
-                                                        }`}
-                                                    >
-                                                        {label}
-                                                    </Text>
-                                                </Pressable>
-                                            );
-                                        })}
-                                    </View>
-                                    {kindDraft !== null ? (
-                                        <View className="mt-2">
-                                            <FieldInput
-                                                value={valueDraft}
-                                                onChangeText={setValueDraft}
-                                                placeholder={subjectPlaceholder}
-                                                maxLength={EVENT_SUBJECT_VALUE_MAX}
-                                                accessibilityLabel="对象值"
-                                                onBlur={() => void saveSubjectDraft(kindDraft, valueDraft)}
-                                            />
-                                        </View>
-                                    ) : (
-                                        <Text className="mt-2 text-[12px] text-ink-muted dark:text-inkd-muted">
-                                            选「无」即清除对象。
-                                        </Text>
-                                    )}
+                                    <FieldInput
+                                        value={valueDraft}
+                                        onChangeText={setValueDraft}
+                                        placeholder="针对的对象：手机号 / 邮箱 / 地址 / 坐标（留空清除）"
+                                        maxLength={EVENT_SUBJECT_VALUE_MAX}
+                                        accessibilityLabel="对象"
+                                        onBlur={() => void saveSubjectDraft(valueDraft)}
+                                    />
                                 </View>
 
                                 {/* 描述（multiline，blur 保存，空串 = 清除） */}

@@ -62,10 +62,13 @@ export function EventCard({ event, onPress }: { event: Event; onPress: () => voi
     const hasGps = event.gps_lat != null && event.gps_lng != null;
     // 对象/处理人轻量行（原子对约束：subjectKindLabel 与 subject_value 同源装饰，
     // 任一缺失即整体不渲染该段——event-logic.decorateEvent 已保证成对）
-    const metaParts = [
-        event.subjectKindLabel && event.subject_value
+    const subjectPart = event.subject_value
+        ? event.subjectKindLabel
             ? `${event.subjectKindLabel} ${event.subject_value}`
-            : null,
+            : event.subject_value
+        : null;
+    const metaParts = [
+        subjectPart,
         event.handled_by ? `处理人 ${event.handled_by}` : null,
     ].filter((part): part is string => part != null);
     const metaText = metaParts.join(' · ');
