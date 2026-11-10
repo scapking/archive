@@ -16,6 +16,13 @@ import { reapplyAndroidEdgeToEdge, useAndroidE2eSelfRepair, useBootReady } from 
 // 启动过渡页（深路径直连同上）：仅 Android 且 bootReady=false 期间渲染，
 // 全屏 sceneBg 底 + 品牌 Logo，盖住双翻的两次 Activity 重建（boot-screen.tsx 头注）。
 import { BootScreen } from '@/features/archive/ui/boot-screen';
+// Web Desktop 全局壳（侧边栏常驻，2026-11-11）：宽屏下侧栏提为根布局层
+// chrome，Stack 落在侧栏右侧 flex-1 内——stack push 不再整窗覆盖侧栏。
+// 深路径直连先例（域 barrel index.ts 不在本次允许改动清单内）：壳仅在 web
+// 宽屏改变视觉树（native/窄屏 children 直出），收起偏好持久化见
+// desktop-shell 头注；RecordingSessionHost / 降级条仍在壳之外（Stack 兄弟，
+// 全窗覆盖语义不变）。
+import { DesktopShell } from '@/features/archive/ui/desktop-shell';
 // 上一次界面缓存（R8 深路径直连：域 barrel index.ts 不在本次允许改动清单内）
 import {
     consumeLastRoute,
@@ -368,40 +375,48 @@ export default function RootLayout() {
             {/* 状态栏绑定生效主题（'system' 档由 useEffectiveTheme 已解析为具体档）：
                 深色底用浅色内容，浅色底用深色内容 */}
             <StatusBar style={theme === 'dark' ? 'light' : 'dark'} />
-            <Stack
-                screenOptions={{
-                    headerShown: false,
-                    contentStyle: { backgroundColor: getPalette(theme).sceneBg },
-                }}
-            >
-                <Stack.Screen name="(tabs)" />
-                <Stack.Screen name="trip/[id]" />
-                <Stack.Screen name="trip/new" options={{ presentation: 'modal' }} />
-                <Stack.Screen name="trip/[id]/edit" options={{ presentation: 'modal' }} />
-                <Stack.Screen name="write" options={{ presentation: 'modal' }} />
-                <Stack.Screen name="trip/[id]/write/[date]" options={{ presentation: 'modal' }} />
-                <Stack.Screen name="journal/[id]" options={{ presentation: 'modal' }} />
-                {/* 搜索（DEV.md #5）：card 而非 modal——它是内容型目的地页（日历 + 长结果
-                    列表滚动、键盘输入），需要整页高度与系统返回手势；modal 留给编辑/创建类
-                    流程（write / journal / trip form），与本 Stack 既有分工一致 */}
-                <Stack.Screen name="search" />
-                {/* 全屏媒体查看器（transparentModal）：root Stack 级窗口容器，位于 (tabs)
-                    之上——tab 屏内任何覆盖层都盖不住 BottomTabView 的 tabBar 条带
-                    （screens 容器 overflow:hidden + tabBar 后绘，Android 尤甚），路由化后
-                    viewer 是 (tabs) 的兄弟屏，天然整窗覆盖（图片放大「不是全屏」的根治）。
-                    contentStyle 显式透明：screenOptions 的 sceneBg 不落本屏——iOS 淡入
-                    转场不闪底色，web 透明容器透出下层屏（web 的 transparentModal 退化为
-                    普通透明容器 + 常驻下层屏，viewer 内容经 body portal 全窗覆盖，
-                    观感即普通全屏路由，无需另行分支）。 */}
-                <Stack.Screen
-                    name="viewer"
-                    options={{
-                        presentation: 'transparentModal',
+            {/* Web Desktop 全局壳（desktop-shell.tsx 头注）：仅 web 宽屏包出
+                flex-row 侧栏槽位 + flex-1 内容区，Stack 渲染在内容区内——所有
+                push 屏（笔记编辑/事件/行程/搜索）不再覆盖侧栏；native 与窄屏
+                children 原样直出，导航层级零插入（无嵌套 Stack），last-route
+                恢复 / E2E 自愈 / 录制会话宿主机制不受影响。web 端 viewer 的
+                全窗覆盖由 ViewerPortal(body portal) 自保证，与壳正交。 */}
+            <DesktopShell>
+                <Stack
+                    screenOptions={{
                         headerShown: false,
-                        contentStyle: { backgroundColor: 'transparent' },
+                        contentStyle: { backgroundColor: getPalette(theme).sceneBg },
                     }}
-                />
-            </Stack>
+                >
+                    <Stack.Screen name="(tabs)" />
+                    <Stack.Screen name="trip/[id]" />
+                    <Stack.Screen name="trip/new" options={{ presentation: 'modal' }} />
+                    <Stack.Screen name="trip/[id]/edit" options={{ presentation: 'modal' }} />
+                    <Stack.Screen name="write" options={{ presentation: 'modal' }} />
+                    <Stack.Screen name="trip/[id]/write/[date]" options={{ presentation: 'modal' }} />
+                    <Stack.Screen name="journal/[id]" options={{ presentation: 'modal' }} />
+                    {/* 搜索（DEV.md #5）：card 而非 modal——它是内容型目的地页（日历 + 长结果
+                        列表滚动、键盘输入），需要整页高度与系统返回手势；modal 留给编辑/创建类
+                        流程（write / journal / trip form），与本 Stack 既有分工一致 */}
+                    <Stack.Screen name="search" />
+                    {/* 全屏媒体查看器（transparentModal）：root Stack 级窗口容器，位于 (tabs)
+                        之上——tab 屏内任何覆盖层都盖不住 BottomTabView 的 tabBar 条带
+                        （screens 容器 overflow:hidden + tabBar 后绘，Android 尤甚），路由化后
+                        viewer 是 (tabs) 的兄弟屏，天然整窗覆盖（图片放大「不是全屏」的根治）。
+                        contentStyle 显式透明：screenOptions 的 sceneBg 不落本屏——iOS 淡入
+                        转场不闪底色，web 透明容器透出下层屏（web 的 transparentModal 退化为
+                        普通透明容器 + 常驻下层屏，viewer 内容经 body portal 全窗覆盖，
+                        观感即普通全屏路由，无需另行分支）。 */}
+                    <Stack.Screen
+                        name="viewer"
+                        options={{
+                            presentation: 'transparentModal',
+                            headerShown: false,
+                            contentStyle: { backgroundColor: 'transparent' },
+                        }}
+                    />
+                </Stack>
+            </DesktopShell>
             {/* 全局录制会话宿主（跨页面后台录制 + 归属铁律，见 recording-session.tsx
                 头注）：常驻根层级、Stack 之后的兄弟节点 = 绘制在全部屏之上——录音
                 控制器 / 相机隐形保活槽 / 覆盖层 / 悬浮 chip 都在这里，不随任何屏

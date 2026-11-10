@@ -1,7 +1,7 @@
 import { Pressable, Text, View } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LucideBookOpen, LucideUser } from '@/core/icons';
+import { LucideBack, LucideBookOpen, LucideUser } from '@/core/icons';
 import { usePalette } from './theme';
 
 const NAV_ITEMS = [
@@ -9,17 +9,29 @@ const NAV_ITEMS = [
     { href: '/me', label: 'Me', icon: LucideUser },
 ] as const;
 
+/**
+ * 高亮归属（web desktop 侧栏常驻后重定义）：Me 无子路由，精确匹配（含
+ * /me/ 前缀防御）；其余一切路径——含 root Stack push 的编辑/创建/详情屏
+ * （/write、/trip/[id]/write/[date]、/journal/[id]、/trip/[id]、/events*、
+ * /search 等）——都归属「档案」主域（入口 hub），stack 页激活时档案项保持
+ * 高亮，不再因整窗 push 熄灭。
+ */
 function isActive(pathname: string, href: string): boolean {
-    if (href === '/(tabs)') return pathname === '/' || pathname === '/(tabs)';
-    return pathname.endsWith(href);
+    if (href === '/me') return pathname === '/me' || pathname.startsWith('/me/');
+    return !pathname.startsWith('/me');
 }
 
 /**
  * 桌面侧栏（≥1024，action shell 惯例）：产品标记 + 两个目的地。
  * 品牌标记 = 近黑方块（primary-btn 体系，无渐变）；激活项按亮度提亮
  * （text 提亮 + raised 底），不上彩色药丸（房规：active nav by brightness）。
+ *
+ * onCollapse（可选）：web desktop 全局壳（ui/desktop-shell）传入——渲染底部
+ * 「收起侧栏」钮并回传折叠意图（持久化在壳的 useSidebarCollapsed）；
+ * native 宽屏仍由 (tabs) 布局内嵌渲染本组件（无壳、无收起动画），不传即
+ * 不渲染收起钮，行为与历史一致。
  */
-export function Sidebar() {
+export function Sidebar({ onCollapse }: { onCollapse?: () => void } = {}) {
     const router = useRouter();
     const pathname = usePathname() ?? '';
     const insets = useSafeAreaInsets();
@@ -87,9 +99,25 @@ export function Sidebar() {
                 </View>
             </View>
 
-            <Text className="px-2 text-[11px] text-ink-faint dark:text-inkd-faint">
-                本地优先 · 数据不出设备
-            </Text>
+            <View>
+                {onCollapse ? (
+                    <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="收起侧栏"
+                        onPress={onCollapse}
+                        // h-11 = 44px 最小触摸目标（与导航项同规格）
+                        className="mb-1 h-11 flex-row items-center gap-2.5 rounded-control px-2.5 active:opacity-80"
+                    >
+                        <LucideBack size={16} strokeWidth={1.9} color={palette.secondary} />
+                        <Text className="text-[13px] text-ink-secondary dark:text-inkd-secondary">
+                            收起侧栏
+                        </Text>
+                    </Pressable>
+                ) : null}
+                <Text className="px-2 text-[11px] text-ink-faint dark:text-inkd-faint">
+                    本地优先 · 数据不出设备
+                </Text>
+            </View>
         </View>
     );
 }
