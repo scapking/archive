@@ -264,17 +264,6 @@ export async function getJournal(id: string): Promise<JournalRow | null> {
     return row ? { ...row, blocks: sanitizeBlocksJson(row.blocks) } : null;
 }
 
-/** Me 外观卡实时预览：最新一篇日记（local_date 倒序、updated_at 决胜，软删过滤；无则 null）。 */
-export async function latestJournal(): Promise<JournalRow | null> {
-    const db = await getDb();
-    const row = await db.getFirst<JournalRow>(
-        'SELECT * FROM journals WHERE deleted_at IS NULL ORDER BY local_date DESC, updated_at DESC LIMIT 1',
-        [],
-    );
-    // 载入消毒：同 getJournal，预览不吃占位块
-    return row ? { ...row, blocks: sanitizeBlocksJson(row.blocks) } : null;
-}
-
 /** 本地时区 24:00 自动收笔：所有 open 且日期早于今天的日记收口。 */
 export async function closeStaleOpenJournals(today: string): Promise<number> {
     const db = await getDb();
