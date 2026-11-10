@@ -175,6 +175,13 @@ export interface TripCard extends Trip {
     plansDone: number;
 }
 
+/**
+ * me 页指标（loadAll 一次性算出）：
+ * - streak / journalDays 同一记录日集合口径（db.activityDates：用户内容活动日
+ *   并集——有内容日记（日常+行程同表）∪ 事件创建/更新日 ∪ 行程创建/更新日 ∪
+ *   媒体上传日，排除打开即自动建行的空页）；
+ * - totalWords / curve 仍为日记字数口径（事件行程无字数，曲线不动）。
+ */
 export interface MeMetrics {
     streak: number;
     journalDays: number;
@@ -641,11 +648,14 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             const today = todayLocal();
             // 本地时区 24:00 自动收笔：加载即收口昨日及更早的 open 日记
             await db.closeStaleOpenJournals(today);
-            const [tripRows, stats, totals, dates] = await Promise.all([
+            const [tripRows, stats, totalWords, dates] = await Promise.all([
                 db.listTrips(),
                 db.tripStats(),
-                db.journalTotals(),
-                db.journalDates(),
+                db.journalTotalWords(),
+                // 记录日并集（内容活动日：有内容日记 ∪ 事件创建/更新日 ∪ 行程
+                // 创建/更新日 ∪ 媒体上传日）——journalDays 与 streak 同一集合口径
+                //（「写过 X 天」与「连续 N 天」不分裂），排除自动建行的空页灌水
+                db.activityDates(),
             ]);
             // 曲线窗口覆盖最近 30 天
             const window30 = await db.wordCountByDate(addDaysLocal(today, -29));
@@ -655,8 +665,8 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 trips: toTripCards(tripRows, stats),
                 metrics: {
                     streak: streakFromDates(dates, today),
-                    journalDays: totals.journalDays,
-                    totalWords: totals.totalWords,
+                    journalDays: dates.size,
+                    totalWords,
                     curve: curveSeries(window30, 30, today),
                 },
             });

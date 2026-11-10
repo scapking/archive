@@ -18,7 +18,7 @@ import {
     LucideFlag,
     LucideSearch,
 } from '@/core/icons';
-import { useArchiveStore } from './store';
+import { useArchiveStore, type TripCard } from './store';
 import { formatTripSpan } from './trip-logic';
 import { LineChart, LoadingView, StatusChip, useEffectiveTheme, usePalette, useThemePref, type ThemePref } from './ui';
 
@@ -36,12 +36,19 @@ import { LineChart, LoadingView, StatusChip, useEffectiveTheme, usePalette, useT
  *   「线条划分怪怪的」）**：KPI 格间竖线、KPI 与曲线段横线全部拆除，卡内
  *   分区靠留白不靠线（Apple Journal 卡片节奏，同 event-card 口径）——格间
  *   24px（px-3×2）留白、曲线段与 KPI 段 24px（py-3×2）纵向节奏；
- * - 内容：搜索 / 事件 / 行程各自成为**独立小卡**（rounded-card surface，行间
- *   gap-3 空隙），取代原「一张行组大卡 + 行间 hairline」。每行独立后：
- *   ① 行间分隔完全交给空隙与 tone-on-tone，不再需要任何元素级边界线；
- *   ② 每行可独立弹性按压（BouncyPressable，EventCard 同款卡体按压语言）；
- *   ③ 行程数量增减时卡片自然增减，无首尾 hairline 特判。入口行 48dp 单行，
- *   行程行保留两行信息密度，副题行删除（题名自释，a11y label 保留完整描述）；
+ * - 内容：搜索 / 事件 / 行程行们（+ 行程空态块）并作**一张** rounded-card
+ *   surface 卡（2026-11 用户反馈「三个卡片合并为一个卡片，不能划分线条要
+ *   自然」——第三轮迭代：独立小卡 → 单卡多行）。卡内行与行**零线条**：行间
+ *   分隔完全交给留白与行内 padding 节奏（入口行 h-12 单行、行程行/空态块
+ *   py-3.5，行内统一 px-4 左缘；Apple Journal 卡片节奏，同 event-card / 指标
+ *   卡口径），无任何 hairline 元素。按压语言 = 行级 Pressable +
+ *   active:bg-ink-raised 背景**高亮**（iOS 设置列表式）：合并卡内行不再有
+ *   自己的卡面，BouncyPressable 的 scale 变形会让行在卡内「抖动」、整卡 dim
+ *   会透出卡底，且相邻行静止 / 被按行缩放的联动观感怪——底色高亮与「一张
+ *   大卡」的容器隐喻自洽；Pressable 本体直接挂 active: 类无 css-interop
+ *   remount 风险（View 挂 active: 才会被升级 remount，ThemeSection 同款先例）。
+ *   行程数量增减时行自然增减；入口行 48dp 单行，行程行保留两行信息密度，
+ *   副题行删除（题名自释，a11y 完整描述保留在入口行 label）；
  * - 层级：身份行 → 指标卡 → 我的内容组 → 外观，共 4 块；区块间距统一 24
  *   （mt-6），全部落在 4dp 网格上；
  * - 动效（RN Animated native driver，同 BouncyPressable / boot-screen 通道，
@@ -205,19 +212,20 @@ export function MeScreen() {
                         </Enter>
                     </View>
 
-                    {/* 我的内容：搜索 / 事件 / 行程各自独立小卡（行间 gap-3 空隙替代
-                        行间 hairline；每行独立 BouncyPressable 弹性按压，EventCard
-                        同款「scale + 整卡 dim」卡体按压语言）。typedRoutes：'/search'、
-                        '/events' 尚未进 .expo/types 路由联合（本组不跑 Metro，字面量
-                        由 metro 启动时生成）——`as never` 是最小妥协（never 可赋给任何
-                        联合，不产生 any 的误拓宽），类型生成后可直接删除断言。 */}
+                    {/* 我的内容：一张卡（搜索 / 事件 / 行程行们合并，卡内零线条——
+                        行间靠 py 节奏与 px-4 统一左缘自然过渡，无 hairline）。卡壳
+                        不做整体动画：行作为内容单元交错淡入，卡面作为安静的「底」
+                        先立住（指标卡同款模式）。typedRoutes：'/search'、'/events'
+                        尚未进 .expo/types 路由联合（本组不跑 Metro，字面量由 metro
+                        启动时生成）——`as never` 是最小妥协（never 可赋给任何联合，
+                        不产生 any 的误拓宽），类型生成后可直接删除断言。 */}
                     <View className="mt-6">
                         <Enter delay={240} y={0}>
                             <Text className="mb-3 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                 我的内容
                             </Text>
                         </Enter>
-                        <View className="gap-3">
+                        <View className="rounded-card bg-ink-surface dark:bg-inkd-surface">
                             <Enter delay={280}>
                                 <ContentEntryRow
                                     icon={<LucideSearch size={18} strokeWidth={1.9} color={palette.secondary} />}
@@ -239,63 +247,16 @@ export function MeScreen() {
                                     <TripsEmptyBlock />
                                 </Enter>
                             ) : (
-                                trips.map((trip, index) => {
-                                    const pct =
-                                        trip.plansTotal > 0
-                                            ? Math.round((trip.plansDone / trip.plansTotal) * 100)
-                                            : null;
-                                    return (
-                                        <Enter key={trip.id} delay={280 + ENTER_STAGGER * (2 + index)}>
-                                            <BouncyPressable
-                                                onPress={() =>
-                                                    router.push({ pathname: '/trip/[id]', params: { id: trip.id } })
-                                                }
-                                                scaleTo={0.98}
-                                            >
-                                                {/* a11y role 挂内层卡 View（BouncyPressable 契约
-                                                    不透传 a11y props，同 EventCard 口径） */}
-                                                <View
-                                                    className="rounded-card bg-ink-surface px-4 py-3 dark:bg-inkd-surface"
-                                                    accessibilityRole="button"
-                                                >
-                                                    <View className="flex-row items-center justify-between">
-                                                        <Text
-                                                            numberOfLines={1}
-                                                            className="mr-3 flex-1 text-[14px] font-medium text-ink-text dark:text-inkd-text"
-                                                        >
-                                                            {trip.icon ?? '🧭'} {trip.title}
-                                                        </Text>
-                                                        <StatusChip status={trip.status} />
-                                                    </View>
-                                                    <View className="mt-1 flex-row items-center">
-                                                        <Text
-                                                            className="text-[12px] text-ink-secondary dark:text-inkd-secondary"
-                                                            style={{ fontVariant: ['tabular-nums'] }}
-                                                        >
-                                                            {/* 区间文案走 formatTripSpan（持续性感知，open 行程安全：
-                                                                formatTripRange 对 'open' 会抛 RangeError）；天数与
-                                                                「已写」分母仅在固定跨度（dayCount != null）时追加，
-                                                                持续性行程不渲染假分母（参照 archive-screen 口径） */}
-                                                            {formatTripSpan(trip)}
-                                                            {trip.dayCount != null ? ` · ${trip.dayCount} 天` : ''}
-                                                            {trip.dayCount == null
-                                                                ? ` · 已写 ${trip.journalDays} 天`
-                                                                : ` · 已写 ${trip.journalDays}/${trip.dayCount} 天`}
-                                                        </Text>
-                                                        {pct !== null ? (
-                                                            <Text
-                                                                className="ml-auto text-[12px] text-ink-muted dark:text-inkd-muted"
-                                                                style={{ fontVariant: ['tabular-nums'] }}
-                                                            >
-                                                                计划 {pct}%
-                                                            </Text>
-                                                        ) : null}
-                                                    </View>
-                                                </View>
-                                            </BouncyPressable>
-                                        </Enter>
-                                    );
-                                })
+                                trips.map((trip, index) => (
+                                    <Enter key={trip.id} delay={280 + ENTER_STAGGER * (2 + index)}>
+                                        <TripRow
+                                            trip={trip}
+                                            onPress={() =>
+                                                router.push({ pathname: '/trip/[id]', params: { id: trip.id } })
+                                            }
+                                        />
+                                    </Enter>
+                                ))
                             )}
                         </View>
                     </View>
@@ -332,13 +293,14 @@ function MetricCell({ value, unit, label }: { value: string; unit: string; label
 }
 
 /**
- * 内容入口行（搜索/事件共用行解剖）：48dp 独立小卡 = 图标 + 题 + chevron。
- * 副题行收敛删除（题名自释，完整描述保留在 a11y label）；按压 = BouncyPressable
- * 弹性（scale 0.98 + 整卡 dim 到 0.6，EventCard 卡体同款），不再挂 active: 背景
- * 态——BouncyPressable 的 Pressable 在外层，内层 View 挂 active: 会被 css-interop
- * 升级成 Pressable 首帧后 remount，且 dim 已是明确反馈。命中盒 = 整卡
- * （h-12 = 48 ≥44，hitSlop 0），相邻行 gap-3(12px) 无重叠核算项。a11y 属性挂
- * 内层 View（BouncyPressable 契约不透传 a11y props，同 journal-edit / EventCard）。
+ * 内容入口行（搜索/事件共用行解剖）：48dp 单行 = 图标 + 题 + chevron，无卡壳
+ * （卡面归合并卡整体，见屏头注释）。副题行收敛删除（题名自释，完整描述保留在
+ * a11y label）。按压 = Pressable + active:bg-ink-raised 行级高亮（iOS 设置列表
+ * 式，合并卡统一按压语言，取舍理由见屏头注释）：Pressable 本体直接挂 active:
+ * 类无 css-interop remount 风险（View 挂 active: 才会被升级成 Pressable 首帧
+ * 后 remount）。命中盒 = h-12（48 ≥44，hitSlop 0）；行间无 gap 贴靠，各行独立
+ * 可按、触摸面无重叠（iOS 设置列表同款）。a11y 属性挂 Pressable 本体（无内层
+ * 卡 View，不再需要 BouncyPressable 契约绕行）。
  */
 function ContentEntryRow({
     icon,
@@ -353,33 +315,84 @@ function ContentEntryRow({
 }) {
     const palette = usePalette();
     return (
-        <BouncyPressable onPress={onPress} scaleTo={0.98}>
-            <View
-                className="h-12 flex-row items-center gap-3 rounded-card bg-ink-surface px-4 dark:bg-inkd-surface"
-                accessibilityRole="button"
-                accessibilityLabel={accessibilityLabel}
-            >
-                {icon}
-                <Text className="flex-1 text-[14px] font-medium text-ink-text dark:text-inkd-text">{label}</Text>
-                <LucideChevronRight size={16} strokeWidth={1.9} color={palette.faint} />
-            </View>
-        </BouncyPressable>
+        <Pressable
+            onPress={onPress}
+            className="h-12 flex-row items-center gap-3 px-4 active:bg-ink-raised dark:active:bg-inkd-raised"
+            accessibilityRole="button"
+            accessibilityLabel={accessibilityLabel}
+        >
+            {icon}
+            <Text className="flex-1 text-[14px] font-medium text-ink-text dark:text-inkd-text">{label}</Text>
+            <LucideChevronRight size={16} strokeWidth={1.9} color={palette.faint} />
+        </Pressable>
     );
 }
 
 /**
- * 行程空态（独立小卡，与入口行同节奏）：图标行 + 一行"怎么做" +
- * CTA「创建行程」（frontend-design：空屏是指引，不是情绪）。卡体本身不是
- * 按压体（无整卡反馈），只有 CTA 可按；CTA h-11 全宽即命中盒，卡内四周无
- * 相邻命中元素。按压反馈由 CTA 的 BouncyPressable 承担，内层 View 不用
- * active: 伪类（css-interop 会把 View 升级成 Pressable 首帧后 remount，同
+ * 行程行（合并卡内的行程条目行）：题名行（emoji + 标题 + 状态片）+ 副题行
+ * （区间 · 天数 · 已写 · 计划百分比），无卡壳。按压 = 行级 active:bg-ink-raised
+ * 高亮（合并卡统一按压语言，同 ContentEntryRow）；命中盒 = px-4 py-3.5 全宽
+ * 两行（自然高 ≥44，hitSlop 0），相邻行程行贴靠不重叠。a11y role 挂 Pressable
+ * 本体（题名 Text 自释，无显式 label——与原独立卡同口径）。
+ */
+function TripRow({ trip, onPress }: { trip: TripCard; onPress: () => void }) {
+    const pct = trip.plansTotal > 0 ? Math.round((trip.plansDone / trip.plansTotal) * 100) : null;
+    return (
+        <Pressable
+            onPress={onPress}
+            className="px-4 py-3.5 active:bg-ink-raised dark:active:bg-inkd-raised"
+            accessibilityRole="button"
+        >
+            <View className="flex-row items-center justify-between">
+                <Text
+                    numberOfLines={1}
+                    className="mr-3 flex-1 text-[14px] font-medium text-ink-text dark:text-inkd-text"
+                >
+                    {trip.icon ?? '🧭'} {trip.title}
+                </Text>
+                <StatusChip status={trip.status} />
+            </View>
+            <View className="mt-1 flex-row items-center">
+                <Text
+                    className="text-[12px] text-ink-secondary dark:text-inkd-secondary"
+                    style={{ fontVariant: ['tabular-nums'] }}
+                >
+                    {/* 区间文案走 formatTripSpan（持续性感知，open 行程安全：
+                        formatTripRange 对 'open' 会抛 RangeError）；天数与
+                        「已写」分母仅在固定跨度（dayCount != null）时追加，
+                        持续性行程不渲染假分母（参照 archive-screen 口径） */}
+                    {formatTripSpan(trip)}
+                    {trip.dayCount != null ? ` · ${trip.dayCount} 天` : ''}
+                    {trip.dayCount == null
+                        ? ` · 已写 ${trip.journalDays} 天`
+                        : ` · 已写 ${trip.journalDays}/${trip.dayCount} 天`}
+                </Text>
+                {pct !== null ? (
+                    <Text
+                        className="ml-auto text-[12px] text-ink-muted dark:text-inkd-muted"
+                        style={{ fontVariant: ['tabular-nums'] }}
+                    >
+                        计划 {pct}%
+                    </Text>
+                ) : null}
+            </View>
+        </Pressable>
+    );
+}
+
+/**
+ * 行程空态（合并卡内的块，无卡壳——卡面归整卡）：图标行 + 一行"怎么做" +
+ * CTA「创建行程」（frontend-design：空屏是指引，不是情绪）。块本身不是按压体，
+ * 只有 CTA 可按；CTA h-11 全宽即命中盒，块内四周无相邻命中元素。按压反馈由
+ * CTA 的 BouncyPressable 承担（控件级弹跳保留——它是按钮不是行），内层 View
+ * 不用 active: 伪类（css-interop 会把 View 升级成 Pressable 首帧后 remount，同
  * EmptyState/ChooserRow 口径）。
  */
 function TripsEmptyBlock() {
     const router = useRouter();
     const palette = usePalette();
     return (
-        <View className="rounded-card bg-ink-surface px-4 py-3 dark:bg-inkd-surface">
+        <View className="px-4 py-3.5">
             <View className="flex-row items-center gap-3">
                 <LucideCalendar size={18} strokeWidth={1.9} color={palette.secondary} />
                 <View className="min-w-0 flex-1">

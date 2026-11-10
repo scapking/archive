@@ -418,17 +418,69 @@ export async function journalDates(limitDays = 400): Promise<Set<string>> {
     return new Set(rows.map((row) => row.local_date));
 }
 
-export interface JournalTotals {
-    journalDays: number;
-    totalWords: number;
+/** 累计字数（me 页 KPI「累计字数」）：全部未软删日记的字数总和（空页 word_count=0 自然贡献 0）。 */
+export async function journalTotalWords(): Promise<number> {
+    const db = await getDb();
+    const row = await db.getFirst<{ words: number }>(
+        'SELECT COALESCE(SUM(word_count), 0) AS words FROM journals WHERE deleted_at IS NULL',
+    );
+    return row?.words ?? 0;
 }
 
-export async function journalTotals(): Promise<JournalTotals> {
+/**
+ * 「写过日记 N 天」的记录日并集（me 页 journalDays 与 streak 的同一数据源，
+ * 2026-11 口径重修）：用户有**内容活动**的本地日期集合，单条 SQL UNION 去重
+ * 一次出（无 N+1）。分支与语义：
+ *
+ * ① 有内容的日记（日常 + 行程日记同表 journals，天然并集，无「行程日记」独立分支）：
+ *    local_date，且必须留下过内容——word_count > 0（写了字）∨ title 非空（只写了
+ *    标题）∨ 有未软删媒体（只贴了图/音/视频）。**排除空页**：ensureJournal 在用户
+ *    打开日记页时即自动建行（空段落 + word_count 0），旧口径 `WHERE deleted_at
+ *    IS NULL` 把「打开但没写」的日子也计入 → journalDays/streak 被打开行为灌水
+ *    （每天进一次首页 streak 就 +1）——2026-11 用户反馈「写过的日记天数有逻辑
+ *    bug」的本体，此处修掉。
+ * ②③ 事件创建日/更新日：updated_at 全部为用户编辑触碰（createEvent /
+ *    updateEventBlocks / updateEventMeta，见 store 事件编排），无系统触碰路径；
+ *    软删行排除。
+ * ④⑤ 行程创建日/更新日：updated_at 全部为用户编辑触碰（createTrip / updateTrip，
+ *    封面视频 attachTripVideo 亦走 updateTrip；行程媒体上传只落 trip_media 行、
+ *    不触碰 trips.updated_at，故媒体日单列 ⑥）；软删行排除。
+ * ⑥⑦ 行程/事件媒体上传日：上传为纯用户动作（内容活动总纲：行程里只传了照片
+ *    的日子同样算活动日）。
+ *
+ * 未纳入：trip_day_meta（换背景指针行，无 deleted_at、行程删除即硬删）、
+ * day_plans（勾计划）——行程内轻操作，与「写过」语义距离较远，暂不进口径。
+ *
+ * 时间戳 → 本地日期：epoch ms 整数除 1000 得秒（SQLite 对 INTEGER `/` 整数
+ * 截断），`date(..., 'unixepoch', 'localtime')` 取设备时区日期，与 todayLocal()
+ * （JS 本地日期）同源一致；个别 web 环境若 'localtime' 不可用会降级为 UTC 日
+ * （日记分支用 local_date 原串不受影响，事件/行程日可能偏一天——可接受降级）。
+ */
+export async function activityDates(): Promise<Set<string>> {
     const db = await getDb();
-    const row = await db.getFirst<{ days: number; words: number }>(
-        'SELECT COUNT(DISTINCT local_date) AS days, COALESCE(SUM(word_count), 0) AS words FROM journals WHERE deleted_at IS NULL',
+    const rows = await db.getAll<{ date: string }>(
+        `SELECT d FROM (
+            SELECT j.local_date AS d
+              FROM journals j
+             WHERE j.deleted_at IS NULL
+               AND (j.word_count > 0
+                    OR (j.title IS NOT NULL AND j.title <> '')
+                    OR j.id IN (SELECT jm.journal_id FROM journal_media jm WHERE jm.deleted_at IS NULL))
+            UNION
+            SELECT date(e.created_at / 1000, 'unixepoch', 'localtime') FROM events e WHERE e.deleted_at IS NULL
+            UNION
+            SELECT date(e.updated_at / 1000, 'unixepoch', 'localtime') FROM events e WHERE e.deleted_at IS NULL
+            UNION
+            SELECT date(t.created_at / 1000, 'unixepoch', 'localtime') FROM trips t WHERE t.deleted_at IS NULL
+            UNION
+            SELECT date(t.updated_at / 1000, 'unixepoch', 'localtime') FROM trips t WHERE t.deleted_at IS NULL
+            UNION
+            SELECT date(tm.created_at / 1000, 'unixepoch', 'localtime') FROM trip_media tm WHERE tm.deleted_at IS NULL
+            UNION
+            SELECT date(em.created_at / 1000, 'unixepoch', 'localtime') FROM event_media em WHERE em.deleted_at IS NULL
+        )`,
     );
-    return { journalDays: row?.days ?? 0, totalWords: row?.words ?? 0 };
+    return new Set(rows.map((row) => row.date));
 }
 
 // ─── journal media ───────────────────────────────────────────────────────────
