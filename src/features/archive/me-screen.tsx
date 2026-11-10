@@ -20,7 +20,7 @@ import {
 } from '@/core/icons';
 import { useArchiveStore, type TripCard } from './store';
 import { formatTripSpan } from './trip-logic';
-import { LineChart, LoadingView, StatusChip, useEffectiveTheme, usePalette, useThemePref, type ThemePref } from './ui';
+import { LineChart, LoadingView, StatusChip, usePalette, useThemePref, type ThemePref } from './ui';
 import { useMediaAlignPref, type MediaAlign } from './ui/theme';
 
 /**
@@ -47,28 +47,25 @@ import { useMediaAlignPref, type MediaAlign } from './ui/theme';
  *   自己的卡面，BouncyPressable 的 scale 变形会让行在卡内「抖动」、整卡 dim
  *   会透出卡底，且相邻行静止 / 被按行缩放的联动观感怪——底色高亮与「一张
  *   大卡」的容器隐喻自洽；Pressable 本体直接挂 active: 类无 css-interop
- *   remount 风险（View 挂 active: 才会被升级 remount，SegmentedTrack 同款先例）。
+ *   remount 风险（View 挂 active: 才会被升级 remount）。
  *   行程数量增减时行自然增减；入口行 48dp 单行，行程行保留两行信息密度，
  *   副题行删除（题名自释，a11y 完整描述保留在入口行 label）；
  * - 层级：身份行 → 指标卡 → 我的内容组 → 外观大卡，共 4 块；区块间距统一
  *   24（mt-6），全部落在 4dp 网格上；
  * - 外观大卡（2026-11 用户反馈「外观设置增加图片对齐…跟外观的颜色合并为一个
- *   大卡片」）：区块标题「外观」+ 一张 rounded-card surface 卡，卡内两个分组
- *   ——主题三段（system/light/dark）+ 图片对齐三段（left/center/right，消费
+ *   大卡片」；同月二轮反馈「外观卡片太丑」——文字分段滑块改预览缩略图）：
+ *   区块标题「外观」+ 一张 rounded-card surface 卡，卡内两个分组——主题三档
+ *   （system/light/dark）+ 图片对齐三档（left/center/right，消费
  *   useMediaAlignPref，编辑器媒体块对齐偏好，默认靠左），组间 24px（pt-6）
  *   留白不加线（Apple Journal 卡内节奏，与指标卡同口径）；分组小标题 12px
- *   muted 档，右侧 12px muted meta 显示当前值（主题 = 生效档、对齐 = 当前档）。
- *   分段控件 = SegmentedTrack（原 ThemeSection spring 滑块实现的抽象复用，
- *   两处同款不复制粘贴）：rounded-thumb 滑块 spring 跟随、hitSlop 纵 4 横 0、
- *   选中 raised；轨道在 surface 卡上顺延 tone 阶梯——轨道用 ink-base（卡面
- *   surface 的下一档 well），滑块保持 ink-raised（与 event-settings-card
- *   「选中 = raised 填充」同语言），未选段按压 active: 即滑块色（按压预显
- *   选中底色）；
+ *   muted 档，无右侧 meta 文案（缩略图自释各档观感与当前值，冗余删除）。
+ *   选项形态 = 预览缩略图（iOS 设置 Display & Brightness 外观选择器同构，
+ *   控件靠形态自解释，见 AppearanceSection 注）；
  * - 动效（RN Animated native driver，同 BouncyPressable / boot-screen 通道，
  *   不用 reanimated——Fabric 上驱动触摸视图样式有概率吞按压）：内容单元
  *   fade + translateY 交错进场（300ms ease-out、60ms 步进、reduceMotion 直接
  *   终态，见 Enter），曲线 opt-in 淡入（line-chart.animated，仅本屏开启），
- *   外观分段滑块 spring 跟随（见 SegmentedTrack）；动画层与布局/触摸层分离
+ *   外观卡进场动画见 AppearanceSection 注；动画层与布局/触摸层分离
  *   （Enter 外层普通 View 承担 className、内层 Animated.View 只挂动画 style，
  *   Pressable 一律在其 children 内部）；
  * - 关于/版本：审计确认本页无此区块，不新增（无需折叠）。
@@ -292,8 +289,8 @@ export function MeScreen() {
                     </View>
 
                     {/* 外观大卡（主题 + 图片对齐）：区块在行组时间线之后淡入（严格
-                        自上而下，delay 锚点沿用原 ThemeSection 口径），卡内两组分段
-                        滑块 spring 跟随选中项（见 SegmentedTrack）；进场 = 标题与
+                        自上而下，delay 锚点沿用原 ThemeSection 口径），卡内两组
+                        预览缩略图选项（见 AppearanceSection 注）；进场 = 标题与
                         卡体两拍交错（克制） */}
                     <AppearanceSection delay={280 + ENTER_STAGGER * (2 + trips.length)} />
                 </ScrollView>
@@ -448,127 +445,27 @@ function TripsEmptyBlock() {
 }
 
 /**
- * 三段分段滑块（原 ThemeSection spring 滑块实现的抽象复用版，本屏主题与
- * 图片对齐两组同款共用，不复制粘贴两份）：
- * - 滑块承载选中背景（raised，绝对定位铺在段后），段落本体不挂条件 bg 类
- *   ——「active ? bg-raised : bg-surface」三元是 css-interop remount 风险点
- *   （bg-色 类携带 --tw-bg-opacity），滑块方案直接消除；文字层级随选中切换
- *   （font/色 纯静态类条件，两侧常量、无变量凭空出现路径）；按压反馈保留
- *   active: 一档底色（未选中段按压可见 = 滑块同色，按压预显选中底色；选中段
- *   与滑块同色不可见，天然无叠加冲突）；
- * - 几何：轨道 p-1(4) + 段间 gap-1(4)×2、三段 flex-1 等分 → 段宽 =
- *   (轨道宽 - 16) / 3；滑块 top/bottom/left 4（= inset-y-1 left-1，高 = h-9
- *   段高 36）、宽 = 段宽、translateX = 段序 × (段宽 + 4)。首次布局直接落位
- *   （不播「从最左横扫到位」），此后选中变更 spring 滑移（friction 9，
- *   BouncyPressable 回弹同档：短滑不过冲，克制）；
- * - **滑块几何一律内联 style**（Animated 系组件上的 className 在 web 会被
- *   css-interop 静默丢弃，根因见 Enter 注；desktop-shell ShellSlot 同款 style
- *   契约）：Animated.View 只挂定位/宽度/transform，涂装（圆角 + raised 底）
- *   交给内层普通 View 的 className（两端注册组件，dark: 变体照常生效）；
- * - 命中口径：分段本体 h-9(36) < 44 → 纵向 hitSlop 4 补足 44 等效；横向归 0
- *   （相邻段 gap-1 < 2×hitSlop，横向外扩会重叠误触）；
- * - 轨道 tone（surface 卡内的顺延）：卡面 surface → 轨道 ink-base（下一档
- *   well，rounded-control）→ 滑块 ink-raised（选中填充，与 event-settings-card
- *   「选中 = raised」同语言）；未选段按压 active:ink-raised = 滑块色；
- * - 滑块 pointerEvents="none"（纯视觉层不参与触摸，EventCard 轴列同口径）；
- *   首帧轨道宽未测得时宽 0 不可见，onLayout 到位后落位。
- */
-function SegmentedTrack<T extends string>({
-    options,
-    value,
-    onChange,
-}: {
-    options: Array<{ key: T; label: string }>;
-    value: T;
-    onChange: (key: T) => void;
-}) {
-    const [trackW, setTrackW] = useState(0);
-    const placedRef = useRef(false);
-    const sliderX = useRef(new Animated.Value(0)).current;
-    const activeIndex = Math.max(0, options.findIndex((option) => option.key === value));
-    // 段宽：轨道 p-1(4)×2 + 段间 gap-1(4)×2 → (trackW - 16) / options.length（flex-1 等分内容区）
-    const segW = trackW > 0 ? (trackW - 16) / options.length : 0;
-    useEffect(() => {
-        if (segW <= 0) return;
-        const target = activeIndex * (segW + 4);
-        if (!placedRef.current) {
-            // 首次布局直接落位：进场不播横扫（克制；轨道旋转/web 拉伸后 segW
-            // 变化走同一条 effect，自然重定位到新几何）
-            placedRef.current = true;
-            sliderX.setValue(target);
-            return;
-        }
-        const spring = Animated.spring(sliderX, { toValue: target, friction: 9, useNativeDriver: true });
-        spring.start();
-        return () => spring.stop();
-    }, [activeIndex, segW, sliderX]);
-    return (
-        <View
-            // 轨道无边框（#13 收敛：容器级描边清除，tone 阶梯即层次，见组件注）
-            className="flex-row gap-1 rounded-control bg-ink-base p-1 dark:bg-inkd-base"
-            onLayout={(event) => setTrackW(event.nativeEvent.layout.width)}
-        >
-            {/* 滑块：先于段落渲染（后绘的段落文字浮在其上），纯视觉层；几何内联
-                style（web 可靠性见组件注），涂装在内层普通 View */}
-            <Animated.View
-                pointerEvents="none"
-                style={{
-                    position: 'absolute',
-                    top: 4,
-                    bottom: 4,
-                    left: 4,
-                    width: segW,
-                    transform: [{ translateX: sliderX }],
-                }}
-            >
-                <View className="h-full w-full rounded-thumb bg-ink-raised dark:bg-inkd-raised" />
-            </Animated.View>
-            {options.map((option) => {
-                const active = value === option.key;
-                return (
-                    <Pressable
-                        key={option.key}
-                        onPress={() => onChange(option.key)}
-                        // 分段本体 h-9(36px) < 44：纵向 hitSlop 4 补足 44 等效；
-                        // 横向必须归 0——相邻分段 gap-1(4px) < 2×hitSlop，横向外扩会重叠
-                        hitSlop={{ top: 4, bottom: 4, left: 0, right: 0 }}
-                        className="h-9 flex-1 items-center justify-center rounded-thumb active:bg-ink-raised dark:active:bg-inkd-raised"
-                        accessibilityRole="button"
-                        accessibilityState={{ selected: active }}
-                    >
-                        <Text
-                            className={`text-[12px] ${
-                                active
-                                    ? 'font-medium text-ink-text dark:text-inkd-text'
-                                    : 'text-ink-muted dark:text-inkd-muted'
-                            }`}
-                        >
-                            {option.label}
-                        </Text>
-                    </Pressable>
-                );
-            })}
-        </View>
-    );
-}
-
-/**
  * 外观大卡：区块标题「外观」+ 一张 rounded-card surface 卡，卡内两个分组
  * （组间 pt-6 = 24px 留白不加线，Apple Journal 卡内节奏，同指标卡口径）：
- * - 主题组：三段分段（跟随系统/浅色/深色），消费 useThemePref（点击即存，
- *   colorScheme.set 副作用在 hook 内）；右侧 meta 显示**生效档**（pref 跟随
- *   系统时与选中档不同，信息不冗余）；
- * - 图片对齐组：三段分段（靠左/居中/靠右），消费 useMediaAlignPref（persist
- *   自动，ui/theme 接口先行波次的既有 hook），编辑器媒体块（单张图/堆叠图
- *   与视频）渲染对齐的设置入口，渲染消费在编辑器侧（另一链路），此处只做
- *   设置 UI；右侧 meta 显示当前档（该偏好无生效副作用，选中即当前）；
+ * - 选项形态 = **预览缩略图**（2026-11 用户反馈「外观卡片太丑」——原文字
+ *   分段滑块是「设置表单」味：双胞胎结构、纯文字不显档、右侧 meta 冗余。
+ *   改 iOS 设置 Display & Brightness 外观选择器同构：控件靠形态自解释，
+ *   meta 文案随之删除，两分组缩略图形态各异不再同质）；
+ * - 主题组：三档迷你屏缩略图（跟随系统 = 左浅右深分屏、浅色、深色），消费
+ *   useThemePref（点击即存，colorScheme.set 副作用在 hook 内）；缩略图颜色
+ *   **固定写死、不随当前主题**——它们 depict 的是「各档长什么样」，取值 =
+ *   tailwind.config 的 ink/inkd 调色板字面量（ThemePreview 注）；
+ * - 图片对齐组：三档迷你页缩略图（媒体块按档靠左/居中/靠右 + 文本条），
+ *   随当前主题走 ink 阶梯（AlignPreview 注）；消费 useMediaAlignPref
+ *   （persist 自动，ui/theme 接口先行波次的既有 hook），编辑器媒体块（单张
+ *   图/堆叠图与视频）渲染对齐的设置入口，渲染消费在编辑器侧（另一链路），
+ *   此处只做设置 UI；
  * - 分组小标题 12px muted 档（规格口径）；区块进场 = 标题（y=0 纯淡入）与
  *   卡体（y=8）两拍交错，时间线锚点由调用方传入（沿用原 ThemeSection 的
  *   「行组之后」口径，严格自上而下）。
  */
 function AppearanceSection({ delay }: { delay: number }) {
     const [pref, setPref] = useThemePref();
-    const theme = useEffectiveTheme();
     const [align, setAlign] = useMediaAlignPref();
     const themeOptions: Array<{ key: ThemePref; label: string }> = [
         { key: 'system', label: '跟随系统' },
@@ -580,7 +477,6 @@ function AppearanceSection({ delay }: { delay: number }) {
         { key: 'center', label: '居中' },
         { key: 'right', label: '靠右' },
     ];
-    const alignLabel = alignOptions.find((option) => option.key === align)?.label ?? alignOptions[0].label;
     return (
         <View className="mt-6">
             <Enter delay={delay} y={0}>
@@ -590,30 +486,156 @@ function AppearanceSection({ delay }: { delay: number }) {
             </Enter>
             <Enter delay={delay + ENTER_STAGGER} y={8}>
                 <View className="rounded-card bg-ink-surface dark:bg-inkd-surface">
-                    {/* 主题组：小标题 12px muted + 右侧生效档 meta，轨道 tone 见
-                        SegmentedTrack 组件注（surface 卡上的顺延阶梯） */}
+                    {/* 主题组：迷你屏缩略图三档，点击即存（persist 由 useThemePref
+                        收口）；缩略图间 gap-2 分列不共边（卡内零 hairline 口径，
+                        选中环是控件选中态非分隔线） */}
                     <View className="px-4 pt-4">
-                        <View className="mb-2 flex-row items-center justify-between">
-                            <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">主题</Text>
-                            <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">
-                                生效 {theme === 'dark' ? '深色' : '浅色'}
-                            </Text>
+                        <Text className="mb-2.5 text-[12px] text-ink-muted dark:text-inkd-muted">主题</Text>
+                        <View className="flex-row gap-2">
+                            {themeOptions.map((option) => (
+                                <PreviewOption
+                                    key={option.key}
+                                    label={option.label}
+                                    selected={pref === option.key}
+                                    onSelect={() => setPref(option.key)}
+                                    accessibilityLabel={`主题：${option.label}`}
+                                >
+                                    <ThemePreview kind={option.key} />
+                                </PreviewOption>
+                            ))}
                         </View>
-                        <SegmentedTrack options={themeOptions} value={pref} onChange={setPref} />
                     </View>
                     {/* 图片对齐组：组间 pt-6(24px) 留白不加线（卡内分区靠留白口径）；
-                        显示当前值 + 点击即存（persist 由 useMediaAlignPref 收口） */}
+                        点击即存（persist 由 useMediaAlignPref 收口） */}
                     <View className="px-4 pb-4 pt-6">
-                        <View className="mb-2 flex-row items-center justify-between">
-                            <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">图片对齐</Text>
-                            <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">
-                                当前 {alignLabel}
-                            </Text>
+                        <Text className="mb-2.5 text-[12px] text-ink-muted dark:text-inkd-muted">图片对齐</Text>
+                        <View className="flex-row gap-2">
+                            {alignOptions.map((option) => (
+                                <PreviewOption
+                                    key={option.key}
+                                    label={option.label}
+                                    selected={align === option.key}
+                                    onSelect={() => setAlign(option.key)}
+                                    accessibilityLabel={`图片对齐：${option.label}`}
+                                >
+                                    <AlignPreview kind={option.key} />
+                                </PreviewOption>
+                            ))}
                         </View>
-                        <SegmentedTrack options={alignOptions} value={align} onChange={setAlign} />
                     </View>
                 </View>
             </Enter>
+        </View>
+    );
+}
+
+/**
+ * 预览缩略图选项列（外观大卡的分段控件替身，两组同构不复制粘贴）：缩略图 +
+ * 标签纵向一列，整列可按。
+ * - 选中态 = 缩略图 2px ink-text 环 + 标签升档（font-medium + text 档）：
+ *   accent 禁上 chrome（tailwind.config 注「蓝色只上数据」），ink-text 环是
+ *   iOS 选择器蓝环的 ink-only 替代；环是控件选中态而非分隔线（卡内仍零
+ *   hairline，缩略图间 gap-2 分列不共边）；未选中环透明占位（border-2 恒挂，
+ *   选中切换无布局跳动）；
+ * - 命中：整列高 ≈ 48 + 8 + 17 ≈ 73dp ≥ 44 无需 hitSlop；列间 gap-2(8px)
+ *   横向天然分隔；
+ * - 按压反馈 = active:opacity-60（Pressable 本体挂 active: 无 css-interop
+ *   remount 风险；列级底色高亮会在 surface 卡上画出矩形块、与缩略图形态
+ *   冲突，透明度按压是缩略图语境的自然语言）。
+ */
+function PreviewOption({
+    label,
+    selected,
+    onSelect,
+    accessibilityLabel,
+    children,
+}: {
+    label: string;
+    selected: boolean;
+    onSelect: () => void;
+    accessibilityLabel: string;
+    children: ReactNode;
+}) {
+    return (
+        <Pressable
+            onPress={onSelect}
+            className="flex-1 active:opacity-60"
+            accessibilityRole="button"
+            accessibilityState={{ selected }}
+            accessibilityLabel={accessibilityLabel}
+        >
+            <View
+                className={`h-12 items-center justify-center overflow-hidden rounded-thumb border-2 ${
+                    selected ? 'border-ink-text dark:border-inkd-text' : 'border-transparent'
+                }`}
+            >
+                {children}
+            </View>
+            <Text
+                className={`mt-2 text-center text-[12px] ${
+                    selected
+                        ? 'font-medium text-ink-text dark:text-inkd-text'
+                        : 'text-ink-muted dark:text-inkd-muted'
+                }`}
+            >
+                {label}
+            </Text>
+        </Pressable>
+    );
+}
+
+/**
+ * 主题缩略图：迷你屏预览（depict 各档观感）。**颜色固定写死、不随当前主题**
+ * ——浅色档在深色主题下也要画成浅色（反之亦然），取值 = tailwind.config 的
+ * ink/inkd 调色板字面量（#FFFFFF = ink.base、#E5E8EC = ink.border、
+ * #171A1E = ink.text、#080A0A = inkd.base、#1E2422 = inkd.border、
+ * #9CA3A1 = inkd.secondary）；升级调色板时此处须同步（两处同一事实的代价，
+ * 换取 depict 语义正确）。「跟随系统」= 左浅右深分屏一图。
+ */
+function ThemePreview({ kind }: { kind: ThemePref }) {
+    if (kind === 'system') {
+        return (
+            <View className="h-full w-full flex-row">
+                <View className="h-full flex-1 items-center justify-center gap-1 bg-[#FFFFFF] px-2">
+                    <View className="h-1 w-1/2 rounded-full bg-[#171A1E]" />
+                    <View className="h-1 w-full rounded-full bg-[#E5E8EC]" />
+                    <View className="h-1 w-2/3 rounded-full bg-[#E5E8EC]" />
+                </View>
+                <View className="h-full flex-1 items-center justify-center gap-1 bg-[#080A0A] px-2">
+                    <View className="h-1 w-1/2 rounded-full bg-[#9CA3A1]" />
+                    <View className="h-1 w-full rounded-full bg-[#1E2422]" />
+                    <View className="h-1 w-2/3 rounded-full bg-[#1E2422]" />
+                </View>
+            </View>
+        );
+    }
+    const light = kind === 'light';
+    return (
+        <View
+            className={`h-full w-full items-center justify-center gap-1 px-3 ${
+                light ? 'bg-[#FFFFFF]' : 'bg-[#080A0A]'
+            }`}
+        >
+            <View className={`h-1 w-1/3 rounded-full ${light ? 'bg-[#171A1E]' : 'bg-[#9CA3A1]'}`} />
+            <View className={`h-1 w-full rounded-full ${light ? 'bg-[#E5E8EC]' : 'bg-[#1E2422]'}`} />
+            <View className={`h-1 w-2/3 rounded-full ${light ? 'bg-[#E5E8EC]' : 'bg-[#1E2422]'}`} />
+        </View>
+    );
+}
+
+/**
+ * 图片对齐缩略图：迷你页预览，**随当前主题走 ink 阶梯**（与主题缩略图的
+ * 写死口径相反——它 depict 的是「当前主题下的一页」，页 = ink-base（surface
+ * 卡上的下一档 well，同原分段轨道阶梯）、媒体块 = control 档、文本条 =
+ * border 档）；媒体块按档 self-start/center/end 落位，两条文本条示意正文流。
+ */
+function AlignPreview({ kind }: { kind: MediaAlign }) {
+    const self = kind === 'left' ? 'self-start' : kind === 'center' ? 'self-center' : 'self-end';
+    return (
+        <View className="h-full w-full bg-ink-base p-1.5 dark:bg-inkd-base">
+            <View className={`h-4 w-3/5 rounded-[3px] bg-ink-control dark:bg-inkd-control ${self}`} />
+            <View className="mt-1.5 h-1 w-full rounded-full bg-ink-border dark:bg-inkd-border" />
+            <View className="mt-1 h-1 w-2/3 rounded-full bg-ink-border dark:bg-inkd-border" />
         </View>
     );
 }
