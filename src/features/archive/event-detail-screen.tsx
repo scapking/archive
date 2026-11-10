@@ -114,12 +114,13 @@ import { EventSettingsCard } from './ui/event-settings-card';
  *   行右上设置钮进入，整合全部元信息编辑——名称（title，store.updateEventMeta
  *   v6.1 扩展 title patch）/ 状态（open/done/failed 三分段）/ GPS（重定位/清除）/
  *   处理人 / 对象（类型+值，原子对归一在 store）/ 手机号 / 邮箱（v7）/
- *   描述 / 时间线（只读）/ 删除事件（negative → 卡内确认步）；字段变更**即时落库**（updateEventMeta
+ *   描述 / 时间线（只读）；字段变更**即时落库**（updateEventMeta
  *   + revision bump + refreshMeta 权威回读），文本字段 blur 保存、分段/按钮
- *   点按即存；删除为级联软删 + safeBack，deletedRef 闸防删除后的卸载 flush
- *   把 blocks 写回已删行；
+ *   点按即存。**事件不可删除**（产品口径）：设置卡与屏内均无删除入口，store/
+ *   db 的 deleteEvent 数据层能力保留仅 UI 不暴露；deletedRef 闸保留为数据层
+ *   侧软删竞态的防御位；
  * - **正文区纯编辑**：原「危险区（删除事件行）」与处理人/对象编辑卡
- *   （MetaEditCard）已移除——删除与元信息编辑统一收进设置卡。
+ *   （MetaEditCard）已移除——元信息编辑统一收进设置卡。
  *
  * typedRoutes：动态路由参数经 useLocalSearchParams 读取（同 trip-detail 范式），
  * 屏内不产生新的路由字面量。
@@ -247,8 +248,10 @@ export function EventDetailScreen() {
     const blocksRef = useRef(blocks);
     const eventRef = useRef(event);
     const dirtyRef = useRef(false);
-    // 删除竞态闸：deleteEvent 成功后置位——卸载 flush / 防抖保存不得再向已删行
-    // 回写 blocks（db.updateEventBlocks 按 id 直更，无 deleted_at 过滤）
+    // 数据层软删竞态闸（防御位）：事件 UI 不可删除（产品口径，无删除入口），
+    // 但 store/db 的 deleteEvent 能力保留——若行在数据层被软删（GC/迁移对账
+    // 等数据侧路径），置位后卸载 flush / 防抖保存不得再向已删行回写 blocks
+    // （db.updateEventBlocks 按 id 直更，无 deleted_at 过滤）
     const deletedRef = useRef(false);
     blocksRef.current = blocks;
     eventRef.current = event;
@@ -499,24 +502,9 @@ export function EventDetailScreen() {
         [store],
     );
 
-    /** 设置卡：删除事件（级联软删 + safeBack 回列表）。闸先置位：删除后的任何
-     *  在途保存/卸载 flush 不得再写该行。false = 失败（卡内确认步保持打开，
-     *  errorText 就地展示）。 */
-    const performDelete = useCallback(async () => {
-        const row = eventRef.current;
-        if (!row || deletedRef.current) return false;
-        try {
-            const ok = await store.getState().deleteEvent(row.id);
-            if (ok) {
-                deletedRef.current = true;
-                setSettingsOpen(false);
-                safeBack();
-            }
-            return ok;
-        } catch {
-            return false;
-        }
-    }, [store]);
+    // 事件不可删除（产品口径）：设置卡 onDelete 通道与屏内删除路径已移除，
+    // store/db 的 deleteEvent 数据层能力保留仅 UI 不暴露；deletedRef 闸保留
+    // 为数据层侧软删竞态的防御位（语义见其声明注）。
 
     // 坐标复制反馈（check 图标短暂出现，me 页 UID 同款）：只读快捷动作保留，
     // GPS 编辑（重定位/清除）在设置卡
@@ -792,8 +780,10 @@ export function EventDetailScreen() {
     })();
 
     // ─── 设置卡 + 画布协作 ───────────────────────────────────────────────────
-    // 设置卡（全部元信息编辑 + 删除收口）：标题行右上设置钮进入
+    // 设置卡（全部元信息编辑收口；事件不可删除，无删除入口）：标题行右上设置
+    // 钮进入。onClose 稳定引用（memo 卡的生效前提——saveX 系列已 useCallback 化）
     const [settingsOpen, setSettingsOpen] = useState(false);
+    const closeSettings = useCallback(() => setSettingsOpen(false), []);
 
     // 画布协作（journal-edit 同款几何与键盘补偿）
     const canvasRef = useRef<ScrollViewInstance>(null);
@@ -830,7 +820,7 @@ export function EventDetailScreen() {
      * 画布内容子树（children 直传垫高层）：useMemo 把引用稳定到真正影响内容的
      * 依赖上——键盘弹出/收起只重渲 CanvasDismissLayer 自身 style，本子树经
      * children 引用相等 bail-out 零重渲（journal-edit 同口径）。正文区纯编辑
-     * （删除危险区已移除——删除收进设置卡，正文不再混元信息动作）。
+     * （危险区已移除——元信息编辑收进设置卡，正文不再混元信息动作）。
      */
     const canvasContent = useMemo(
         () => (
@@ -915,7 +905,7 @@ export function EventDetailScreen() {
                         >
                             {event.title}
                         </Text>
-                        {/* 设置入口（全部元信息编辑 + 删除的统一门）：journal-edit
+                        {/* 设置入口（全部元信息编辑的统一门）：journal-edit
                             屏头编辑钮同款几何（36 盒 + hitSlop 10） */}
                         <BouncyPressable
                             onPress={() => setSettingsOpen(true)}
@@ -1141,22 +1131,22 @@ export function EventDetailScreen() {
                     onClose={() => setActionBlockId(null)}
                 />
             ) : null}
-            {/* 设置卡（名称/状态/GPS/处理人/对象/描述/时间线/删除，scrim + 居中卡，
-                MetaEditCard 模式；字段变更即时落库） */}
+            {/* 设置卡（名称/状态/GPS/处理人/对象/手机号/邮箱/描述/时间线，scrim +
+                居中卡，MetaEditCard 模式；字段变更即时落库；回调稳定引用直传——
+                memo 卡的生效前提；事件不可删除，无 onDelete 通道） */}
             {settingsOpen ? (
                 <EventSettingsCard
                     event={event}
-                    onSaveTitle={(value) => saveTitle(value)}
-                    onSaveStatus={(status) => saveStatus(status)}
-                    onSaveGps={(gps) => saveGps(gps)}
-                    onSaveHandledBy={(value) => saveHandledBy(value)}
-                    onSaveSubject={(kind, value) => saveSubject(kind, value)}
-                    onSavePhone={(value) => savePhone(value)}
-                    onSaveEmail={(value) => saveEmail(value)}
-                    onSaveDescription={(value) => saveDescription(value)}
-                    onDelete={() => performDelete()}
+                    onSaveTitle={saveTitle}
+                    onSaveStatus={saveStatus}
+                    onSaveGps={saveGps}
+                    onSaveHandledBy={saveHandledBy}
+                    onSaveSubject={saveSubject}
+                    onSavePhone={savePhone}
+                    onSaveEmail={saveEmail}
+                    onSaveDescription={saveDescription}
                     onSurfaceError={surfaceError}
-                    onClose={() => setSettingsOpen(false)}
+                    onClose={closeSettings}
                     errorText={error}
                 />
             ) : null}

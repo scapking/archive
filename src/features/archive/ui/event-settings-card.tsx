@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, BackHandler, Pressable, ScrollView, Text, View } from 'react-native';
-import { BouncyPressable, LucideMapPin, LucideTrash } from '@/core/icons';
+import { BouncyPressable, LucideMapPin } from '@/core/icons';
 import { location } from '@/core/location';
 import { CloseButton } from './close-button';
 import { FieldInput } from './field-input';
@@ -34,15 +34,18 @@ import {
  *
  * - **入口一（详情屏 /events/[id]）**：状态头右上设置钮 / 状态片 / 处理人、
  *   对象行点按进入；
- * - **入口二（列表页 /events）**：事件卡长按进入（不进详情页即可改元信息/
- *   删除）——长按与点卡进详情并存（BouncyPressable 透传，Pressability 语义
- *   长按后不补发 onPress）。
+ * - **入口二（列表页 /events）**：事件卡长按进入（不进详情页即可改元信息）
+ *   ——长按与点卡进详情并存（BouncyPressable 透传，Pressability 语义长按后
+ *   不补发 onPress）。
+ *
+ * **事件不可删除**（产品口径）：本卡不提供任何删除入口——store/db 的
+ * deleteEvent 数据层能力保留，仅 UI 不暴露；卡内无删除行/确认步。
  *
  * 依赖边界（v5 require cycle 纪律）：本组件不 import store/屏文件——落库通道
- * 由调用方经 onSaveX/onDelete 回调注入（detail 屏 = updateEventMeta +
- * refreshMeta 既有链；列表屏 = updateEventMeta + db.getEvent 回读），组件保持
- * 纯展示；失败文案由调用方从 store.error 反应式经 errorText 传入；定位失败等
- * store 外异常经 onSurfaceError 上浮（调用方写入 store.error 通道）。
+ * 由调用方经 onSaveX 回调注入（detail 屏 = updateEventMeta + refreshMeta 既有
+ * 链；列表屏 = updateEventMeta + db.getEvent 回读），组件保持纯展示；失败文案
+ * 由调用方从 store.error 反应式经 errorText 传入；定位失败等 store 外异常经
+ * onSurfaceError 上浮（调用方写入 store.error 通道）。
  *
  * - **字段 × 行为矩阵（全部即时落库）**：
  *   名称 = FieldInput，blur 保存（无变更跳过；空串/超长 store 拒绝 → 卡内
@@ -55,8 +58,7 @@ import {
  *   值内空白由 store 剥除）——两字段随 onSavePhone/onSaveEmail **接线才渲染**
  *  （详情屏已接线；列表页长按入口接线前不出死编辑面）；描述 = multiline
  *   blur 保存（空串 = 清除）；时间线 = 只读展示（event-logic.eventTimeline，
- *   保存后随调用方回读刷新）；删除事件 = negative 行 → 卡内确认步
- *   （正文/媒体一并删除警示 + 删除在途 spinner）；
+ *   保存后随调用方回读刷新）；
  * - 草稿与基线：文本字段以挂载时行值为基线（baselineRef），成功保存后推进
  *   ——blur 比对基线，无变更不落库（防抖掉无意义写）；草稿不随 props 回读
  *   重置（卡内编辑期间 props 刷新只影响 GPS/时间线等只读展示位）；
@@ -65,16 +67,19 @@ import {
  *   Android 返回键）。
  * - event 行类型 = Omit<EventRow, 'deleted_at'>：详情屏传 db.getEvent 的
  *   EventRow、列表屏传 decorateEvent 的装饰行（Event）均满足，两入口共用。
+ * - **滚动性能口径**：本组件经 memo 包裹——宿主屏（revision 驱动的整屏
+ *   re-render 风暴）不得拖着卡重渲，前提是调用方回调引用稳定（useCallback
+ *   直传，禁止内联箭头）；ScrollView keyboardDismissMode="on-drag"（拖动即
+ *   收键盘，解除输入焦点态后 ScrollView 对 FieldInput 容器 responder 的
+ *   capture 竞速恢复确定性——「滑到输入框拖不动」的根治位）+
+ *   keyboardShouldPersistTaps="handled"（点按钮不收键盘）。
  */
 
 /** 定位超时上限（ms）：设置卡「重新定位」的单次 getCurrentPosition 等待上限
  *  （新建表单同款兜底口径，超时按失败降级）。 */
 const LOCATE_TIMEOUT_MS = 8000;
 
-/** 设置卡删除步（卡内两段式：行 → 确认步，InsertMenu confirming 同语言）。 */
-type SettingsStep = 'main' | 'confirm-delete';
-
-export function EventSettingsCard({
+function EventSettingsCardBase({
     event,
     onSaveTitle,
     onSaveStatus,
@@ -84,7 +89,6 @@ export function EventSettingsCard({
     onSavePhone,
     onSaveEmail,
     onSaveDescription,
-    onDelete,
     onSurfaceError,
     onClose,
     errorText,
@@ -102,8 +106,6 @@ export function EventSettingsCard({
     /** 邮箱保存（v7，可选；可选性口径同 onSavePhone）。 */
     onSaveEmail?(value: string): Promise<boolean>;
     onSaveDescription(value: string): Promise<boolean>;
-    /** 删除（确认步触发；true = 成功——调用方关卡/返回，本卡随条件渲染消失）。 */
-    onDelete(): Promise<boolean>;
     /** 卡内非 store 异常（定位失败等）的统一上浮出口（store.error 通道）。 */
     onSurfaceError(message: string): void;
     onClose(): void;
@@ -131,26 +133,19 @@ export function EventSettingsCard({
         email: event.email ?? '',
         description: event.description ?? '',
     });
-    const [deleting, setDeleting] = useState(false);
-    const deletingRef = useRef(false);
-    const [step, setStep] = useState<SettingsStep>('main');
     // GPS 重定位在途（spinner + 重入闸）
     const [relocating, setRelocating] = useState(false);
     const relocatingRef = useRef(false);
     const locateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    // Android 返回键：确认步先退回主步（InsertMenu confirming 同语义），主步关闭
+    // Android 返回键：主步直接关闭（Modal onRequestClose 语义）
     useEffect(() => {
         const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-            if (step === 'confirm-delete') {
-                setStep('main');
-                return true;
-            }
             onClose();
             return true;
         });
         return () => sub.remove();
-    }, [onClose, step]);
+    }, [onClose]);
 
     // 卸载卫生：在途定位的竞速计时器清理
     useEffect(() => {
@@ -255,19 +250,6 @@ export function EventSettingsCard({
         }
     };
 
-    /** 确认步删除（in-flight spinner + 重入闸；成功调用方关卡，本卡随卸载）。 */
-    const confirmDelete = async () => {
-        if (deletingRef.current) return;
-        deletingRef.current = true;
-        setDeleting(true);
-        try {
-            await onDelete();
-        } finally {
-            deletingRef.current = false;
-            setDeleting(false);
-        }
-    };
-
     return (
         <View className="absolute inset-0 z-50">
             <Pressable
@@ -279,327 +261,267 @@ export function EventSettingsCard({
                     {/* 卡头（关闭语言统一 #8）：题 + 右上关闭钮 */}
                     <View className="flex-row items-center justify-between">
                         <Text className="text-[15px] font-semibold text-ink-text dark:text-inkd-text">
-                            {step === 'confirm-delete' ? '删除事件？' : '事件设置'}
+                            事件设置
                         </Text>
                         <CloseButton onPress={onClose} />
                     </View>
+                    {/* 滚动口径：keyboardDismissMode="on-drag"（拖动即收键盘——
+                        解除输入焦点态后，ScrollView 对 FieldInput 容器 responder
+                        的 capture 竞速恢复确定性，「滑到输入框拖不动」根治位）+
+                        keyboardShouldPersistTaps="handled"（点按钮不收键盘） */}
                     <ScrollView
                         className="mt-4"
                         style={{ maxHeight: 440 }}
                         nestedScrollEnabled
+                        keyboardDismissMode="on-drag"
                         keyboardShouldPersistTaps="handled"
                     >
-                        {step === 'confirm-delete' ? (
-                            /* ── 确认步（破坏性动作二次确认，DeleteConfirmCard 同语言收进卡内）── */
+                        {/* 主步：字段 × 即时落库（删除入口已移除——事件不可删除，
+                            字段流以时间线只读位收尾，留白即收口不加新装饰） */}
+                        <View className="gap-4">
+                            {/* 名称（title 编辑，store.updateEventMeta v6.1 扩展） */}
                             <View>
-                                <Text className="text-[13px] leading-5 text-ink-secondary dark:text-inkd-secondary">
-                                    正文、媒体会一并删除，不可恢复。
+                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    名称
                                 </Text>
-                                <View className="mt-4 gap-2.5">
-                                    {/* 取消 = 退回主步（返回键同语义）；删除在途时禁用出口，
-                                        防「确认步关了、删除还在跑」的状态错位 */}
-                                    <BouncyPressable
-                                        onPress={() => setStep('main')}
-                                        disabled={deleting}
-                                        scaleTo={0.97}
-                                    >
-                                        <View
-                                            className="h-11 items-center justify-center rounded-control bg-ink-surface dark:bg-inkd-surface"
-                                            accessibilityRole="button"
-                                            accessibilityLabel="返回设置"
-                                        >
-                                            <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
-                                                取消
-                                            </Text>
-                                        </View>
-                                    </BouncyPressable>
-                                    <BouncyPressable
-                                        onPress={() => void confirmDelete()}
-                                        disabled={deleting}
-                                        scaleTo={0.97}
-                                    >
-                                        <View
-                                            className="h-11 items-center justify-center rounded-control"
-                                            style={{ backgroundColor: palette.negative, opacity: deleting ? 0.6 : 1 }}
-                                            accessibilityRole="button"
-                                            accessibilityLabel="确认删除事件"
-                                        >
-                                            {deleting ? (
-                                                <ActivityIndicator size="small" color="#FFFFFF" />
-                                            ) : (
-                                                <Text className="text-[15px] font-semibold text-white">删除</Text>
-                                            )}
-                                        </View>
-                                    </BouncyPressable>
+                                <FieldInput
+                                    value={titleDraft}
+                                    onChangeText={setTitleDraft}
+                                    placeholder={EVENT_TITLE_PLACEHOLDER}
+                                    maxLength={EVENT_TITLE_MAX}
+                                    accessibilityLabel="事件名称"
+                                    onBlur={() => void saveTitleDraft()}
+                                />
+                            </View>
+
+                            {/* 状态（open/done/failed 三分段，点按即存）：标记失败
+                                与标记完成同一交互解剖（任意态互切 = 从失败可重新
+                                打开/标记完成）；轨道语言与列表页筛选分段同构；
+                                横向 hitSlop 归 0（gap-1 间距），纵向 4 补足 44 */}
+                            <View>
+                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    状态
+                                </Text>
+                                <View className="flex-row gap-1 rounded-control bg-ink-surface p-1 dark:bg-inkd-surface">
+                                    {(['open', 'done', 'failed'] as const).map((option) => {
+                                        const active = statusDraft === option;
+                                        const label = EVENT_STATUS_LABELS[option];
+                                        return (
+                                            <Pressable
+                                                key={option}
+                                                onPress={() => void saveStatusDraft(option)}
+                                                hitSlop={{ top: 4, bottom: 4, left: 0, right: 0 }}
+                                                className={`h-9 flex-1 items-center justify-center rounded-thumb active:bg-ink-raised dark:active:bg-inkd-raised ${
+                                                    active
+                                                        ? 'bg-ink-raised dark:bg-inkd-raised'
+                                                        : 'bg-ink-surface dark:bg-inkd-surface'
+                                                }`}
+                                                accessibilityRole="button"
+                                                accessibilityState={{ selected: active }}
+                                                accessibilityLabel={`状态：${label}`}
+                                            >
+                                                <Text
+                                                    className={`text-[12px] ${
+                                                        active
+                                                            ? 'font-medium text-ink-text dark:text-inkd-text'
+                                                            : 'text-ink-muted dark:text-inkd-muted'
+                                                    }`}
+                                                >
+                                                    {label}
+                                                </Text>
+                                            </Pressable>
+                                        );
+                                    })}
                                 </View>
                             </View>
-                        ) : (
-                            /* ── 主步：字段 × 即时落库 ── */
-                            <View className="gap-4">
-                                {/* 名称（title 编辑，store.updateEventMeta v6.1 扩展） */}
-                                <View>
-                                    <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                        名称
-                                    </Text>
-                                    <FieldInput
-                                        value={titleDraft}
-                                        onChangeText={setTitleDraft}
-                                        placeholder={EVENT_TITLE_PLACEHOLDER}
-                                        maxLength={EVENT_TITLE_MAX}
-                                        accessibilityLabel="事件名称"
-                                        onBlur={() => void saveTitleDraft()}
-                                    />
-                                </View>
 
-                                {/* 状态（open/done/failed 三分段，点按即存）：标记失败
-                                    与标记完成同一交互解剖（任意态互切 = 从失败可重新
-                                    打开/标记完成）；轨道语言与列表页筛选分段同构；
-                                    横向 hitSlop 归 0（gap-1 间距），纵向 4 补足 44 */}
-                                <View>
-                                    <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                        状态
-                                    </Text>
-                                    <View className="flex-row gap-1 rounded-control bg-ink-surface p-1 dark:bg-inkd-surface">
-                                        {(['open', 'done', 'failed'] as const).map((option) => {
-                                            const active = statusDraft === option;
-                                            const label = EVENT_STATUS_LABELS[option];
-                                            return (
-                                                <Pressable
-                                                    key={option}
-                                                    onPress={() => void saveStatusDraft(option)}
-                                                    hitSlop={{ top: 4, bottom: 4, left: 0, right: 0 }}
-                                                    className={`h-9 flex-1 items-center justify-center rounded-thumb active:bg-ink-raised dark:active:bg-inkd-raised ${
-                                                        active
-                                                            ? 'bg-ink-raised dark:bg-inkd-raised'
-                                                            : 'bg-ink-surface dark:bg-inkd-surface'
-                                                    }`}
-                                                    accessibilityRole="button"
-                                                    accessibilityState={{ selected: active }}
-                                                    accessibilityLabel={`状态：${label}`}
-                                                >
-                                                    <Text
-                                                        className={`text-[12px] ${
-                                                            active
-                                                                ? 'font-medium text-ink-text dark:text-inkd-text'
-                                                                : 'text-ink-muted dark:text-inkd-muted'
-                                                        }`}
-                                                    >
-                                                        {label}
-                                                    </Text>
-                                                </Pressable>
-                                            );
-                                        })}
-                                    </View>
-                                </View>
-
-                                {/* GPS（坐标只读 + 重定位/清除，点按即存） */}
-                                <View>
-                                    <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                        位置
-                                    </Text>
-                                    <View className="rounded-control bg-ink-surface px-3.5 py-2 dark:bg-inkd-surface">
-                                        {hasGps ? (
-                                            <>
+                            {/* GPS（坐标只读 + 重定位/清除，点按即存） */}
+                            <View>
+                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    位置
+                                </Text>
+                                <View className="rounded-control bg-ink-surface px-3.5 py-2 dark:bg-inkd-surface">
+                                    {hasGps ? (
+                                        <>
+                                            <Text
+                                                className="text-[13px] text-ink-secondary dark:text-inkd-secondary"
+                                                style={{ fontVariant: ['tabular-nums'] }}
+                                            >
+                                                {`${event.gps_lat}, ${event.gps_lng}`}
+                                            </Text>
+                                            {event.gps_accuracy != null ? (
                                                 <Text
-                                                    className="text-[13px] text-ink-secondary dark:text-inkd-secondary"
+                                                    className="mt-1 text-[11px] text-ink-muted dark:text-inkd-muted"
                                                     style={{ fontVariant: ['tabular-nums'] }}
                                                 >
-                                                    {`${event.gps_lat}, ${event.gps_lng}`}
+                                                    {`精度 ±${Math.round(event.gps_accuracy)}m`}
                                                 </Text>
-                                                {event.gps_accuracy != null ? (
-                                                    <Text
-                                                        className="mt-1 text-[11px] text-ink-muted dark:text-inkd-muted"
-                                                        style={{ fontVariant: ['tabular-nums'] }}
-                                                    >
-                                                        {`精度 ±${Math.round(event.gps_accuracy)}m`}
-                                                    </Text>
-                                                ) : null}
-                                            </>
-                                        ) : (
-                                            <Text className="text-[13px] text-ink-muted dark:text-inkd-muted">
-                                                未定位
+                                            ) : null}
+                                        </>
+                                    ) : (
+                                        <Text className="text-[13px] text-ink-muted dark:text-inkd-muted">
+                                            未定位
+                                        </Text>
+                                    )}
+                                </View>
+                                <View className="mt-2 flex-row gap-2">
+                                    <BouncyPressable
+                                        onPress={() => void relocate()}
+                                        disabled={relocating}
+                                        scaleTo={0.97}
+                                        hitSlop={4}
+                                    >
+                                        <View
+                                            className="h-9 flex-row items-center justify-center gap-1.5 rounded-control bg-ink-surface px-3.5 dark:bg-inkd-surface"
+                                            accessibilityRole="button"
+                                            accessibilityLabel="重新定位"
+                                        >
+                                            {relocating ? (
+                                                <ActivityIndicator size="small" color={palette.secondary} />
+                                            ) : (
+                                                <LucideMapPin size={14} strokeWidth={1.9} color={palette.secondary} />
+                                            )}
+                                            <Text className="text-[13px] font-medium text-ink-text dark:text-inkd-text">
+                                                {relocating ? '定位中…' : '重新定位'}
                                             </Text>
-                                        )}
-                                    </View>
-                                    <View className="mt-2 flex-row gap-2">
+                                        </View>
+                                    </BouncyPressable>
+                                    {hasGps ? (
                                         <BouncyPressable
-                                            onPress={() => void relocate()}
-                                            disabled={relocating}
+                                            onPress={() => void onSaveGps(null)}
                                             scaleTo={0.97}
                                             hitSlop={4}
                                         >
                                             <View
-                                                className="h-9 flex-row items-center justify-center gap-1.5 rounded-control bg-ink-surface px-3.5 dark:bg-inkd-surface"
+                                                className="h-9 items-center justify-center rounded-control bg-ink-surface px-3.5 dark:bg-inkd-surface"
                                                 accessibilityRole="button"
-                                                accessibilityLabel="重新定位"
+                                                accessibilityLabel="清除定位"
                                             >
-                                                {relocating ? (
-                                                    <ActivityIndicator size="small" color={palette.secondary} />
-                                                ) : (
-                                                    <LucideMapPin size={14} strokeWidth={1.9} color={palette.secondary} />
-                                                )}
                                                 <Text className="text-[13px] font-medium text-ink-text dark:text-inkd-text">
-                                                    {relocating ? '定位中…' : '重新定位'}
+                                                    清除
                                                 </Text>
                                             </View>
                                         </BouncyPressable>
-                                        {hasGps ? (
-                                            <BouncyPressable
-                                                onPress={() => void onSaveGps(null)}
-                                                scaleTo={0.97}
-                                                hitSlop={4}
-                                            >
-                                                <View
-                                                    className="h-9 items-center justify-center rounded-control bg-ink-surface px-3.5 dark:bg-inkd-surface"
-                                                    accessibilityRole="button"
-                                                    accessibilityLabel="清除定位"
-                                                >
-                                                    <Text className="text-[13px] font-medium text-ink-text dark:text-inkd-text">
-                                                        清除
-                                                    </Text>
-                                                </View>
-                                            </BouncyPressable>
-                                        ) : null}
-                                    </View>
-                                </View>
-
-                                {/* 处理人（blur 保存，空串 = 清除） */}
-                                <View>
-                                    <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                        处理人
-                                    </Text>
-                                    <FieldInput
-                                        value={handledByDraft}
-                                        onChangeText={setHandledByDraft}
-                                        placeholder={EVENT_HANDLED_BY_PLACEHOLDER}
-                                        maxLength={EVENT_HANDLED_BY_MAX}
-                                        accessibilityLabel="处理人"
-                                        onBlur={() => void saveHandledByDraft()}
-                                    />
-                                </View>
-
-                                {/* 对象（可选，自定义自由文本：blur 保存，空 = 清除） */}
-                                <View>
-                                    <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                        对象
-                                    </Text>
-                                    <FieldInput
-                                        value={valueDraft}
-                                        onChangeText={setValueDraft}
-                                        placeholder={EVENT_SUBJECT_PLACEHOLDER}
-                                        maxLength={EVENT_SUBJECT_VALUE_MAX}
-                                        accessibilityLabel="对象"
-                                        onBlur={() => void saveSubjectDraft(valueDraft)}
-                                    />
-                                </View>
-
-                                {/* 手机号（v7，blur 保存，空串 = 清除）：字段随
-                                    onSavePhone 接线才渲染（列表页长按入口未
-                                    接线时不出现死编辑面） */}
-                                {onSavePhone ? (
-                                    <View>
-                                        <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                            手机号
-                                        </Text>
-                                        <FieldInput
-                                            value={phoneDraft}
-                                            onChangeText={setPhoneDraft}
-                                            placeholder={EVENT_PHONE_PLACEHOLDER}
-                                            maxLength={EVENT_PHONE_MAX}
-                                            keyboardType="phone-pad"
-                                            inputMode="tel"
-                                            autoCapitalize="none"
-                                            autoCorrect={false}
-                                            accessibilityLabel="手机号"
-                                            onBlur={() => void savePhoneDraft()}
-                                        />
-                                    </View>
-                                ) : null}
-
-                                {/* 邮箱（v7，blur 保存，空串 = 清除）：email 键盘 +
-                                    autoCapitalize none（禁首字母自动大写坏地址）；
-                                    接线门控口径同手机号 */}
-                                {onSaveEmail ? (
-                                    <View>
-                                        <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                            邮箱
-                                        </Text>
-                                        <FieldInput
-                                            value={emailDraft}
-                                            onChangeText={setEmailDraft}
-                                            placeholder={EVENT_EMAIL_PLACEHOLDER}
-                                            maxLength={EVENT_EMAIL_MAX}
-                                            keyboardType="email-address"
-                                            inputMode="email"
-                                            autoCapitalize="none"
-                                            autoCorrect={false}
-                                            accessibilityLabel="邮箱"
-                                            onBlur={() => void saveEmailDraft()}
-                                        />
-                                    </View>
-                                ) : null}
-
-                                {/* 描述（multiline，blur 保存，空串 = 清除） */}
-                                <View>
-                                    <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                        描述
-                                    </Text>
-                                    <FieldInput
-                                        value={descriptionDraft}
-                                        onChangeText={setDescriptionDraft}
-                                        placeholder={EVENT_DESCRIPTION_PLACEHOLDER}
-                                        multiline
-                                        maxLength={EVENT_DESCRIPTION_MAX}
-                                        accessibilityLabel="事件描述"
-                                        onBlur={() => void saveDescriptionDraft()}
-                                    />
-                                </View>
-
-                                {/* 时间线（只读）：event-logic.eventTimeline 单一口径，
-                                    保存后随调用方权威回读即时刷新 */}
-                                <View>
-                                    <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                        时间线
-                                    </Text>
-                                    <View className="rounded-control bg-ink-surface px-3.5 py-2 dark:bg-inkd-surface">
-                                        <Text
-                                            className="text-[12px] text-ink-secondary dark:text-inkd-secondary"
-                                            style={{ fontVariant: ['tabular-nums'] }}
-                                        >
-                                            {`创建 ${timeline.createdText}`}
-                                        </Text>
-                                        {timeline.edited ? (
-                                            <Text
-                                                className="mt-1 text-[12px] text-ink-secondary dark:text-inkd-secondary"
-                                                style={{ fontVariant: ['tabular-nums'] }}
-                                            >
-                                                {`更新 ${timeline.updatedText}`}
-                                            </Text>
-                                        ) : null}
-                                    </View>
-                                </View>
-
-                                {/* 删除事件（negative 弱行钮 → 卡内确认步；删除为级联
-                                    软删 + 文件清理，确认步强调后果） */}
-                                <View>
-                                    <BouncyPressable
-                                        onPress={() => setStep('confirm-delete')}
-                                        scaleTo={0.97}
-                                    >
-                                        <View
-                                            className="h-11 flex-row items-center justify-center gap-2 rounded-control bg-ink-surface dark:bg-inkd-surface"
-                                            accessibilityRole="button"
-                                            accessibilityLabel="删除事件"
-                                        >
-                                            <LucideTrash size={16} strokeWidth={1.9} color={palette.negative} />
-                                            <Text className="text-[14px] font-medium text-ink-negative dark:text-inkd-negative">
-                                                删除事件
-                                            </Text>
-                                        </View>
-                                    </BouncyPressable>
+                                    ) : null}
                                 </View>
                             </View>
-                        )}
+
+                            {/* 处理人（blur 保存，空串 = 清除） */}
+                            <View>
+                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    处理人
+                                </Text>
+                                <FieldInput
+                                    value={handledByDraft}
+                                    onChangeText={setHandledByDraft}
+                                    placeholder={EVENT_HANDLED_BY_PLACEHOLDER}
+                                    maxLength={EVENT_HANDLED_BY_MAX}
+                                    accessibilityLabel="处理人"
+                                    onBlur={() => void saveHandledByDraft()}
+                                />
+                            </View>
+
+                            {/* 对象（可选，自定义自由文本：blur 保存，空 = 清除） */}
+                            <View>
+                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    对象
+                                </Text>
+                                <FieldInput
+                                    value={valueDraft}
+                                    onChangeText={setValueDraft}
+                                    placeholder={EVENT_SUBJECT_PLACEHOLDER}
+                                    maxLength={EVENT_SUBJECT_VALUE_MAX}
+                                    accessibilityLabel="对象"
+                                    onBlur={() => void saveSubjectDraft(valueDraft)}
+                                />
+                            </View>
+
+                            {/* 手机号（v7，blur 保存，空串 = 清除）：字段随
+                                onSavePhone 接线才渲染（列表页长按入口未
+                                接线时不出现死编辑面） */}
+                            {onSavePhone ? (
+                                <View>
+                                    <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                        手机号
+                                    </Text>
+                                    <FieldInput
+                                        value={phoneDraft}
+                                        onChangeText={setPhoneDraft}
+                                        placeholder={EVENT_PHONE_PLACEHOLDER}
+                                        maxLength={EVENT_PHONE_MAX}
+                                        keyboardType="phone-pad"
+                                        inputMode="tel"
+                                        autoCapitalize="none"
+                                        autoCorrect={false}
+                                        accessibilityLabel="手机号"
+                                        onBlur={() => void savePhoneDraft()}
+                                    />
+                                </View>
+                            ) : null}
+
+                            {/* 邮箱（v7，blur 保存，空串 = 清除）：email 键盘 +
+                                autoCapitalize none（禁首字母自动大写坏地址）；
+                                接线门控口径同手机号 */}
+                            {onSaveEmail ? (
+                                <View>
+                                    <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                        邮箱
+                                    </Text>
+                                    <FieldInput
+                                        value={emailDraft}
+                                        onChangeText={setEmailDraft}
+                                        placeholder={EVENT_EMAIL_PLACEHOLDER}
+                                        maxLength={EVENT_EMAIL_MAX}
+                                        keyboardType="email-address"
+                                        inputMode="email"
+                                        autoCapitalize="none"
+                                        autoCorrect={false}
+                                        accessibilityLabel="邮箱"
+                                        onBlur={() => void saveEmailDraft()}
+                                    />
+                                </View>
+                            ) : null}
+
+                            {/* 描述（multiline，blur 保存，空串 = 清除） */}
+                            <View>
+                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    描述
+                                </Text>
+                                <FieldInput
+                                    value={descriptionDraft}
+                                    onChangeText={setDescriptionDraft}
+                                    placeholder={EVENT_DESCRIPTION_PLACEHOLDER}
+                                    multiline
+                                    maxLength={EVENT_DESCRIPTION_MAX}
+                                    accessibilityLabel="事件描述"
+                                    onBlur={() => void saveDescriptionDraft()}
+                                />
+                            </View>
+
+                            {/* 时间线（只读）：event-logic.eventTimeline 单一口径，
+                                保存后随调用方权威回读即时刷新 */}
+                            <View>
+                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    时间线
+                                </Text>
+                                <View className="rounded-control bg-ink-surface px-3.5 py-2 dark:bg-inkd-surface">
+                                    <Text
+                                        className="text-[12px] text-ink-secondary dark:text-inkd-secondary"
+                                        style={{ fontVariant: ['tabular-nums'] }}
+                                    >
+                                        {`创建 ${timeline.createdText}`}
+                                    </Text>
+                                    {timeline.edited ? (
+                                        <Text
+                                            className="mt-1 text-[12px] text-ink-secondary dark:text-inkd-secondary"
+                                            style={{ fontVariant: ['tabular-nums'] }}
+                                        >
+                                            {`更新 ${timeline.updatedText}`}
+                                        </Text>
+                                    ) : null}
+                                </View>
+                            </View>
+                        </View>
                         {/* 失败就地展示（保存/定位失败的 store 文案；卡内可重试） */}
                         {errorText ? (
                             <Text className="mt-3 text-[12px] text-ink-negative dark:text-inkd-negative">
@@ -612,3 +534,11 @@ export function EventSettingsCard({
         </View>
     );
 }
+
+/**
+ * memo 导出（滚动性能口径）：宿主屏 revision 风暴 / 无关 re-render 不得拖着
+ * 卡重渲。生效前提 = 调用方回调引用稳定（两宿主均 useCallback 化，见
+ * events-screen / event-detail-screen）——event 行引用只在权威回读刷新时变化
+ * （预期内的只读展示位更新），errorText 为原始字符串。
+ */
+export const EventSettingsCard = memo(EventSettingsCardBase);
