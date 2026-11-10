@@ -50,17 +50,13 @@ import { useMediaAlignPref, type MediaAlign } from './ui/theme';
  *   remount 风险（View 挂 active: 才会被升级 remount）。
  *   行程数量增减时行自然增减；入口行 48dp 单行，行程行保留两行信息密度，
  *   副题行删除（题名自释，a11y 完整描述保留在入口行 label）；
- * - 层级：身份行 → 指标卡 → 我的内容组 → 外观大卡，共 4 块；区块间距统一
+ * - 层级：身份行 → 指标卡 → 我的内容组 → 外观轻行，共 4 块；区块间距统一
  *   24（mt-6），全部落在 4dp 网格上；
- * - 外观大卡（2026-11 用户反馈「外观设置增加图片对齐…跟外观的颜色合并为一个
- *   大卡片」；同月二轮反馈「外观卡片太丑」——文字分段滑块改预览缩略图）：
- *   区块标题「外观」+ 一张 rounded-card surface 卡，卡内两个分组——主题三档
- *   （system/light/dark）+ 图片对齐三档（left/center/right，消费
- *   useMediaAlignPref，编辑器媒体块对齐偏好，默认靠左），组间 24px（pt-6）
- *   留白不加线（Apple Journal 卡内节奏，与指标卡同口径）；分组小标题 12px
- *   muted 档，无右侧 meta 文案（缩略图自释各档观感与当前值，冗余删除）。
- *   选项形态 = 预览缩略图（iOS 设置 Display & Brightness 外观选择器同构，
- *   控件靠形态自解释，见 AppearanceSection 注）；
+ * - 外观区块（2026-11 三版迭代：v1 文字分段滑块「太丑」、v2 预览缩略图
+ *   「不行」均被否——共同病根 = 第三张同质灰卡 + 控件堆砌；v3 定稿 =
+ *   **去卡壳轻行式**：两组「label 左 + 控件右」字段行直接落页面底色，
+ *   主题 = 三色圆点色板、图片对齐 = 紧凑分段滑块，行间留白不加线；详见
+ *   AppearanceSection 注）；
  * - 动效（RN Animated native driver，同 BouncyPressable / boot-screen 通道，
  *   不用 reanimated——Fabric 上驱动触摸视图样式有概率吞按压）：内容单元
  *   fade + translateY 交错进场（300ms ease-out、60ms 步进、reduceMotion 直接
@@ -288,10 +284,10 @@ export function MeScreen() {
                         </View>
                     </View>
 
-                    {/* 外观大卡（主题 + 图片对齐）：区块在行组时间线之后淡入（严格
-                        自上而下，delay 锚点沿用原 ThemeSection 口径），卡内两组
-                        预览缩略图选项（见 AppearanceSection 注）；进场 = 标题与
-                        卡体两拍交错（克制） */}
+                    {/* 外观区块（主题 + 图片对齐）：区块在行组时间线之后淡入（严格
+                        自上而下，delay 锚点沿用原 ThemeSection 口径），无卡壳两
+                        字段行（见 AppearanceSection 注）；进场 = 标题与行组两拍
+                        交错（克制） */}
                     <AppearanceSection delay={280 + ENTER_STAGGER * (2 + trips.length)} />
                 </ScrollView>
             </View>
@@ -445,84 +441,40 @@ function TripsEmptyBlock() {
 }
 
 /**
- * 外观大卡：区块标题「外观」+ 一张 rounded-card surface 卡，卡内两个分组
- * （组间 pt-6 = 24px 留白不加线，Apple Journal 卡内节奏，同指标卡口径）：
- * - 选项形态 = **预览缩略图**（2026-11 用户反馈「外观卡片太丑」——原文字
- *   分段滑块是「设置表单」味：双胞胎结构、纯文字不显档、右侧 meta 冗余。
- *   改 iOS 设置 Display & Brightness 外观选择器同构：控件靠形态自解释，
- *   meta 文案随之删除，两分组缩略图形态各异不再同质）；
- * - 主题组：三档迷你屏缩略图（跟随系统 = 左浅右深分屏、浅色、深色），消费
- *   useThemePref（点击即存，colorScheme.set 副作用在 hook 内）；缩略图颜色
- *   **固定写死、不随当前主题**——它们 depict 的是「各档长什么样」，取值 =
- *   tailwind.config 的 ink/inkd 调色板字面量（ThemePreview 注）；
- * - 图片对齐组：三档迷你页缩略图（媒体块按档靠左/居中/靠右 + 文本条），
- *   随当前主题走 ink 阶梯（AlignPreview 注）；消费 useMediaAlignPref
- *   （persist 自动，ui/theme 接口先行波次的既有 hook），编辑器媒体块（单张
- *   图/堆叠图与视频）渲染对齐的设置入口，渲染消费在编辑器侧（另一链路），
- *   此处只做设置 UI；
- * - 分组小标题 12px muted 档（规格口径）；区块进场 = 标题（y=0 纯淡入）与
- *   卡体（y=8）两拍交错，时间线锚点由调用方传入（沿用原 ThemeSection 的
- *   「行组之后」口径，严格自上而下）。
+ * 外观区块（2026-11 三版定稿：v1 文字分段滑块、v2 预览缩略图均被否——
+ * 共同病根 = 「第三张与指标卡/内容卡同质的灰卡 + 控件堆砌」，全页最弱内容
+ * 占了最重的卡壳）：**去卡壳轻行式**——区块标题下两组「字段行」（label 左
+ * 14px medium + 控件右，iOS 设置行口径，对齐内容卡行高节奏），直接落页面
+ * 底色，行间留白不加线；轻重对比让区块退为页面的安静收尾。
+ * - 主题行 = 三色圆点色板（ThemeDots）：颜色即内容，圆点自释各档；
+ * - 图片对齐行 = 紧凑分段滑块（AlignSegmented）：轨道 ink-raised（页面
+ *   base 上的顺延 well）、选中滑块 ink-base 反白（v1 的 tone 反转——容器
+ *   从 surface 卡换到页面底色，阶梯整体上移一档）；
+ * - 消费 useThemePref / useMediaAlignPref（persist 均在 hook 内收口），
+ *   编辑器媒体块渲染对齐的设置入口，渲染消费在编辑器侧（另一链路）；
+ * - 区块进场 = 标题（y=0 纯淡入）与行组（y=8）两拍交错，时间线锚点由
+ *   调用方传入（沿用原 ThemeSection 的「行组之后」口径，严格自上而下）。
  */
 function AppearanceSection({ delay }: { delay: number }) {
     const [pref, setPref] = useThemePref();
     const [align, setAlign] = useMediaAlignPref();
-    const themeOptions: Array<{ key: ThemePref; label: string }> = [
-        { key: 'system', label: '跟随系统' },
-        { key: 'light', label: '浅色' },
-        { key: 'dark', label: '深色' },
-    ];
-    const alignOptions: Array<{ key: MediaAlign; label: string }> = [
-        { key: 'left', label: '靠左' },
-        { key: 'center', label: '居中' },
-        { key: 'right', label: '靠右' },
-    ];
     return (
         <View className="mt-6">
             <Enter delay={delay} y={0}>
-                <Text className="mb-3 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
                     外观
                 </Text>
             </Enter>
             <Enter delay={delay + ENTER_STAGGER} y={8}>
-                <View className="rounded-card bg-ink-surface dark:bg-inkd-surface">
-                    {/* 主题组：迷你屏缩略图三档，点击即存（persist 由 useThemePref
-                        收口）；缩略图间 gap-2 分列不共边（卡内零 hairline 口径，
-                        选中环是控件选中态非分隔线） */}
-                    <View className="px-4 pt-4">
-                        <Text className="mb-2.5 text-[12px] text-ink-muted dark:text-inkd-muted">主题</Text>
-                        <View className="flex-row gap-2">
-                            {themeOptions.map((option) => (
-                                <PreviewOption
-                                    key={option.key}
-                                    label={option.label}
-                                    selected={pref === option.key}
-                                    onSelect={() => setPref(option.key)}
-                                    accessibilityLabel={`主题：${option.label}`}
-                                >
-                                    <ThemePreview kind={option.key} />
-                                </PreviewOption>
-                            ))}
-                        </View>
-                    </View>
-                    {/* 图片对齐组：组间 pt-6(24px) 留白不加线（卡内分区靠留白口径）；
-                        点击即存（persist 由 useMediaAlignPref 收口） */}
-                    <View className="px-4 pb-4 pt-6">
-                        <Text className="mb-2.5 text-[12px] text-ink-muted dark:text-inkd-muted">图片对齐</Text>
-                        <View className="flex-row gap-2">
-                            {alignOptions.map((option) => (
-                                <PreviewOption
-                                    key={option.key}
-                                    label={option.label}
-                                    selected={align === option.key}
-                                    onSelect={() => setAlign(option.key)}
-                                    accessibilityLabel={`图片对齐：${option.label}`}
-                                >
-                                    <AlignPreview kind={option.key} />
-                                </PreviewOption>
-                            ))}
-                        </View>
-                    </View>
+                {/* 主题行：字段行（label 左 + 圆点色板右） */}
+                <View className="h-12 flex-row items-center justify-between">
+                    <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">主题</Text>
+                    <ThemeDots value={pref} onChange={setPref} />
+                </View>
+                {/* 图片对齐行：行间 mt-2 留白不加线（去线自然化口径） */}
+                <View className="mt-2 h-12 flex-row items-center justify-between">
+                    <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">图片对齐</Text>
+                    <AlignSegmented value={align} onChange={setAlign} />
                 </View>
             </Enter>
         </View>
@@ -530,112 +482,157 @@ function AppearanceSection({ delay }: { delay: number }) {
 }
 
 /**
- * 预览缩略图选项列（外观大卡的分段控件替身，两组同构不复制粘贴）：缩略图 +
- * 标签纵向一列，整列可按。
- * - 选中态 = 缩略图 2px ink-text 环 + 标签升档（font-medium + text 档）：
- *   accent 禁上 chrome（tailwind.config 注「蓝色只上数据」），ink-text 环是
- *   iOS 选择器蓝环的 ink-only 替代；环是控件选中态而非分隔线（卡内仍零
- *   hairline，缩略图间 gap-2 分列不共边）；未选中环透明占位（border-2 恒挂，
- *   选中切换无布局跳动）；
- * - 命中：整列高 ≈ 48 + 8 + 17 ≈ 73dp ≥ 44 无需 hitSlop；列间 gap-2(8px)
- *   横向天然分隔；
- * - 按压反馈 = active:opacity-60（Pressable 本体挂 active: 无 css-interop
- *   remount 风险；列级底色高亮会在 surface 卡上画出矩形块、与缩略图形态
- *   冲突，透明度按压是缩略图语境的自然语言）。
+ * 主题三色圆点色板：颜色即内容的主题选择器（Telegram / Android 12 主题
+ * 点同构）——白点 = 浅色、黑点 = 深色、左浅右深分屏点 = 跟随系统，无文字
+ * 标签（形态自解释，语义在 a11y label 完整保留）。
+ * - 圆点颜色**固定写死、不随当前主题**（depict 各档观感）：取值 = 调色板
+ *   字面量（#FFFFFF = ink.base、#080A0A = inkd.base；描边 #8B939C =
+ *   ink.muted、#7A827F = inkd.muted——control 档太淡，白点在白页底像空圈，
+ *   实测加深一档）；三点统一描边——白点在浅色页面
+ *   底、黑点在深色页面底各需描边才可见，统一挂比逐点条件更安静；
+ * - 选中态 = radio 式外环（36dp 环圈 border-2 ink-text + 24dp 圆点居中，
+ *   天然 4dp 呼吸缝）：accent 禁上 chrome（tailwind.config 注），ink-text
+ *   是 iOS 蓝环的 ink-only 替代；未选中环透明占位（border-2 恒挂，选中
+ *   切换无布局跳动）；
+ * - 命中：环圈 36dp < 44 → hitSlop 6 补足；点距 = 36 + gap-3.5(14) = 50，
+ *   6×2 slop < 14 相邻不重叠。
  */
-function PreviewOption({
-    label,
-    selected,
-    onSelect,
-    accessibilityLabel,
-    children,
-}: {
-    label: string;
-    selected: boolean;
-    onSelect: () => void;
-    accessibilityLabel: string;
-    children: ReactNode;
-}) {
+function ThemeDots({ value, onChange }: { value: ThemePref; onChange: (pref: ThemePref) => void }) {
+    const options: Array<{ key: ThemePref; label: string }> = [
+        { key: 'system', label: '跟随系统' },
+        { key: 'light', label: '浅色' },
+        { key: 'dark', label: '深色' },
+    ];
     return (
-        <Pressable
-            onPress={onSelect}
-            className="flex-1 active:opacity-60"
-            accessibilityRole="button"
-            accessibilityState={{ selected }}
-            accessibilityLabel={accessibilityLabel}
-        >
-            <View
-                className={`h-12 items-center justify-center overflow-hidden rounded-thumb border-2 ${
-                    selected ? 'border-ink-text dark:border-inkd-text' : 'border-transparent'
-                }`}
-            >
-                {children}
-            </View>
-            <Text
-                className={`mt-2 text-center text-[12px] ${
-                    selected
-                        ? 'font-medium text-ink-text dark:text-inkd-text'
-                        : 'text-ink-muted dark:text-inkd-muted'
-                }`}
-            >
-                {label}
-            </Text>
-        </Pressable>
-    );
-}
-
-/**
- * 主题缩略图：迷你屏预览（depict 各档观感）。**颜色固定写死、不随当前主题**
- * ——浅色档在深色主题下也要画成浅色（反之亦然），取值 = tailwind.config 的
- * ink/inkd 调色板字面量（#FFFFFF = ink.base、#E5E8EC = ink.border、
- * #171A1E = ink.text、#080A0A = inkd.base、#1E2422 = inkd.border、
- * #9CA3A1 = inkd.secondary）；升级调色板时此处须同步（两处同一事实的代价，
- * 换取 depict 语义正确）。「跟随系统」= 左浅右深分屏一图。
- */
-function ThemePreview({ kind }: { kind: ThemePref }) {
-    if (kind === 'system') {
-        return (
-            <View className="h-full w-full flex-row">
-                <View className="h-full flex-1 items-center justify-center gap-1 bg-[#FFFFFF] px-2">
-                    <View className="h-1 w-1/2 rounded-full bg-[#171A1E]" />
-                    <View className="h-1 w-full rounded-full bg-[#E5E8EC]" />
-                    <View className="h-1 w-2/3 rounded-full bg-[#E5E8EC]" />
-                </View>
-                <View className="h-full flex-1 items-center justify-center gap-1 bg-[#080A0A] px-2">
-                    <View className="h-1 w-1/2 rounded-full bg-[#9CA3A1]" />
-                    <View className="h-1 w-full rounded-full bg-[#1E2422]" />
-                    <View className="h-1 w-2/3 rounded-full bg-[#1E2422]" />
-                </View>
-            </View>
-        );
-    }
-    const light = kind === 'light';
-    return (
-        <View
-            className={`h-full w-full items-center justify-center gap-1 px-3 ${
-                light ? 'bg-[#FFFFFF]' : 'bg-[#080A0A]'
-            }`}
-        >
-            <View className={`h-1 w-1/3 rounded-full ${light ? 'bg-[#171A1E]' : 'bg-[#9CA3A1]'}`} />
-            <View className={`h-1 w-full rounded-full ${light ? 'bg-[#E5E8EC]' : 'bg-[#1E2422]'}`} />
-            <View className={`h-1 w-2/3 rounded-full ${light ? 'bg-[#E5E8EC]' : 'bg-[#1E2422]'}`} />
+        <View className="flex-row items-center gap-3.5">
+            {options.map((option) => (
+                <Pressable
+                    key={option.key}
+                    onPress={() => onChange(option.key)}
+                    hitSlop={6}
+                    className="active:opacity-60"
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: value === option.key }}
+                    accessibilityLabel={`主题：${option.label}`}
+                >
+                    <View
+                        className={`h-9 w-9 items-center justify-center rounded-full border-2 ${
+                            value === option.key ? 'border-ink-text dark:border-inkd-text' : 'border-transparent'
+                        }`}
+                    >
+                        <ThemeDotSwatch kind={option.key} />
+                    </View>
+                </Pressable>
+            ))}
         </View>
     );
 }
 
 /**
- * 图片对齐缩略图：迷你页预览，**随当前主题走 ink 阶梯**（与主题缩略图的
- * 写死口径相反——它 depict 的是「当前主题下的一页」，页 = ink-base（surface
- * 卡上的下一档 well，同原分段轨道阶梯）、媒体块 = control 档、文本条 =
- * border 档）；媒体块按档 self-start/center/end 落位，两条文本条示意正文流。
+ * 主题圆点涂装（颜色固定写死，见 ThemeDots 注）：「跟随系统」= 左浅右深
+ * 分屏一圆；浅/深 = 单色圆 + 统一描边。
  */
-function AlignPreview({ kind }: { kind: MediaAlign }) {
-    const self = kind === 'left' ? 'self-start' : kind === 'center' ? 'self-center' : 'self-end';
+function ThemeDotSwatch({ kind }: { kind: ThemePref }) {
+    if (kind === 'system') {
+        return (
+            <View className="h-6 w-6 flex-row overflow-hidden rounded-full border border-[#8B939C] dark:border-[#7A827F]">
+                <View className="h-full w-1/2 bg-[#FFFFFF]" />
+                <View className="h-full w-1/2 bg-[#080A0A]" />
+            </View>
+        );
+    }
     return (
-        <View className="h-full w-full bg-ink-base p-1.5 dark:bg-inkd-base">
-            <View className={`h-4 w-3/5 rounded-[3px] bg-ink-control dark:bg-inkd-control ${self}`} />
-            <View className="mt-1.5 h-1 w-full rounded-full bg-ink-border dark:bg-inkd-border" />
-            <View className="mt-1 h-1 w-2/3 rounded-full bg-ink-border dark:bg-inkd-border" />
+        <View
+            className={`h-6 w-6 rounded-full border border-[#8B939C] dark:border-[#7A827F] ${
+                kind === 'light' ? 'bg-[#FFFFFF]' : 'bg-[#080A0A]'
+            }`}
+        />
+    );
+}
+
+/**
+ * 图片对齐紧凑分段滑块（v1 SegmentedTrack 的紧凑复刻，轨道在页面底色上
+ * tone 上移一档：轨道 ink-raised、选中滑块 ink-base 反白；无卡壳行右侧
+ * 自然宽度，不做 flex-1 满宽）：
+ * - 滑块承载选中背景（绝对定位铺段后，spring 跟随 friction 9，短滑不过冲），
+ *   段落本体不挂条件 bg——规避 css-interop 条件 bg 三元 remount 风险点；
+ *   首次布局直接落位不播横扫，选中变更 spring 滑移；
+ * - **滑块几何一律内联 style**（Animated 系组件 className 在 web 被
+ *   css-interop 静默丢弃，见 Enter 注）：Animated.View 只挂定位/宽度/
+ *   transform，涂装交内层普通 View className；
+ * - 几何：轨道 p-1(4)、段间无 gap、三段等分 → 段宽 = (轨道宽 - 8) / 3；
+ *   滑块 top/bottom/left 4、宽 = 段宽、translateX = 段序 × 段宽；
+ * - 命中：段本体 h-8(32) < 44 → 纵向 hitSlop 4 补足；段间零间隙横向归 0
+ *   （外扩会与邻段重叠误触）。
+ */
+function AlignSegmented({ value, onChange }: { value: MediaAlign; onChange: (align: MediaAlign) => void }) {
+    const options: Array<{ key: MediaAlign; label: string }> = [
+        { key: 'left', label: '靠左' },
+        { key: 'center', label: '居中' },
+        { key: 'right', label: '靠右' },
+    ];
+    const [trackW, setTrackW] = useState(0);
+    const placedRef = useRef(false);
+    const sliderX = useRef(new Animated.Value(0)).current;
+    const activeIndex = Math.max(0, options.findIndex((option) => option.key === value));
+    // 段宽：轨道 p-1(4)×2、段间无 gap → (trackW - 8) / 3（三段等分）
+    const segW = trackW > 0 ? (trackW - 8) / options.length : 0;
+    useEffect(() => {
+        if (segW <= 0) return;
+        const target = activeIndex * segW;
+        if (!placedRef.current) {
+            placedRef.current = true;
+            sliderX.setValue(target);
+            return;
+        }
+        const spring = Animated.spring(sliderX, { toValue: target, friction: 9, useNativeDriver: true });
+        spring.start();
+        return () => spring.stop();
+    }, [activeIndex, segW, sliderX]);
+    return (
+        <View
+            className="flex-row rounded-control bg-ink-raised p-1 dark:bg-inkd-raised"
+            onLayout={(event) => setTrackW(event.nativeEvent.layout.width)}
+        >
+            {/* 滑块：纯视觉层先渲染（段落文字浮其上），几何内联 style（web 可靠性
+                见组件注），涂装在内层普通 View */}
+            <Animated.View
+                pointerEvents="none"
+                style={{
+                    position: 'absolute',
+                    top: 4,
+                    bottom: 4,
+                    left: 4,
+                    width: segW,
+                    transform: [{ translateX: sliderX }],
+                }}
+            >
+                <View className="h-full w-full rounded-thumb bg-ink-base dark:bg-inkd-base" />
+            </Animated.View>
+            {options.map((option) => {
+                const active = value === option.key;
+                return (
+                    <Pressable
+                        key={option.key}
+                        onPress={() => onChange(option.key)}
+                        hitSlop={{ top: 4, bottom: 4, left: 0, right: 0 }}
+                        className="h-8 items-center justify-center px-4"
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: active }}
+                        accessibilityLabel={`图片对齐：${option.label}`}
+                    >
+                        <Text
+                            className={`text-[12px] ${
+                                active
+                                    ? 'font-medium text-ink-text dark:text-inkd-text'
+                                    : 'text-ink-muted dark:text-inkd-muted'
+                            }`}
+                        >
+                            {option.label}
+                        </Text>
+                    </Pressable>
+                );
+            })}
         </View>
     );
 }
