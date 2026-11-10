@@ -241,7 +241,7 @@ export function SearchScreen() {
     return (
         <View className="flex-1 bg-ink-base dark:bg-inkd-base">
             <View style={{ paddingTop: insets.top }} className="flex-1">
-                <ScreenHeader title="搜索" subtitle="按关键词与日期，翻找笔记、行程和事件" />
+                <ScreenHeader title="搜索" subtitle="按关键词与日期搜索" />
                 {/* 阅读列宽约束（mx-auto + max-w-[560px]）：与 Me 页同口径 */}
                 <ScrollView
                     className="mx-auto w-full max-w-[560px]"
@@ -261,7 +261,7 @@ export function SearchScreen() {
                         <LucideSearch size={16} strokeWidth={1.9} color={palette.muted} />
                         <TextInput
                             className="h-full min-w-0 flex-1 text-[15px] text-ink-text dark:text-inkd-text"
-                            placeholder="搜日记、行程或事件…"
+                            placeholder="搜索笔记、行程与事件"
                             placeholderTextColor={palette.muted}
                             value={query}
                             onChangeText={setQuery}

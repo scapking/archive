@@ -18,18 +18,18 @@ import { location } from '@/core/location';
 import { FieldInput } from './ui/field-input';
 import {
     EVENT_DESCRIPTION_MAX,
+    EVENT_DESCRIPTION_PLACEHOLDER,
     EVENT_EMAIL_MAX,
+    EVENT_EMAIL_PLACEHOLDER,
     EVENT_HANDLED_BY_MAX,
+    EVENT_HANDLED_BY_PLACEHOLDER,
     EVENT_PHONE_MAX,
+    EVENT_PHONE_PLACEHOLDER,
+    EVENT_SUBJECT_PLACEHOLDER,
     EVENT_SUBJECT_VALUE_MAX,
     EVENT_TITLE_MAX,
-    EVENT_DESCRIPTION_PLACEHOLDERS,
-    EVENT_EMAIL_PLACEHOLDERS,
-    EVENT_HANDLED_BY_PLACEHOLDERS,
-    EVENT_PHONE_PLACEHOLDERS,
-    EVENT_SUBJECT_PLACEHOLDERS,
+    EVENT_TITLE_PLACEHOLDER,
     normalizeEventSubject,
-    pickEventCopy,
 } from './event-logic';
 import { useArchiveStore } from './store';
 import { PrimaryButton, ScreenHeader, usePalette } from './ui';
@@ -48,8 +48,8 @@ import { PrimaryButton, ScreenHeader, usePalette } from './ui';
  *   对象之后——对象=跟谁有关，手机号/邮箱=联系通道语义相邻；phone-pad/email
  *   键盘、autoCapitalize none，无强格式校验，trim 与邮箱空白剥除收口在 store）/
  *   描述（可选，multiline 自然增高收起式）；
- *   placeholder = event-logic 随机话术池（对象/处理人/手机号/邮箱/描述各自
- *   一池，useState 初始化器**每挂载固定一条**，语义指向不规定格式）；created_at 时间由 store
+ *   placeholder = event-logic 固定常量（EVENT_*_PLACEHOLDER，与设置卡同一
+ *   常量源；大厂风收敛：名词短语 + 可选字段「（选填）」后缀）；created_at 时间由 store
  *   落库时统一打，表单不出现时间字段；行间距统一 4dp 网格（组间 gap-4=16、
  *   标签 mb-2=8、提示 mt-1=4、提交 mt-2=8）；
  * - 定位可靠性：权限预检（已授权跳过弹窗）→ 系统服务检查 → 8s 超时兜底
@@ -79,14 +79,6 @@ export function EventFormScreen() {
     const [description, setDescription] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const submittingRef = useRef(false);
-
-    // ─── 随机 placeholder（每挂载固定一条，useState 初始化器只跑一次——render
-    //     内直调会每次渲染换文案、placeholder 抖动；池与挑选函数在 event-logic）──
-    const [subjectPlaceholder] = useState(() => pickEventCopy(EVENT_SUBJECT_PLACEHOLDERS));
-    const [handledByPlaceholder] = useState(() => pickEventCopy(EVENT_HANDLED_BY_PLACEHOLDERS));
-    const [phonePlaceholder] = useState(() => pickEventCopy(EVENT_PHONE_PLACEHOLDERS));
-    const [emailPlaceholder] = useState(() => pickEventCopy(EVENT_EMAIL_PLACEHOLDERS));
-    const [descriptionPlaceholder] = useState(() => pickEventCopy(EVENT_DESCRIPTION_PLACEHOLDERS));
 
     // ─── GPS 自动定位（不可手输；失败/拒绝 → null + muted 行）────────────────
     const [gps, setGps] = useState<{ lat: number; lng: number; accuracy?: number } | null>(null);
@@ -227,7 +219,7 @@ export function EventFormScreen() {
                             <FieldInput
                                 value={title}
                                 onChangeText={setTitle}
-                                placeholder="事件叫什么？"
+                                placeholder={EVENT_TITLE_PLACEHOLDER}
                                 maxLength={EVENT_TITLE_MAX}
                                 autoFocus
                                 accessibilityLabel="事件标题"
@@ -236,7 +228,7 @@ export function EventFormScreen() {
                                 // 可见提示（需求口径：标题为空禁用提交 + 提示）；
                                 // 条件渲染非条件类，不涉恒等铁律
                                 <Text className="mt-1 text-[12px] text-ink-muted dark:text-inkd-muted">
-                                    先起个名字；创建后正文里随时补细节。
+                                    创建后可在正文补充细节
                                 </Text>
                             ) : null}
                         </View>
@@ -311,7 +303,7 @@ export function EventFormScreen() {
                             <FieldInput
                                 value={handledBy}
                                 onChangeText={setHandledBy}
-                                placeholder={handledByPlaceholder}
+                                placeholder={EVENT_HANDLED_BY_PLACEHOLDER}
                                 maxLength={EVENT_HANDLED_BY_MAX}
                                 accessibilityLabel="处理人"
                             />
@@ -326,7 +318,7 @@ export function EventFormScreen() {
                             <FieldInput
                                 value={subjectValue}
                                 onChangeText={setSubjectValue}
-                                placeholder={subjectPlaceholder}
+                                placeholder={EVENT_SUBJECT_PLACEHOLDER}
                                 maxLength={EVENT_SUBJECT_VALUE_MAX}
                                 accessibilityLabel="对象"
                             />
@@ -344,7 +336,7 @@ export function EventFormScreen() {
                             <FieldInput
                                 value={phone}
                                 onChangeText={setPhone}
-                                placeholder={phonePlaceholder}
+                                placeholder={EVENT_PHONE_PLACEHOLDER}
                                 maxLength={EVENT_PHONE_MAX}
                                 keyboardType="phone-pad"
                                 inputMode="tel"
@@ -365,7 +357,7 @@ export function EventFormScreen() {
                             <FieldInput
                                 value={email}
                                 onChangeText={setEmail}
-                                placeholder={emailPlaceholder}
+                                placeholder={EVENT_EMAIL_PLACEHOLDER}
                                 maxLength={EVENT_EMAIL_MAX}
                                 keyboardType="email-address"
                                 inputMode="email"
@@ -383,7 +375,7 @@ export function EventFormScreen() {
                             <FieldInput
                                 value={description}
                                 onChangeText={setDescription}
-                                placeholder={descriptionPlaceholder}
+                                placeholder={EVENT_DESCRIPTION_PLACEHOLDER}
                                 multiline
                                 maxLength={EVENT_DESCRIPTION_MAX}
                                 accessibilityLabel="事件描述"

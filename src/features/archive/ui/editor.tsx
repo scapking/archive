@@ -633,8 +633,9 @@ export function createFocusedBlockPositioner(
     return { activate, deactivate, schedule, dispose: deactivate };
 }
 
-/** 占位文案（#3 内聚在统一组件，调用处不再各自传）：空白页引导 vs 续写。 */
-const LEAD_PLACEHOLDER = '想到什么写什么，图片和录音随时插进来。';
+/** 占位文案（#3 内聚在统一组件，调用处不再各自传）：空白页引导 vs 续写。
+ *  大厂风收敛：名词/动宾短语，不再用「想到什么写什么」类口语引导句。 */
+const LEAD_PLACEHOLDER = '开始记录…';
 const CONTINUE_PLACEHOLDER = '继续写…';
 
 /**

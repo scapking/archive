@@ -10,11 +10,17 @@ import { usePalette } from './theme';
 // 类型经 event-logic 的 db re-export 取得（db 不依赖 ui，type-only 无环）。
 import {
     EVENT_DESCRIPTION_MAX,
+    EVENT_DESCRIPTION_PLACEHOLDER,
     EVENT_EMAIL_MAX,
+    EVENT_EMAIL_PLACEHOLDER,
     EVENT_HANDLED_BY_MAX,
+    EVENT_HANDLED_BY_PLACEHOLDER,
     EVENT_PHONE_MAX,
+    EVENT_PHONE_PLACEHOLDER,
     EVENT_TITLE_MAX,
+    EVENT_TITLE_PLACEHOLDER,
     EVENT_SUBJECT_VALUE_MAX,
+    EVENT_SUBJECT_PLACEHOLDER,
     EVENT_STATUS_LABELS,
     eventTimeline,
     type EventRow,
@@ -338,7 +344,7 @@ export function EventSettingsCard({
                                     <FieldInput
                                         value={titleDraft}
                                         onChangeText={setTitleDraft}
-                                        placeholder="事件叫什么？"
+                                        placeholder={EVENT_TITLE_PLACEHOLDER}
                                         maxLength={EVENT_TITLE_MAX}
                                         accessibilityLabel="事件名称"
                                         onBlur={() => void saveTitleDraft()}
@@ -465,7 +471,7 @@ export function EventSettingsCard({
                                     <FieldInput
                                         value={handledByDraft}
                                         onChangeText={setHandledByDraft}
-                                        placeholder="谁来处理？（留空清除）"
+                                        placeholder={EVENT_HANDLED_BY_PLACEHOLDER}
                                         maxLength={EVENT_HANDLED_BY_MAX}
                                         accessibilityLabel="处理人"
                                         onBlur={() => void saveHandledByDraft()}
@@ -480,7 +486,7 @@ export function EventSettingsCard({
                                     <FieldInput
                                         value={valueDraft}
                                         onChangeText={setValueDraft}
-                                        placeholder="针对的对象：手机号 / 邮箱 / 地址 / 坐标（留空清除）"
+                                        placeholder={EVENT_SUBJECT_PLACEHOLDER}
                                         maxLength={EVENT_SUBJECT_VALUE_MAX}
                                         accessibilityLabel="对象"
                                         onBlur={() => void saveSubjectDraft(valueDraft)}
@@ -498,7 +504,7 @@ export function EventSettingsCard({
                                         <FieldInput
                                             value={phoneDraft}
                                             onChangeText={setPhoneDraft}
-                                            placeholder="手机号（留空清除）"
+                                            placeholder={EVENT_PHONE_PLACEHOLDER}
                                             maxLength={EVENT_PHONE_MAX}
                                             keyboardType="phone-pad"
                                             inputMode="tel"
@@ -521,7 +527,7 @@ export function EventSettingsCard({
                                         <FieldInput
                                             value={emailDraft}
                                             onChangeText={setEmailDraft}
-                                            placeholder="邮箱（留空清除）"
+                                            placeholder={EVENT_EMAIL_PLACEHOLDER}
                                             maxLength={EVENT_EMAIL_MAX}
                                             keyboardType="email-address"
                                             inputMode="email"
@@ -541,7 +547,7 @@ export function EventSettingsCard({
                                     <FieldInput
                                         value={descriptionDraft}
                                         onChangeText={setDescriptionDraft}
-                                        placeholder="一句话摘要（留空清除）"
+                                        placeholder={EVENT_DESCRIPTION_PLACEHOLDER}
                                         multiline
                                         maxLength={EVENT_DESCRIPTION_MAX}
                                         accessibilityLabel="事件描述"

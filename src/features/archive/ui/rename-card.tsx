@@ -112,7 +112,7 @@ export function RenameCard({
                             onFocus={() => setFocused(true)}
                             onBlur={() => setFocused(false)}
                             onSubmitEditing={() => void save()}
-                            placeholder="标题（可选）"
+                            placeholder="标题（选填）"
                             placeholderTextColor={palette.muted}
                             className="text-[15px] font-medium text-ink-text dark:text-inkd-text"
                             underlineColorAndroid="transparent"

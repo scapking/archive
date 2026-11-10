@@ -197,49 +197,23 @@ export function validateEventInput(input: EventInput): string | null {
     return null;
 }
 
-// ─── 随机话术池（表单 placeholder / 列表页头副标）─────────────────────────────
+// ─── 表单 placeholder（大厂风固定文案：一字段一条，可选字段「（选填）」后缀）──
 
 /**
- * 轻文案池（需求口径：「简单的话、无固定」——语义指向「该填什么」，但不规定
- * 格式；口吻对齐 Me 身份行「连续 N 天，别断」的短句轻话）。
- * 消费纪律：调用方必须经 useState 初始化器 / useMemo **每挂载固定一条**，
- * 禁止在 render 内直调 pickEventCopy——否则每次渲染换文案，placeholder 抖动。
+ * 事件表单 / 事件设置卡共用 placeholder 常量（单一常量源，禁止屏内散落字面量）：
+ * 2026-11 收敛口径——随机话术池全删（useState 掷签一并移除），每字段固定一条；
+ * 名词短语、≤8 字为主、可选字段统一「（选填）」后缀（Apple/Material 惯例），
+ * 不写「留空清除 / 方便联系」类行为解释句（清空即清除的语义由 blur 保存
+ * 交互自说明）。
  */
-export const EVENT_SUBJECT_PLACEHOLDERS: readonly string[] = [
-    '这事跟谁有关？',
-    '对方是谁？手机、邮箱或地址都行。',
-    '留个联系方式或地点。',
-    '一个号码、一个门牌，随你怎么写。',
-    '想不起格式？随手写就行。',
-];
+export const EVENT_TITLE_PLACEHOLDER = '事件名称';
+export const EVENT_HANDLED_BY_PLACEHOLDER = '负责人（选填）';
+export const EVENT_SUBJECT_PLACEHOLDER = '相关人员（选填）';
+export const EVENT_PHONE_PLACEHOLDER = '手机号（选填）';
+export const EVENT_EMAIL_PLACEHOLDER = '邮箱（选填）';
+export const EVENT_DESCRIPTION_PLACEHOLDER = '补充说明（选填）';
 
-/** 处理人 placeholder 池（同一口味：问句指向，不规定写法）。 */
-export const EVENT_HANDLED_BY_PLACEHOLDERS: readonly string[] = [
-    '谁来跟这件事？',
-    '自己办还是交给别人？',
-    '归谁管，写个名字。',
-];
-
-/** 短描述 placeholder 池（摘要定位：一句话，细节进正文）。 */
-export const EVENT_DESCRIPTION_PLACEHOLDERS: readonly string[] = [
-    '一句话说清这事。',
-    '先随便记一句，细节进正文。',
-    '概括一下，回头好找。',
-];
-
-/** 手机号 placeholder 池（v7 可选字段口径：填了方便联系，空着不碍事）。 */
-export const EVENT_PHONE_PLACEHOLDERS: readonly string[] = [
-    '选填，方便直接联系。',
-    '留个号码，有事直接打。',
-    '手机号随手填，空着也行。',
-];
-
-/** 邮箱 placeholder 池（同一口味：填了找得到你，空着不碍事）。 */
-export const EVENT_EMAIL_PLACEHOLDERS: readonly string[] = [
-    '选填，发邮件找得到你。',
-    '留个邮箱，材料发过来。',
-    '邮箱随手填，空着也行。',
-];
+// ─── /events 页头副标池（本轮保留：收敛范围是输入框描述，页头不在其列）───────
 
 /** /events 页头副标池（事件/工单语义的轻文案，每次进页固定一条）。 */
 export const EVENTS_HEADER_TAGLINES: readonly string[] = [
@@ -250,7 +224,7 @@ export const EVENTS_HEADER_TAGLINES: readonly string[] = [
     '最近动过的，排在最前。',
 ];
 
-/** 池内均匀随机取一条（纯函数；调用方负责「每挂载固定一次」纪律，见上注）。 */
+/** 池内均匀随机取一条（纯函数；调用方负责「每挂载固定一次」纪律）。 */
 export function pickEventCopy(pool: readonly string[]): string {
     return pool[Math.floor(Math.random() * pool.length)];
 }
