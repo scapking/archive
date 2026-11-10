@@ -693,7 +693,7 @@ export async function softDeleteEventCascade(id: string, at: number): Promise<vo
 
 /**
  * 事件列表（updated_at DESC = 最近活动在前，v6 时间线排序口径）。
- * status 缺省 = 全量（未删行）；status 传 'open' | 'done' 按状态过滤。
+ * status 缺省 = 全量（未删行）；status 传 EventStatus（open/done/failed）按状态过滤。
  */
 export async function listEvents(filter: { status?: EventStatus } = {}): Promise<EventRow[]> {
     const db = await getDb();

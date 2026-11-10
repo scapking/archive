@@ -13,6 +13,7 @@ import {
     EVENT_HANDLED_BY_MAX,
     EVENT_TITLE_MAX,
     EVENT_SUBJECT_VALUE_MAX,
+    EVENT_STATUS_LABELS,
     eventTimeline,
     type EventRow,
     type EventStatus,
@@ -37,7 +38,8 @@ import {
  *
  * - **字段 × 行为矩阵（全部即时落库）**：
  *   名称 = FieldInput，blur 保存（无变更跳过；空串/超长 store 拒绝 → 卡内
- *   errorText 就地可重试）；状态 = open/done 分段，点按即存；GPS = 坐标只读
+ *   errorText 就地可重试）；状态 = open/done/failed 三分段，点按即存（任意态
+ *   互切——标记失败 / 从失败重新打开 / 失败转完成同一交互）；GPS = 坐标只读
  *   行 + 「重新定位」（权限/服务预检 → 8s 超时兜底，新建表单同口径）/「清除」
  *   点按即存；处理人 = blur 保存（空串 = 清除）；对象 = 类型分段 + 值输入，
  *   类型点按即存整对（原子对归一在 store）、值 blur 保存整对；描述 = multiline
@@ -312,16 +314,18 @@ export function EventSettingsCard({
                                     />
                                 </View>
 
-                                {/* 状态（open/done 分段，点按即存）：轨道语言与列表页
-                                    状态分段同构；横向 hitSlop 归 0（gap-1 间距） */}
+                                {/* 状态（open/done/failed 三分段，点按即存）：标记失败
+                                    与标记完成同一交互解剖（任意态互切 = 从失败可重新
+                                    打开/标记完成）；轨道语言与列表页筛选分段同构；
+                                    横向 hitSlop 归 0（gap-1 间距），纵向 4 补足 44 */}
                                 <View>
                                     <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                         状态
                                     </Text>
                                     <View className="flex-row gap-1 rounded-control bg-ink-surface p-1 dark:bg-inkd-surface">
-                                        {(['open', 'done'] as const).map((option) => {
+                                        {(['open', 'done', 'failed'] as const).map((option) => {
                                             const active = statusDraft === option;
-                                            const label = option === 'open' ? '进行中' : '已完成';
+                                            const label = EVENT_STATUS_LABELS[option];
                                             return (
                                                 <Pressable
                                                     key={option}

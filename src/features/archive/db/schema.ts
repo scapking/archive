@@ -247,12 +247,14 @@ export const TRIP_DAY_META_DDL = `CREATE TABLE IF NOT EXISTS trip_day_meta (
 // ─── events（v6：事件实体，类似工单）────────────────────────────────────────
 
 /**
- * 事件状态：open = 进行中；done = 已完成。与日记的 open/closed 无关：
- * 事件状态由用户手动切换（类似行程的进行/结束，但不按日期派生、不锁定内容）。
+ * 事件状态：open = 进行中；done = 已完成；failed = 已失败（第四态：结局是
+ * 没办成——与 done 同属终态，但语义是「结果」不是「归档」，UI 不按已完成降级）。
+ * 与日记的 open/closed 无关：事件状态由用户手动切换（类似行程的进行/结束，
+ * 但不按日期派生、不锁定内容）。
  * 约束在应用层（对齐 journals.status 风格，DDL 不加 CHECK）；判断一律走
  * event-logic 的派生函数，禁止散落字面量比较。
  */
-export type EventStatus = 'open' | 'done';
+export type EventStatus = 'open' | 'done' | 'failed';
 
 /**
  * 事件对象（subject）类型词表：手机 / 邮箱 / 现实地址 / GPS 坐标；NULL = 未设置。

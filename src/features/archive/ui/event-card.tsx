@@ -1,6 +1,11 @@
 import { Text, View } from 'react-native';
 import { BouncyPressable, LucideMapPin } from '@/core/icons';
-import { isEventDone, type Event, type EventStatus } from '../event-logic';
+import {
+    EVENT_STATUS_LABELS,
+    isEventDone,
+    type Event,
+    type EventStatus,
+} from '../event-logic';
 import { usePalette } from './theme';
 
 /**
@@ -24,28 +29,45 @@ import { usePalette } from './theme';
 const KIND_CLASS = {
     accent: 'border border-transparent bg-ink-accent-bg dark:bg-inkd-accent-bg',
     filled: 'border border-transparent bg-ink-raised dark:bg-inkd-raised',
+    negative: 'border border-transparent bg-ink-negative-bg dark:bg-inkd-negative-bg',
 } as const;
 
 const KIND_LABEL_CLASS = {
     accent: 'text-ink-accent dark:text-inkd-accent',
     filled: 'text-ink-muted dark:text-inkd-muted',
+    negative: 'text-ink-negative dark:text-inkd-negative',
 } as const;
 
+/** 状态片圆点色（只有带点药丸 = 非终态 filled 需要取色）。 */
+const KIND_DOT_CLASS = {
+    accent: 'bg-ink-accent dark:bg-inkd-accent',
+    negative: 'bg-ink-negative dark:bg-inkd-negative',
+} as const;
+
+/** 状态 → 药丸解剖映射：open/negative 同一解剖（淡底 + 圆点 + 彩字），色调
+ *  分别取 accent / negative token；done = raised 填充 + muted 字（无点）。 */
+const STATUS_KIND: Record<EventStatus, keyof typeof KIND_CLASS> = {
+    open: 'accent',
+    done: 'filled',
+    failed: 'negative',
+};
+
 /**
- * 事件状态片（进行中 = accent 淡底 + accent 圆点；已完成 = raised 填充）：
- * 与 ui/status-chip.tsx（行程）同一药丸语言，词表/状态域独立（事件 open|done，
- * 行程 planning|ongoing|finished——不共用组件，避免两域状态机耦合）。
+ * 事件状态片（进行中 = accent 淡底 + accent 圆点；已失败 = negative 淡底 +
+ * negative 圆点——与进行中同一药丸解剖、色调换 negative；已完成 = raised 填充）：
+ * 与 ui/status-chip.tsx（行程）同一药丸语言，词表/状态域独立（事件
+ * open|done|failed，行程 planning|ongoing|finished——不共用组件，避免两域状态机耦合）。
  */
 export function EventStatusChip({ status }: { status: EventStatus }) {
-    const kind = status === 'open' ? 'accent' : 'filled';
-    const label = status === 'open' ? '进行中' : '已完成';
+    const kind = STATUS_KIND[status];
+    const label = EVENT_STATUS_LABELS[status];
     return (
         <View
             className={`h-6 flex-row items-center rounded-full px-2.5 ${KIND_CLASS[kind]}`}
             accessibilityLabel={`状态：${label}`}
         >
-            {kind === 'accent' ? (
-                <View className="mr-1.5 h-1.5 w-1.5 rounded-full bg-ink-accent dark:bg-inkd-accent" />
+            {kind !== 'filled' ? (
+                <View className={`mr-1.5 h-1.5 w-1.5 rounded-full ${KIND_DOT_CLASS[kind]}`} />
             ) : null}
             <Text className={`text-[11px] font-medium ${KIND_LABEL_CLASS[kind]}`}>{label}</Text>
         </View>
@@ -108,7 +130,9 @@ export function EventCard({
                         accessibilityRole="button"
                         accessibilityLabel={`${event.statusLabel}事件：${event.title}，点开查看${onLongPress ? '，长按打开设置' : ''}`}
                     >
-                        {/* 状态 + 标题行：已完成标题降 muted（工单「已结单」语言），
+                        {/* 状态 + 标题行：已完成标题降 muted（工单「已结单」语言）；
+                            已失败保持正常文字色（失败是「结果」不是「归档」——
+                            isEventDone 只收 done，failed 天然不降级）；
                             条件类两侧变量集合恒等 */}
                         <View className="flex-row items-center gap-2">
                             <EventStatusChip status={event.status} />

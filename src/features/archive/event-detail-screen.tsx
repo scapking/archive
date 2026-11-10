@@ -46,6 +46,7 @@ import * as db from './db';
 import type { EventMediaRow, EventRow, EventStatus, EventSubjectKind, JournalMediaRow } from './db';
 import { ensureVideoThumbnail, useArchiveRevision, useArchiveStore } from './store';
 import {
+    eventStatusLabel,
     eventSubjectKindLabel,
     eventTimeline,
 } from './event-logic';
@@ -110,7 +111,7 @@ import { EventSettingsCard } from './ui/event-settings-card';
  *   落回本事件（DB 级追加不依赖屏挂载）；
  * - **设置卡（EventSettingsCard，scrim + 居中卡，MetaEditCard 模式）**：标题
  *   行右上设置钮进入，整合全部元信息编辑——名称（title，store.updateEventMeta
- *   v6.1 扩展 title patch）/ 状态（open/done 分段）/ GPS（重定位/清除）/
+ *   v6.1 扩展 title patch）/ 状态（open/done/failed 三分段）/ GPS（重定位/清除）/
  *   处理人 / 对象（类型+值，原子对归一在 store）/ 描述 / 时间线（只读）/
  *   删除事件（negative → 卡内确认步）；字段变更**即时落库**（updateEventMeta
  *   + revision bump + refreshMeta 权威回读），文本字段 blur 保存、分段/按钮
@@ -399,7 +400,7 @@ export function EventDetailScreen() {
         [store, refreshMeta],
     );
 
-    /** 设置卡：状态分段（open/done）。 */
+    /** 设置卡：状态分段（open/done/failed，任意态互切）。 */
     const saveStatus = useCallback(
         async (status: EventStatus) => {
             const row = eventRef.current;
@@ -914,7 +915,7 @@ export function EventDetailScreen() {
                         >
                             <View
                                 accessibilityRole="button"
-                                accessibilityLabel={`状态：${event.status === 'open' ? '进行中' : '已完成'}，点按在设置中修改`}
+                                accessibilityLabel={`状态：${eventStatusLabel(event.status)}，点按在设置中修改`}
                             >
                                 <EventStatusChip status={event.status} />
                             </View>

@@ -19,10 +19,13 @@ import { FieldInput } from './ui/field-input';
 import {
     EVENT_DESCRIPTION_MAX,
     EVENT_HANDLED_BY_MAX,
-    EVENT_SUBJECT_KIND_LABELS,
     EVENT_SUBJECT_VALUE_MAX,
     EVENT_TITLE_MAX,
+    EVENT_DESCRIPTION_PLACEHOLDERS,
+    EVENT_HANDLED_BY_PLACEHOLDERS,
+    EVENT_SUBJECT_PLACEHOLDERS,
     normalizeEventSubject,
+    pickEventCopy,
 } from './event-logic';
 import { useArchiveStore } from './store';
 import { PrimaryButton, ScreenHeader, usePalette } from './ui';
@@ -35,11 +38,12 @@ import { PrimaryButton, ScreenHeader, usePalette } from './ui';
  *   GPS（进页自动经 core/location 取当前位置，**不可手输**——自动定位行保留，
  *   已定位展示**完整 GPS 信息**（状态行「已定位 · ±Nm」+ 原始经纬度行）；失败/
  *   拒绝降级为 muted「未定位」行，创建时 gps 置 null）/ 处理人（可选）/ 对象
- *   （类型分段单选：无/手机/邮箱/地址/GPS + 值输入，原子对由
- *   normalizeEventSubject 在提交前归一——类型选「无」即整对清除）/ 描述（可选，
- *   multiline 自然增高收起式）；created_at 时间由 store 落库时统一打，表单不
- *   出现时间字段；行间距统一 4dp 网格（组间 gap-4=16、标签 mb-2=8、提示
- *   mt-1=4、提交 mt-2=8）；
+ *   （自定义自由文本单输入，kind 固定 'custom'，原子对由 normalizeEventSubject
+ *   在提交前归一——留空即整对清除）/ 描述（可选，multiline 自然增高收起式）；
+ *   placeholder = event-logic 随机话术池（对象/处理人/描述各自一池，useState
+ *   初始化器**每挂载固定一条**，语义指向不规定格式）；created_at 时间由 store
+ *   落库时统一打，表单不出现时间字段；行间距统一 4dp 网格（组间 gap-4=16、
+ *   标签 mb-2=8、提示 mt-1=4、提交 mt-2=8）；
  * - 定位可靠性：权限预检（已授权跳过弹窗）→ 系统服务检查 → 8s 超时兜底
  *   （定位挂起不阻塞表单填写）；卸载后 discarded（cancelled 守卫防旧响应回填）；
  * - 提交 → store.createEvent（校验失败走 error 通道返回 null，横幅可见不
@@ -65,6 +69,12 @@ export function EventFormScreen() {
     const [description, setDescription] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const submittingRef = useRef(false);
+
+    // ─── 随机 placeholder（每挂载固定一条，useState 初始化器只跑一次——render
+    //     内直调会每次渲染换文案、placeholder 抖动；池与挑选函数在 event-logic）──
+    const [subjectPlaceholder] = useState(() => pickEventCopy(EVENT_SUBJECT_PLACEHOLDERS));
+    const [handledByPlaceholder] = useState(() => pickEventCopy(EVENT_HANDLED_BY_PLACEHOLDERS));
+    const [descriptionPlaceholder] = useState(() => pickEventCopy(EVENT_DESCRIPTION_PLACEHOLDERS));
 
     // ─── GPS 自动定位（不可手输；失败/拒绝 → null + muted 行）────────────────
     const [gps, setGps] = useState<{ lat: number; lng: number; accuracy?: number } | null>(null);
@@ -284,7 +294,7 @@ export function EventFormScreen() {
                             <FieldInput
                                 value={handledBy}
                                 onChangeText={setHandledBy}
-                                placeholder="谁来处理？（可选）"
+                                placeholder={handledByPlaceholder}
                                 maxLength={EVENT_HANDLED_BY_MAX}
                                 accessibilityLabel="处理人"
                             />
@@ -299,7 +309,7 @@ export function EventFormScreen() {
                             <FieldInput
                                 value={subjectValue}
                                 onChangeText={setSubjectValue}
-                                placeholder="针对的对象：手机号 / 邮箱 / 地址 / 坐标（可选）"
+                                placeholder={subjectPlaceholder}
                                 maxLength={EVENT_SUBJECT_VALUE_MAX}
                                 accessibilityLabel="对象"
                             />
@@ -313,7 +323,7 @@ export function EventFormScreen() {
                             <FieldInput
                                 value={description}
                                 onChangeText={setDescription}
-                                placeholder="一句话摘要（可选）"
+                                placeholder={descriptionPlaceholder}
                                 multiline
                                 maxLength={EVENT_DESCRIPTION_MAX}
                                 accessibilityLabel="事件描述"

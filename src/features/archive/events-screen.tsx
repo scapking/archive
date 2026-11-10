@@ -7,7 +7,13 @@ import * as db from './db';
 // 全量列表走 db.listEvents 直读（store.searchEvents 空 keyword 且无状态会拒绝
 // 无界全量——db 层语义，屏层按查询形态分流，见 fetchEvents 注）；装饰统一走
 // event-logic.decorateEvent（列表与搜索共用同一装饰口径，避免两处漂移）。
-import { decorateEvent, type Event, type EventStatus } from './event-logic';
+import {
+    decorateEvent,
+    EVENTS_HEADER_TAGLINES,
+    pickEventCopy,
+    type Event,
+    type EventStatus,
+} from './event-logic';
 import { useArchiveRevision, useArchiveStore } from './store';
 import { EmptyState, LoadingView, ScreenHeader, usePalette } from './ui';
 import { EventCard } from './ui/event-card';
@@ -20,8 +26,10 @@ import { EventSettingsCard } from './ui/event-settings-card';
  * 事件列表页（/events，工单式容器）：
  *
  * - **检索形态**：顶部搜索框（FieldInput 视觉口径：rounded-control 近色底 +
- *   聚焦「加深一档」，复制 search 页已验证的盒子几何）+ 状态筛选分段
- *   （全部/进行中/已完成，单选轨道语言与 Me 外观分段 / search 范围分段同构）；
+ *   聚焦「加深一档」，复制 search 页已验证的盒子几何）+ 状态筛选四分段
+ *   （全部/进行中/已完成/已失败，默认进行中；单选轨道语言与 Me 外观分段 /
+ *   search 范围分段同构）+ 页头副标随机话术（EVENTS_HEADER_TAGLINES 池，
+ *   每挂载固定一条）；
  * - **可靠性口径**（沿用 me/search 页成规）：300ms 防抖 + 请求序号守卫（慢的
  *   旧 in-flight 响应不得覆盖新结果）；revision 驱动的重载走同一防抖通道
  *   （mutation 后 300ms 内重查一次，序号守卫保证后到者胜）；
@@ -42,10 +50,12 @@ import { EventSettingsCard } from './ui/event-settings-card';
 /** 状态筛选词表：'all' = 全量（不传 status），其余直通 EventStatus。 */
 type EventStatusFilter = 'all' | EventStatus;
 
+/** 筛选四分段（需求口径：全部 / 进行中 / 已完成 / 已失败；默认进行中不变）。 */
 const FILTER_OPTIONS: Array<{ key: EventStatusFilter; label: string }> = [
     { key: 'all', label: '全部' },
     { key: 'open', label: '进行中' },
     { key: 'done', label: '已完成' },
+    { key: 'failed', label: '已失败' },
 ];
 
 export function EventsScreen() {
@@ -62,6 +72,9 @@ export function EventsScreen() {
     // 检索结果（null = 首载未完成 → LoadingView；[] = 已查无果 → 空态分流）
     const [results, setResults] = useState<Event[] | null>(null);
     const [searching, setSearching] = useState(false);
+    // 页头副标（需求口径：删除固定文案，随机话术池取一条）——useState 初始化器
+    // 每挂载固定一条，render 内直调会每次渲染换文案（副标闪烁）
+    const [tagline] = useState(() => pickEventCopy(EVENTS_HEADER_TAGLINES));
 
     // ─── 检索执行：300ms 防抖 + 序号守卫（search 页同款）────────────────────
     const fetchSeq = useRef(0);
@@ -165,7 +178,7 @@ export function EventsScreen() {
     return (
         <View className="flex-1 bg-ink-base dark:bg-inkd-base">
             <View style={{ paddingTop: insets.top }} className="flex-1">
-                <ScreenHeader title="事件" subtitle="要跟的事记成工单，按最近活动排列" />
+                <ScreenHeader title="事件" subtitle={tagline} />
                 <FlatList
                     data={results}
                     keyExtractor={(item) => item.id}
@@ -233,8 +246,11 @@ export function EventsScreen() {
                                     </BouncyPressable>
                                 ) : null}
                             </View>
-                            {/* 状态筛选分段（单选轨道：选中「加深一档」raised，与
-                                Me 外观分段 / search 范围分段同一轨道语言） */}
+                            {/* 状态筛选分段（四分段单选轨道：全部/进行中/已完成/
+                                已失败，选中「加深一档」raised，与 Me 外观分段 /
+                                search 范围分段同一轨道语言）。四段 flex-1 平分轨道：
+                                375 屏净宽 327 - p-1(8) - gap×3(12) ≈ 77/段，三字
+                                12px 标签（≈36px）居中富余，无需换行/横滑 */}
                             <View className="mt-3 flex-row gap-1 rounded-control bg-ink-surface p-1 dark:bg-inkd-surface">
                                 {FILTER_OPTIONS.map((option) => {
                                     const active = statusFilter === option.key;
