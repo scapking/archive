@@ -16,6 +16,7 @@ import {
     LucideCalendar,
     LucideChevronRight,
     LucideFlag,
+    LucideImage,
     LucideSearch,
 } from '@/core/icons';
 import { useArchiveStore, type TripCard } from './store';
@@ -50,13 +51,12 @@ import { useMediaAlignPref, type MediaAlign } from './ui/theme';
  *   remount 风险（View 挂 active: 才会被升级 remount）。
  *   行程数量增减时行自然增减；入口行 48dp 单行，行程行保留两行信息密度，
  *   副题行删除（题名自释，a11y 完整描述保留在入口行 label）；
- * - 层级：身份行 → 指标卡 → 我的内容组 → 外观轻行，共 4 块；区块间距统一
+ * - 层级：身份行 → 指标卡 → 我的内容组 → 外观卡，共 4 块；区块间距统一
  *   24（mt-6），全部落在 4dp 网格上；
- * - 外观区块（2026-11 三版迭代：v1 文字分段滑块「太丑」、v2 预览缩略图
- *   「不行」均被否——共同病根 = 第三张同质灰卡 + 控件堆砌；v3 定稿 =
- *   **去卡壳轻行式**：两组「label 左 + 控件右」字段行直接落页面底色，
- *   主题 = 三色圆点色板、图片对齐 = 紧凑分段滑块，行间留白不加线；详见
- *   AppearanceSection 注）；
+ * - 外观卡（2026-11 四版迭代：v1 文字分段滑块、v2 预览缩略图、v3 去卡壳
+ *   轻行式均被否；用户定调「多用卡片」——v4 定稿 = **实时预览卡**：卡上
+ *   半迷你日记页随主题/对齐即时演示，下半两组紧凑分段，卡内零 hairline；
+ *   详见 AppearanceSection 注）；
  * - 动效（RN Animated native driver，同 BouncyPressable / boot-screen 通道，
  *   不用 reanimated——Fabric 上驱动触摸视图样式有概率吞按压）：内容单元
  *   fade + translateY 交错进场（300ms ease-out、60ms 步进、reduceMotion 直接
@@ -284,10 +284,10 @@ export function MeScreen() {
                         </View>
                     </View>
 
-                    {/* 外观区块（主题 + 图片对齐）：区块在行组时间线之后淡入（严格
-                        自上而下，delay 锚点沿用原 ThemeSection 口径），无卡壳两
-                        字段行（见 AppearanceSection 注）；进场 = 标题与行组两拍
-                        交错（克制） */}
+                    {/* 外观卡（主题 + 图片对齐）：区块在行组时间线之后淡入（严格
+                        自上而下，delay 锚点沿用原 ThemeSection 口径），实时预览卡
+                        = 预览块 + 两组紧凑分段（见 AppearanceSection 注）；进场 =
+                        标题与卡体两拍交错（克制） */}
                     <AppearanceSection delay={280 + ENTER_STAGGER * (2 + trips.length)} />
                 </ScrollView>
             </View>
@@ -441,119 +441,102 @@ function TripsEmptyBlock() {
 }
 
 /**
- * 外观区块（2026-11 三版定稿：v1 文字分段滑块、v2 预览缩略图均被否——
- * 共同病根 = 「第三张与指标卡/内容卡同质的灰卡 + 控件堆砌」，全页最弱内容
- * 占了最重的卡壳）：**去卡壳轻行式**——区块标题下两组「字段行」（label 左
- * 14px medium + 控件右，iOS 设置行口径，对齐内容卡行高节奏），直接落页面
- * 底色，行间留白不加线；轻重对比让区块退为页面的安静收尾。
- * - 主题行 = 三色圆点色板（ThemeDots）：颜色即内容，圆点自释各档；
- * - 图片对齐行 = 紧凑分段滑块（AlignSegmented）：轨道 ink-raised（页面
- *   base 上的顺延 well）、选中滑块 ink-base 反白（v1 的 tone 反转——容器
- *   从 surface 卡换到页面底色，阶梯整体上移一档）；
- * - 消费 useThemePref / useMediaAlignPref（persist 均在 hook 内收口），
- *   编辑器媒体块渲染对齐的设置入口，渲染消费在编辑器侧（另一链路）；
- * - 区块进场 = 标题（y=0 纯淡入）与行组（y=8）两拍交错，时间线锚点由
+ * 外观卡（2026-11 四版迭代定稿：v1 文字分段滑块「太丑」、v2 预览缩略图
+ * 「不行」、v3 去卡壳轻行式仍「太丑」；用户定调「多用卡片」）。复盘共同
+ * 病根 = 卡内没有「主角」：v1/v2 全是控件没有内容，v3 孤行悬在页面底。
+ * v4 = **实时预览卡**，设置自己演示自己：
+ * - 卡上半 = 迷你日记页预览块（AppearancePreview）：报头日期 + 两行正文 +
+ *   媒体块。随主题整块翻色（bg-ink-base / dark:bg-inkd-base CSS 类自动切，
+ *   零 JS）；随图片对齐媒体块当场挪位（self-start/center/end，三元两侧
+ *   常量类）——点「深色」的第一反馈就是预览变暗，语义零学习成本；
+ * - 卡下半 = 两组「label 左 14px medium + CompactSegmented 右」字段行
+ *   （主题三档 / 图片对齐三档，同构不复制粘贴）；编辑器媒体块渲染对齐的
+ *   设置入口，渲染消费在编辑器侧（另一链路），此处只做设置 UI；
+ * - 卡内分区零 hairline：预览块与行组 mt-4(16) 留白、行组间 mt-2；
+ * - 消费 useThemePref / useMediaAlignPref（persist 均在 hook 内收口）；
+ *   预览正文 = 固定常量（大厂风固定文案口径，禁随机话术池）；
+ * - 区块进场 = 标题（y=0 纯淡入）与卡体（y=8）两拍交错，时间线锚点由
  *   调用方传入（沿用原 ThemeSection 的「行组之后」口径，严格自上而下）。
  */
 function AppearanceSection({ delay }: { delay: number }) {
     const [pref, setPref] = useThemePref();
     const [align, setAlign] = useMediaAlignPref();
-    return (
-        <View className="mt-6">
-            <Enter delay={delay} y={0}>
-                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                    外观
-                </Text>
-            </Enter>
-            <Enter delay={delay + ENTER_STAGGER} y={8}>
-                {/* 主题行：字段行（label 左 + 圆点色板右） */}
-                <View className="h-12 flex-row items-center justify-between">
-                    <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">主题</Text>
-                    <ThemeDots value={pref} onChange={setPref} />
-                </View>
-                {/* 图片对齐行：行间 mt-2 留白不加线（去线自然化口径） */}
-                <View className="mt-2 h-12 flex-row items-center justify-between">
-                    <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">图片对齐</Text>
-                    <AlignSegmented value={align} onChange={setAlign} />
-                </View>
-            </Enter>
-        </View>
-    );
-}
-
-/**
- * 主题三色圆点色板：颜色即内容的主题选择器（Telegram / Android 12 主题
- * 点同构）——白点 = 浅色、黑点 = 深色、左浅右深分屏点 = 跟随系统，无文字
- * 标签（形态自解释，语义在 a11y label 完整保留）。
- * - 圆点颜色**固定写死、不随当前主题**（depict 各档观感）：取值 = 调色板
- *   字面量（#FFFFFF = ink.base、#080A0A = inkd.base；描边 #8B939C =
- *   ink.muted、#7A827F = inkd.muted——control 档太淡，白点在白页底像空圈，
- *   实测加深一档）；三点统一描边——白点在浅色页面
- *   底、黑点在深色页面底各需描边才可见，统一挂比逐点条件更安静；
- * - 选中态 = radio 式外环（36dp 环圈 border-2 ink-text + 24dp 圆点居中，
- *   天然 4dp 呼吸缝）：accent 禁上 chrome（tailwind.config 注），ink-text
- *   是 iOS 蓝环的 ink-only 替代；未选中环透明占位（border-2 恒挂，选中
- *   切换无布局跳动）；
- * - 命中：环圈 36dp < 44 → hitSlop 6 补足；点距 = 36 + gap-3.5(14) = 50，
- *   6×2 slop < 14 相邻不重叠。
- */
-function ThemeDots({ value, onChange }: { value: ThemePref; onChange: (pref: ThemePref) => void }) {
-    const options: Array<{ key: ThemePref; label: string }> = [
+    const themeOptions: Array<{ key: ThemePref; label: string }> = [
         { key: 'system', label: '跟随系统' },
         { key: 'light', label: '浅色' },
         { key: 'dark', label: '深色' },
     ];
+    const alignOptions: Array<{ key: MediaAlign; label: string }> = [
+        { key: 'left', label: '靠左' },
+        { key: 'center', label: '居中' },
+        { key: 'right', label: '靠右' },
+    ];
     return (
-        <View className="flex-row items-center gap-3.5">
-            {options.map((option) => (
-                <Pressable
-                    key={option.key}
-                    onPress={() => onChange(option.key)}
-                    hitSlop={6}
-                    className="active:opacity-60"
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: value === option.key }}
-                    accessibilityLabel={`主题：${option.label}`}
-                >
-                    <View
-                        className={`h-9 w-9 items-center justify-center rounded-full border-2 ${
-                            value === option.key ? 'border-ink-text dark:border-inkd-text' : 'border-transparent'
-                        }`}
-                    >
-                        <ThemeDotSwatch kind={option.key} />
+        <View className="mt-6">
+            <Enter delay={delay} y={0}>
+                <Text className="mb-3 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                    外观
+                </Text>
+            </Enter>
+            <Enter delay={delay + ENTER_STAGGER} y={8}>
+                <View className="rounded-card bg-ink-surface dark:bg-inkd-surface">
+                    {/* 实时预览块：迷你日记页（随主题翻色、随对齐挪位） */}
+                    <View className="px-4 pt-4">
+                        <AppearancePreview align={align} />
                     </View>
-                </Pressable>
-            ))}
+                    {/* 主题行：label 左 + 紧凑分段右（与预览块 mt-4 留白不加线） */}
+                    <View className="mt-4 flex-row items-center justify-between px-4">
+                        <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">主题</Text>
+                        <CompactSegmented options={themeOptions} value={pref} onChange={setPref} labelPrefix="主题" />
+                    </View>
+                    {/* 图片对齐行：行间 mt-2 留白不加线（去线自然化口径） */}
+                    <View className="mb-1 mt-2 flex-row items-center justify-between px-4">
+                        <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">图片对齐</Text>
+                        <CompactSegmented options={alignOptions} value={align} onChange={setAlign} labelPrefix="图片对齐" />
+                    </View>
+                </View>
+            </Enter>
+        </View>
+    );
+}
+
+/** 预览块报头日期：真实本地日期（M月D日 · 周X，local 取值不落 UTC）。 */
+function previewDateLabel(): string {
+    const now = new Date();
+    const week = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][now.getDay()];
+    return `${now.getMonth() + 1}月${now.getDate()}日 · ${week}`;
+}
+
+/**
+ * 迷你日记页预览块（外观卡的主角）：内容结构 = 编辑器真实层次（报头日期
+ * 行 → 正文流 → 媒体块），文案固定常量非随机池；页 = ink-base（卡面
+ * surface 的下一档 well，同原分段轨道阶梯，dark 反转自动翻色）；媒体块
+ * 按 align 档 self-start/center/end 落位（三元两侧常量类，无变量凭空
+ * 出现路径），块内 LucideImage 占位示「这是一张图」。
+ */
+function AppearancePreview({ align }: { align: MediaAlign }) {
+    const palette = usePalette();
+    const self = align === 'left' ? 'self-start' : align === 'center' ? 'self-center' : 'self-end';
+    return (
+        <View className="rounded-control bg-ink-base p-4 dark:bg-inkd-base">
+            <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">{previewDateLabel()}</Text>
+            <Text className="mt-2 text-[12px] leading-5 text-ink-secondary dark:text-inkd-secondary">
+                今天把三天行程串了一遍，效率比想象中高。
+            </Text>
+            <Text className="mt-1 text-[12px] leading-5 text-ink-secondary dark:text-inkd-secondary">
+                给大理段补了两张图，晚上把账记了。
+            </Text>
+            <View className={`mt-3 h-14 w-3/5 items-center justify-center rounded-thumb bg-ink-control dark:bg-inkd-control ${self}`}>
+                <LucideImage size={18} strokeWidth={1.9} color={palette.muted} />
+            </View>
         </View>
     );
 }
 
 /**
- * 主题圆点涂装（颜色固定写死，见 ThemeDots 注）：「跟随系统」= 左浅右深
- * 分屏一圆；浅/深 = 单色圆 + 统一描边。
- */
-function ThemeDotSwatch({ kind }: { kind: ThemePref }) {
-    if (kind === 'system') {
-        return (
-            <View className="h-6 w-6 flex-row overflow-hidden rounded-full border border-[#8B939C] dark:border-[#7A827F]">
-                <View className="h-full w-1/2 bg-[#FFFFFF]" />
-                <View className="h-full w-1/2 bg-[#080A0A]" />
-            </View>
-        );
-    }
-    return (
-        <View
-            className={`h-6 w-6 rounded-full border border-[#8B939C] dark:border-[#7A827F] ${
-                kind === 'light' ? 'bg-[#FFFFFF]' : 'bg-[#080A0A]'
-            }`}
-        />
-    );
-}
-
-/**
- * 图片对齐紧凑分段滑块（v1 SegmentedTrack 的紧凑复刻，轨道在页面底色上
- * tone 上移一档：轨道 ink-raised、选中滑块 ink-base 反白；无卡壳行右侧
- * 自然宽度，不做 flex-1 满宽）：
+ * 紧凑分段滑块（v1 SegmentedTrack 的泛型紧凑版，两组同构不复制粘贴；
+ * 轨道回到 surface 卡内 tone 阶梯上移一档：轨道 ink-border、选中滑块
+ * ink-base 反白；行右侧自然宽度，不做 flex-1 满宽）：
  * - 滑块承载选中背景（绝对定位铺段后，spring 跟随 friction 9，短滑不过冲），
  *   段落本体不挂条件 bg——规避 css-interop 条件 bg 三元 remount 风险点；
  *   首次布局直接落位不播横扫，选中变更 spring 滑移；
@@ -565,17 +548,22 @@ function ThemeDotSwatch({ kind }: { kind: ThemePref }) {
  * - 命中：段本体 h-8(32) < 44 → 纵向 hitSlop 4 补足；段间零间隙横向归 0
  *   （外扩会与邻段重叠误触）。
  */
-function AlignSegmented({ value, onChange }: { value: MediaAlign; onChange: (align: MediaAlign) => void }) {
-    const options: Array<{ key: MediaAlign; label: string }> = [
-        { key: 'left', label: '靠左' },
-        { key: 'center', label: '居中' },
-        { key: 'right', label: '靠右' },
-    ];
+function CompactSegmented<T extends string>({
+    options,
+    value,
+    onChange,
+    labelPrefix,
+}: {
+    options: Array<{ key: T; label: string }>;
+    value: T;
+    onChange: (key: T) => void;
+    labelPrefix: string;
+}) {
     const [trackW, setTrackW] = useState(0);
     const placedRef = useRef(false);
     const sliderX = useRef(new Animated.Value(0)).current;
     const activeIndex = Math.max(0, options.findIndex((option) => option.key === value));
-    // 段宽：轨道 p-1(4)×2、段间无 gap → (trackW - 8) / 3（三段等分）
+    // 段宽：轨道 p-1(4)×2、段间无 gap → (trackW - 8) / options.length（等分内容区）
     const segW = trackW > 0 ? (trackW - 8) / options.length : 0;
     useEffect(() => {
         if (segW <= 0) return;
@@ -591,7 +579,7 @@ function AlignSegmented({ value, onChange }: { value: MediaAlign; onChange: (ali
     }, [activeIndex, segW, sliderX]);
     return (
         <View
-            className="flex-row rounded-control bg-ink-raised p-1 dark:bg-inkd-raised"
+            className="flex-row rounded-control bg-ink-border p-1 dark:bg-inkd-border"
             onLayout={(event) => setTrackW(event.nativeEvent.layout.width)}
         >
             {/* 滑块：纯视觉层先渲染（段落文字浮其上），几何内联 style（web 可靠性
@@ -619,7 +607,7 @@ function AlignSegmented({ value, onChange }: { value: MediaAlign; onChange: (ali
                         className="h-8 items-center justify-center px-4"
                         accessibilityRole="button"
                         accessibilityState={{ selected: active }}
-                        accessibilityLabel={`图片对齐：${option.label}`}
+                        accessibilityLabel={`${labelPrefix}：${option.label}`}
                     >
                         <Text
                             className={`text-[12px] ${
