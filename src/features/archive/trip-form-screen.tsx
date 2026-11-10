@@ -52,6 +52,20 @@ import type { TripRow } from './db';
 const ICON_CHOICES = ['🧭', '⛰️', '🌊', '🏛️', '🏙️', '🚗', '✈️', '🚄', '🏕️', '🍜', '📷', '🎡', '⛷️', '🏝️', '🧳', '🗺️'];
 
 /**
+ * 编辑模式屏头副标随机池（2026-11 反馈③）：「修改后立即生效。」是把实现细节
+ * 念给用户听的说明书腔，换成编辑/保存语义下的随机轻文案——短、有点性格、
+ * 说人话（口吻对齐 Me 页身份行「连续 N 天，别断」）。掷选是展示层趣味不是
+ * 状态：挂载时（下方 useState 惰性初始）掷一次即固定，重渲不换词。
+ */
+const EDIT_HINTS = [
+    '改完就走，不用另存。',
+    '随时回来接着改。',
+    '这里改的，出去就作数。',
+    '改多少算多少，不丢。',
+    '慢慢改，行程不会跑。',
+];
+
+/**
  * 结束日期语义分段切换（DEV.md #4：结束日期可选，默认「持续进行」）。
  * 轨道 = surface 底；选中段 = raised 底 + 主文本色（亮度变化语言，不上彩——
  * 颜色只上数据，选中是交互态不是数据）。相邻两段 gap-1（4px）且均不传 hitSlop
@@ -201,6 +215,9 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
     // 展开 ≠ 聚焦：autoFocus 只跟随「用户点了入口」这条路径——编辑模式默认展开时
     // 若也 autoFocus，打开编辑表单即弹键盘盖住上部主字段（回归级体验问题）
     const [descAutoFocus, setDescAutoFocus] = useState(false);
+    // 编辑副标随机话（EDIT_HINTS 注）：useState 惰性初始只跑一次 = 挂载掷签即
+    // 固定；路由每次进入都是新挂载，满足「每次进入表单随机一条」且 render 不翻面
+    const [editHint] = useState(() => EDIT_HINTS[Math.floor(Math.random() * EDIT_HINTS.length)]);
 
     const isEdit = Boolean(trip);
     // 锁定（#7）：已结束行程只读。store.updateTrip 无锁预检，UI 是唯一闸门——
@@ -379,7 +396,7 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
             <View style={{ paddingTop: insets.top }}>
                 <ScreenHeader
                     title={isEdit ? '编辑行程' : '新建行程'}
-                    subtitle={isEdit ? '修改后立即生效。' : '起个名字，定个出发日就好。'}
+                    subtitle={isEdit ? editHint : '起个名字，定个出发日就好。'}
                 />
             </View>
             <ScrollView

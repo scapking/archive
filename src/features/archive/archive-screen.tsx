@@ -318,7 +318,7 @@ export function ArchiveScreen() {
                 />
             ) : null}
 
-            {/* + 选择器：写日记 / 建行程——条件渲染遮罩而非 RN Modal：
+            {/* + 选择器：写日记 / 建行程 / 建事件——条件渲染遮罩而非 RN Modal：
                 Modal 是独立原生窗口，Expo Go(Fabric) 上其内容触摸概率性失效
                 （实测弹窗选项点击无响应）；条件渲染层与普通视图同机制，行为一致。 */}
             {chooserOpen ? (
@@ -340,7 +340,7 @@ export function ArchiveScreen() {
                                 <CloseButton onPress={() => setChooserOpen(false)} />
                             </View>
                             <View className="mt-4 gap-2.5">
-                                {/* 两行均自带 p-4 完整视觉盒（高 ~72px ≥44）：不传 hitSlop（0），
+                                {/* 三行均自带 p-3 完整视觉盒（高 ~64px ≥44）：不传 hitSlop（0），
                                     命中盒 == 视觉盒；行距 gap-2.5(10px) 为不可点间隙——旧默认
                                     hitSlop 10 时两行命中区恰好重叠（10 < 10+10），已随默认收敛解除 */}
                                 <BouncyPressable
@@ -368,6 +368,26 @@ export function ArchiveScreen() {
                                         icon={<LucideCalendar size={20} strokeWidth={1.9} />}
                                         title="新的行程"
                                         hint="图标、视频、逐日骨架"
+                                        tint={chooserTint}
+                                    />
+                                </BouncyPressable>
+                                {/* 新建事件（v6 事件实体入口）：排在「新的行程」旁——创建
+                                    类动作同区，日记/行程/事件三入口同卡；图标用 LucideFlag
+                                    （事件域标，同下方 EventsEntryCard / Me 页事件卡语言）。
+                                    直进新建表单 /events/new，不落列表页；typedRoutes 类型
+                                    未生成 → as never 最小妥协先例（同文件 EventsEntryCard
+                                    的 /events 同口径） */}
+                                <BouncyPressable
+                                    onPress={() => {
+                                        setChooserOpen(false);
+                                        router.push('/events/new' as never);
+                                    }}
+                                    scaleTo={0.97}
+                                >
+                                    <ChooserRow
+                                        icon={<LucideFlag size={20} strokeWidth={1.9} />}
+                                        title="新建事件"
+                                        hint="工单式记录，跟到完成"
                                         tint={chooserTint}
                                     />
                                 </BouncyPressable>

@@ -1,11 +1,9 @@
 import { useEffect, useState } from 'react';
 import { BackHandler, Keyboard, Pressable, Text, View } from 'react-native';
-import { useRouter } from 'expo-router';
 import {
     BouncyPressable,
     LucideCamera,
     LucideCheck,
-    LucideFlag,
     LucideImage,
     LucideMic,
     LucidePlus,
@@ -21,11 +19,15 @@ import { usePalette } from './theme';
  * + 号插入选择器（罗盘）：条件渲染遮罩（禁 RN Modal——Fabric 触摸失效坑）。
  * 行卡片（#8/#10 视觉对标大厂快捷面板）：相册图片 / 相册视频 / 录音 /
  * 拍照 / 拍视频 / 添加输入框 / 完成收笔（journal 全行；事件编辑器经 `actions`
- * 过滤复用本组件——行序同源，仅裁「新建事件」「完成收笔」），icon + 标题 +
+ * 过滤复用本组件——行序同源，仅裁「完成收笔」），icon + 标题 +
  * 副标双行。
  * 行序（2026-11 调整）：相册两行（图库选取）前移到录音之前——插媒体里
  * 「从图库选」是最高频路径，取材行（相册）前置、采集行（录音/拍摄）次之，
  * 输入与收笔仍压轴；纯顺序调整，onAction 词表与行为不变。
+ *
+ * 「新建事件」行退役（2026-11 口径）：新建事件是首页 + 号的职责（archive
+ * chooser 专属入口），本菜单只管笔记内容块——编辑上下文里跳走建工单，
+ * 会把「写笔记」和「建事件」两条动线搅在一起。
  *
  * - 「添加输入框」（#11）：媒体行之后、完成收笔之前——输入是编辑器的一级
  *   动作（与插媒体同级），收笔是终态动作压轴；分发由屏层追加空文本段并聚焦。
@@ -56,12 +58,6 @@ export type InsertAction =
     | 'library-image'
     | 'library-video'
     | 'append-text'
-    /** 新建事件（v6 事件实体入口）：**组件内直推 /events/new 路由**，不经
-     *  onAction 分发——本菜单的宿主屏（journal-edit-screen）的 runInsert 词表
-     *  未同步扩展（本轮不改屏逻辑结构的约束），且该动作是「离开当前编辑上下文
-     *  去建工单」的导航语义而非编辑器动作，路由收口在本组件内最诚实（事件组
-     *  接线报告项）。 */
-    | 'new-event'
     | 'complete';
 
 /** 全局录制会话状态行数据（屏层从会话 store 投影；本组件不 import 会话模块
@@ -89,15 +85,12 @@ export function InsertMenu({
      * 行过滤（v6.1 事件编辑器复用本组件的接线面）：传入时只渲染词表内的行
      * （行序 = 本组件既定行序——相册两行 → 采集三行 → 输入 → 收笔，与需求
      * 事件词表「相册图片/相册视频/录音/拍照/拍视频/添加输入框」为同一前缀），
-     * 未列出的行（如 journal 版的「完成收笔」「新建事件」）整行退场，确认步
-     * 等专属分支随之不可达。缺省 = 全行（journal 屏原行为，零改动）。
+     * 未列出的行（journal 版的「完成收笔」）整行退场，确认步等专属分支随之
+     * 不可达。缺省 = 全行（journal 屏原行为，零改动）。
      */
     actions?: readonly InsertAction[];
 }) {
     const palette = usePalette();
-    // 「新建事件」行的路由出口（组件内直推，见 InsertAction 'new-event' 注——
-    // 宿主屏 runInsert 词表不动，导航语义收口在本组件）
-    const router = useRouter();
     // 收笔确认步：行卡片 → 确认卡（同卡替换内容，仍是条件渲染遮罩）
     const [confirming, setConfirming] = useState(false);
 
@@ -136,9 +129,6 @@ export function InsertMenu({
             : []),
         // 「+」语言一致（添加语义同 FAB 罗盘本钮）；排在媒体行之后、完成收笔之前（#11）
         { action: 'append-text', icon: <LucidePlus size={20} strokeWidth={1.9} />, title: '添加输入框', hint: '末尾另起一段继续写' },
-        // v6 事件实体入口（任务口径 LucideFlag）：工单式记录独立于日记，行位在
-        // 输入之后、完成收笔压轴之前（创建动作不入终态区）
-        { action: 'new-event', icon: <LucideFlag size={20} strokeWidth={1.9} />, title: '新建事件', hint: '工单式记录，独立于这篇笔记' },
         { action: 'complete', icon: <LucideCheck size={20} strokeWidth={1.9} />, title: '完成收笔', hint: '收笔后不可再修改' },
     ];
     const rows = actions ? allRows.filter((row) => actions.includes(row.action)) : allRows;
@@ -150,13 +140,6 @@ export function InsertMenu({
             return;
         }
         onClose();
-        // 新建事件 = 组件内直推路由（不经 onAction——宿主屏分发词表未扩展，
-        // 见 InsertAction 'new-event' 注）；typedRoutes 类型未生成 → as never
-        // 最小妥协先例（me 页 SearchEntryCard 同口径）
-        if (action === 'new-event') {
-            router.push('/events/new' as never);
-            return;
-        }
         onAction(action);
     };
 
