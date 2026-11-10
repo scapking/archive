@@ -1,49 +1,35 @@
-import { Fragment, useEffect, useRef, useState, type ReactElement } from 'react';
+import { Fragment, type ReactElement } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import {
     BouncyPressable,
     LucideCalendar,
-    LucideCheck,
     LucideChevronRight,
     LucideFlag,
     LucideSearch,
 } from '@/core/icons';
-import { archiveConfig, ensureUid } from '@/config/archive';
-import { clipboard } from '@/core/clipboard';
-import { fileStorage } from '@/core/file-storage';
-import { imageManipulator, SaveFormat, type Action } from '@/core/image-manipulator';
-import { imagePicker } from '@/core/image-picker';
 import { useArchiveStore } from './store';
 import { formatTripSpan } from './trip-logic';
-// 头像同 key 覆盖写后，useFileUrlState 的会话缓存（web blob / 已解析 URI）需要
-// revision 广播触发复验失效——通知走中立层 data-revision，不依赖 store mutation。
-import { notifyDataRevision } from './data-revision';
-import { ProfileAvatar } from './ui/avatar';
 import { LineChart, LoadingView, StatusChip, useEffectiveTheme, usePalette, useThemePref, type ThemePref } from './ui';
 
-/** 头像文件 key（固定覆盖写）：manipulator 统一转码 JPEG，ext 恒 jpg——
-    key 由存储协议限定段内字符（profile/avatar.jpg 合法），改 ext 会留下旧文件孤儿。 */
-const AVATAR_FILE_KEY = 'profile/avatar.jpg';
-
-/** 头像落盘边长（正方形 px）：44dp@3x ≈ 132 已够标题行显示，512 留放大查看与
-    未来展示尺寸上调的余量，JPEG 后体积可控。 */
-const AVATAR_PIXELS = 512;
-
 /**
- * Me：身份行（44dp 小头像融入原 Me 标题行 + UID 弱化角注）、指标合卡（KPI 2×2 +
- * 30 天曲线）、我的内容组（搜索 / 事件 / 行程列表）、主题偏好。
+ * Me：身份行（Me 标题 + 连续天数）、指标卡（3 格 KPI 单行 + 30 天曲线）、
+ * 我的内容组（搜索 / 事件 / 行程列表）、主题偏好。
  * 本屏唯一问题："我坚持得怎么样，东西在哪？"
  *
  * 信息收敛口径（区块审计后的取舍，功能一项不丢）：
- * - 指标：4 格 KPI + 曲线卡（原 5 个视觉块）并作一张 surface 卡，2 列网格不变
- *   （app-screens §12：四列挤压是禁手），列/行 hairline 走 ink-border（元素级
- *   边界，卡片级描边仍按 #13 清除），数值 tabular-nums；
+ * - 身份行：纯文本标题行（无头像/UID），连续天数只在此出现一次——KPI 不再
+ *   重复渲染同语义数值（去重后 3 格收单行）；
+ * - 指标：3 格 KPI 单行 + 曲线并作一张 surface 卡，3 列是本卡单行容纳的
+ *   上限（app-screens §12 禁的是四列挤压；3 格内容宽度已按窄屏核算，单元
+ *   横向 padding 收窄为 px-3 防 label 换行），列/行 hairline 走 ink-border
+ *   （元素级边界，卡片级描边仍按 #13 清除），数值 tabular-nums；
  * - 内容：搜索卡 + 事件卡 + 独立「行程」区（原 3 块）归并为一组「我的内容」行组
  *   卡，行解剖统一（入口行 48dp 单行，行程行保留两行信息密度），副题行删除
  *   （题名自释，a11y label 保留完整描述）；
- * - 层级：身份行 → 指标合卡 → 我的内容组 → 外观；区块间距统一 24（mt-6）；
+ * - 层级：身份行 → 指标卡 → 我的内容组 → 外观，共 4 块；区块间距统一 24
+ *   （mt-6），全部落在 4dp 网格上；
  * - 关于/版本：审计确认本页无此区块，不新增（无需折叠）。
  * 内联检索区已独立成 /search 页（DEV.md #5），此处只留组内一行入口。
  */
@@ -56,111 +42,6 @@ export function MeScreen() {
     const metrics = useArchiveStore((s) => s.metrics);
     const error = useArchiveStore((s) => s.error);
 
-    // 头像 key（config 持久化；'' = 未设置）。文件本体在 file-storage，
-    // 三态解析交给 ProfileAvatar（含文件被删的 missing 占位）。
-    const avatarKey = archiveConfig.use((s) => s['ui.avatar']);
-    const [avatarBusy, setAvatarBusy] = useState(false);
-
-    // 设备 UID（config 持久化）：订阅展示，注水后经 ensureUid 幂等生成。
-    const uid = archiveConfig.use((s) => s['ui.uid']);
-    // 复制反馈（check 图标短暂出现）；定时器句柄随卸载清理。
-    const [uidCopied, setUidCopied] = useState(false);
-    const uidCopyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-    // 首启 UID：必须在配置注水完成后生成——未注水时 store 是默认空值，此刻
-    // 生成的 uid 会被注水结果覆盖丢失（ensureUid 的调用时机契约，见 config/archive）。
-    useEffect(() => {
-        const persist = archiveConfig.use.persist;
-        if (persist.hasHydrated()) {
-            ensureUid();
-            return;
-        }
-        const unsub = persist.onFinishHydration(() => ensureUid());
-        return unsub;
-    }, []);
-
-    // 复制反馈定时器随卸载清理（防泄漏 + 防卸载后 setState）
-    useEffect(() => {
-        return () => {
-            if (uidCopyTimer.current) clearTimeout(uidCopyTimer.current);
-        };
-    }, []);
-
-    const copyUid = async () => {
-        if (!uid) return;
-        try {
-            const ok = await clipboard.setStringAsync(uid);
-            setUidCopied(ok);
-            if (uidCopyTimer.current) clearTimeout(uidCopyTimer.current);
-            uidCopyTimer.current = setTimeout(() => setUidCopied(false), 1600);
-        } catch (caught) {
-            // 剪贴板异常不外抛：反馈图标不出现即是失败信号（web 权限拒绝等场景）
-            console.warn('[me] copy uid failed:', caught);
-            setUidCopied(false);
-        }
-    };
-
-    /**
-     * 头像选取 → 正方形裁剪 → 落盘 → config 记 key。
-     * 错误经 store.error 上浮（与 trip-form pickVideo 同一口径），picker 异常
-     * 必须 catch（unhandled rejection 会红屏）。
-     */
-    const pickAvatar = async () => {
-        if (avatarBusy) return;
-        setAvatarBusy(true);
-        try {
-            const permission = await imagePicker.getMediaLibraryPermissionAsync();
-            if (!permission.granted) {
-                const requested = await imagePicker.requestMediaLibraryPermissionAsync();
-                if (!requested.granted) {
-                    useArchiveStore.setState({ error: '没有相册权限，去系统设置里开一下。' });
-                    return;
-                }
-            }
-            const result = await imagePicker.launchImageLibraryAsync({
-                mediaTypes: ['images'],
-                quality: 1,
-                // 正方形裁剪：native 弹系统 1:1 裁剪框；web 忽略该选项，
-                // 由下方 manipulator 中心裁剪兜底（三端最终一致）
-                allowsEditing: true,
-                aspect: [1, 1],
-            });
-            if (result.canceled || result.assets.length === 0) return;
-            const asset = result.assets[0];
-            // 统一中心正方形裁剪 + 缩到 AVATAR_PIXELS：native 裁剪框产物已是方形
-            // 则跳过 crop 动作；web 无裁剪框由此兜底。统一 JPEG 转码后 ext 恒 jpg，
-            // 固定 key 覆盖写（不产生旧格式孤儿文件）
-            const side = Math.min(asset.width, asset.height);
-            const actions: Action[] = [];
-            if (asset.width !== asset.height) {
-                actions.push({
-                    crop: {
-                        originX: Math.floor((asset.width - side) / 2),
-                        originY: Math.floor((asset.height - side) / 2),
-                        width: side,
-                        height: side,
-                    },
-                });
-            }
-            actions.push({ resize: { width: AVATAR_PIXELS, height: AVATAR_PIXELS } });
-            const manipulated = await imageManipulator.manipulateAsync(asset.uri, actions, {
-                compress: 0.85,
-                format: SaveFormat.JPEG,
-            });
-            await fileStorage.put(AVATAR_FILE_KEY, manipulated.bytes);
-            // config 记 key（固定值）+ revision 广播：同 key 覆盖写后，
-            // useFileUrlState 的 web blob 缓存 / native 已解析 URI 须复验失效重取
-            archiveConfig.update({ 'ui.avatar': AVATAR_FILE_KEY });
-            notifyDataRevision();
-        } catch (caught) {
-            useArchiveStore.setState({
-                error: `头像设置失败：${caught instanceof Error ? caught.message : String(caught)}`,
-            });
-        } finally {
-            setAvatarBusy(false);
-        }
-    };
-
     if (!ready) return <LoadingView />;
 
     const ongoing = trips.filter((t) => t.status === 'ongoing').length;
@@ -169,59 +50,13 @@ export function MeScreen() {
         <View className="flex-1 bg-ink-base dark:bg-inkd-base">
             <View style={{ paddingTop: insets.top }} className="flex-1">
                 <View className="px-6 pb-1 pt-2">
-                    {/* 身份行：原 Me 标题行（题 + 连续天数）左融 44dp 小头像（点击换，
-                        相册选图 → 覆盖写 profile/avatar.jpg 交互保留）；UID 弱化为
-                        右侧短码角注（短码 + 复制，不占独立区块） */}
-                    <View className="flex-row items-center gap-3">
-                        <Pressable
-                            onPress={() => void pickAvatar()}
-                            className="active:opacity-80"
-                            accessibilityRole="button"
-                            accessibilityLabel={avatarKey ? '更换头像' : '设置头像'}
-                            accessibilityState={{ busy: avatarBusy }}
-                        >
-                            {/* 头像 44dp 即命中盒（≥44，Pressable hitSlop 0）；右侧
-                                文本列非按压体，无命中重叠核算项。按压反馈走 active:
-                                体系（与 trip-form 图标格同口径） */}
-                            <ProfileAvatar fileKey={avatarKey || null} size={44} />
-                        </Pressable>
-                        <View className="min-w-0 flex-1">
-                            <Text className="text-[20px] font-semibold text-ink-text dark:text-inkd-text">
-                                Me
-                            </Text>
-                            <Text
-                                className="mt-1 text-[13px] text-ink-secondary dark:text-inkd-secondary"
-                                style={{ fontVariant: ['tabular-nums'] }}
-                            >
-                                {metrics.streak > 0 ? `连续 ${metrics.streak} 天，别断` : '从今天开始连续记录'}
-                            </Text>
-                        </View>
-                        {uid ? (
-                            <Pressable
-                                onPress={() => void copyUid()}
-                                // 11px 角注（视觉 ~14px 高）+ hitSlop 纵向 15 → 44 等效
-                                // 命中；横向 8：左侧题/连续天数列（gap-3=12px）与下方
-                                // error 文案均非按压体，右侧是 px-6 空白——外扩无重叠
-                                // 核算项
-                                hitSlop={{ top: 15, bottom: 15, left: 8, right: 8 }}
-                                className="flex-row items-center gap-1"
-                                accessibilityRole="button"
-                                accessibilityLabel="复制设备 UID"
-                            >
-                                <Text
-                                    className="text-[11px] text-ink-muted dark:text-inkd-muted"
-                                    style={{ fontVariant: ['tabular-nums'] }}
-                                >
-                                    {/* 展示短版前 8 位（commit-hash 惯例：显示短、复制全——
-                                        完整 UUID 才是有效标识，config 里存的是完整值） */}
-                                    UID {uid.slice(0, 8)}
-                                </Text>
-                                {uidCopied ? (
-                                    <LucideCheck size={12} strokeWidth={2} color={palette.accent} />
-                                ) : null}
-                            </Pressable>
-                        ) : null}
-                    </View>
+                    <Text className="text-[20px] font-semibold text-ink-text dark:text-inkd-text">Me</Text>
+                    <Text
+                        className="mt-1 text-[13px] text-ink-secondary dark:text-inkd-secondary"
+                        style={{ fontVariant: ['tabular-nums'] }}
+                    >
+                        {metrics.streak > 0 ? `连续 ${metrics.streak} 天，别断` : '从今天开始连续记录'}
+                    </Text>
                     {error ? (
                         <Text className="mt-1 text-[12px] text-ink-negative dark:text-inkd-negative">{error}</Text>
                     ) : null}
@@ -233,18 +68,14 @@ export function MeScreen() {
                     contentContainerStyle={{ paddingHorizontal: 24, paddingBottom: insets.bottom + 32 }}
                     keyboardShouldPersistTaps="handled"
                 >
-                    {/* 指标合卡：4 格 KPI + 30 天曲线并作一张 surface 卡（原 5 个视觉块
-                        → 1）。2 列网格（app-screens §12：四列挤压是禁手），列/行分隔
-                        hairline 走 ink-border（元素级边界，同 TripBadge border 口径；
-                        卡片级描边仍按 #13 清除，tone 分层靠 surface-on-base） */}
+                    {/* 指标卡：3 格 KPI 单行 + 30 天曲线并作一张 surface 卡（连续天数
+                        已在身份行，KPI 去重后由 2×2 收单行）。列/行分隔 hairline 走
+                        ink-border（元素级边界，同 TripBadge border 口径；卡片级描边
+                        仍按 #13 清除，tone 分层靠 surface-on-base） */}
                     <View className="mt-3 overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface">
                         <View className="flex-row">
-                            <MetricCell value={`${metrics.streak}`} unit="天" label="连续记录" />
-                            <View className="w-px bg-ink-border dark:bg-inkd-border" />
                             <MetricCell value={`${metrics.journalDays}`} unit="天" label="写过日记" />
-                        </View>
-                        <View className="h-px bg-ink-border dark:bg-inkd-border" />
-                        <View className="flex-row">
+                            <View className="w-px bg-ink-border dark:bg-inkd-border" />
                             <MetricCell value={formatCount(metrics.totalWords)} unit="" label="累计字数" />
                             <View className="w-px bg-ink-border dark:bg-inkd-border" />
                             <MetricCell value={`${ongoing}/${trips.length}`} unit="" label="进行中行程" />
@@ -317,7 +148,7 @@ export function MeScreen() {
                                                     </Text>
                                                     <StatusChip status={trip.status} />
                                                 </View>
-                                                <View className="mt-1.5 flex-row items-center">
+                                                <View className="mt-1 flex-row items-center">
                                                     <Text
                                                         className="text-[12px] text-ink-secondary dark:text-inkd-secondary"
                                                         style={{ fontVariant: ['tabular-nums'] }}
@@ -357,11 +188,12 @@ export function MeScreen() {
     );
 }
 
-/** KPI 单元（指标合卡内的表格单元，不带自己的卡壳）：数值 20px tabular + 弱化标签。
-    密度与原 2×2 卡片网格一致（px-4 py-3），壳层成本由合卡统一承担。 */
+/** KPI 单元（指标卡内的表格单元，不带自己的卡壳）：数值 20px tabular + 弱化标签。
+    单行 3 格，横向 padding 收窄为 px-3（px-4 在 320pt 级窄屏会挤到 label 换行），
+    py-3 与卡内曲线段行距一致；label 间距 mt-1 落 4dp 网格。 */
 function MetricCell({ value, unit, label }: { value: string; unit: string; label: string }) {
     return (
-        <View className="flex-1 px-4 py-3">
+        <View className="flex-1 px-3 py-3">
             <Text
                 className="text-[20px] font-semibold text-ink-text dark:text-inkd-text"
                 style={{ fontVariant: ['tabular-nums'] }}
@@ -369,7 +201,7 @@ function MetricCell({ value, unit, label }: { value: string; unit: string; label
                 {value}
                 {unit ? <Text className="text-[12px] font-normal text-ink-muted dark:text-inkd-muted"> {unit}</Text> : null}
             </Text>
-            <Text className="mt-0.5 text-[12px] text-ink-muted dark:text-inkd-muted">{label}</Text>
+            <Text className="mt-1 text-[12px] text-ink-muted dark:text-inkd-muted">{label}</Text>
         </View>
     );
 }
