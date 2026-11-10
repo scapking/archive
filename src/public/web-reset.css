@@ -1,33 +1,121 @@
 /*
  * Web 输入框 reset（RNW TextInput 平台差异修复，仅进 web 产物）：
  *
- * 本文件仅由 app/+html.tsx 以 <link rel="stylesheet" href="/web-reset.css"> 引入，
- * 走 web 静态资源通道；绝不 import 进任何 JS/TS 文件——global.css 会经
+ * 本文件由两处以 <link rel="stylesheet" href="/web-reset.css"> 引入：
+ *   ① app/+html.tsx（static 导出路径，置于 nativewind.css link 之后）；
+ *   ② app/_layout.tsx（web.output = 'single' 下 +html 不上线，运行时幂等补挂）。
+ * 只走 web 静态资源通道，绝不 import 进任何 JS/TS 文件——global.css 会经
  * `import '../global.css'` 进入 metro，cssToReactNativeRuntime 解析不了
  * 元素选择器/裸声明，Android 原生 bundle 会直接崩
  * （SyntaxError: Unexpected token Delim('*')）。
  *
- * RNW 把 TextInput 渲染为 <textarea>（多行）/ <input>（单行），其内联样式
- * 已含 border: 0 solid / WebkitAppearance: none / backgroundColor: transparent，
- * 但不含 outline 与 box-shadow 重置（RNW 0.19+ 为键盘可达性保留了浏览器
- * focus ring）——亮色 focus ring 与 UA 主题样式在深色页面上表现为
- * 「输入框自带亮色边框」，native 无此概念，故在 web 侧统一抹平。
+ * RNW 0.88 把 TextInput 渲染为 <textarea>（多行）/ <input>（单行），其内联基础
+ * 样式已含 border: 0 solid / WebkitAppearance: none / MozAppearance: textfield /
+ * backgroundColor: transparent / resize: none（react-native-web/dist/exports/
+ * TextInput 基础样式实测），但不含 outline 与 box-shadow 重置（RNW 0.19+ 为键盘
+ * 可达性保留了浏览器 focus ring），更不含自动填充态——亮色 focus ring、autofill
+ * 亮底与 UA 主题样式在深色页面上表现为「输入框自带亮色边框/亮色填充」，native
+ * 无此概念，故在 web 侧统一抹平。
+ *
+ * 特异性铁律：reset 全部走 :where(...) 零特异性（状态伪类也包进 :where）——
+ * author 层任何规则（RNW inline、NativeWind 类、未来新增样式）都天然压过本文件，
+ * 注入顺序无关紧要，reset 只负责「杀浏览器默认」，永远不会压应用样式。
+ * border 因此**不做** !important 清除：RNW 对 TextInput 的边框走内联
+ * （border: '0 solid black'，author 普通规则压不了 inline），本文件 border:none
+ * 只盖 UA 默认边框；若未来需要业务侧真边框，走 inline/NativeWind 类即可存活。
+ *
+ * 焦点反馈策略：与 native 对齐，由容器亮度一档变化（FieldInput / RenameCard /
+ * DateInput / SearchScreen 的 onFocus/onBlur 本地状态驱动）+ 光标承担，不保留
+ * 浏览器 focus ring，也不引入第二套 :focus-within 焦点语言。
  *
  * scope 依据（按 RNW 产物 DOM 核实）：RNW 仅在 TextInput 处产出这两类元素，
- * app 无手写 HTML 表单，@expo/dom-webview 是独立文档不受外层 CSS 影响；
- * 元素选择器特异性 (0,0,1)，业务 tailwind 类（bg-*/border-*）可正常覆盖。
- * 焦点反馈与 native 对齐，由光标 / placeholder 承担，不保留浏览器 focus ring。
+ * app 无手写 HTML 表单（grep 证据：无 Picker / contentEditable），@expo/dom-webview
+ * 是独立文档不受外层 CSS 影响。自动填充深色档以 html.dark 祖先 class 为轴，与
+ * tailwind darkMode: 'class' 编译产物（.dark\:x:is(.dark *)）同轴——css-interop
+ * 的 colorScheme.set 正是往 documentElement 上挂这个 class。
  */
-textarea,
-input {
+
+/*
+ * 1) 基础 reset（零特异性）：outline / box-shadow / appearance / 背景 / border
+ *    只对 UA 默认生效。appearance 补 -webkit- 前缀（部分 WebView 只认前缀，
+ *    RNW 内联的 WebkitAppearance 只在它自己的 inline 层，UA 态仍需这里兜底）。
+ *    textarea 的 resize handle 是 web 独有体验噪音，一并禁掉（RNW 内联已有
+ *    resize: none，这里冗余兜底防内联缺失的版本）。
+ */
+:where(textarea, input) {
   outline: none;
   box-shadow: none;
   background: transparent;
+  -webkit-appearance: none;
   appearance: none;
-  /* textarea 默认可拖拽缩放（resize handle）是 web 独有体验噪音，一并禁掉 */
   resize: none;
-  /* 部分 UA 主题会给 input 默认 border，RNW 内联不含 border-width 重置 */
   border: none;
+}
+
+/*
+ * 2) 焦点态显式盖（focus 与非 focus 都盖）：UA 的 :focus-visible focus ring 是
+ *    UA origin，author 任意特异性按 origin 已赢；显式列出防未来 UA 新增 focus
+ *    规则漏网。伪类同样包进 :where()，整条保持零特异性。
+ */
+:where(textarea, input):where(:focus, :focus-visible) {
+  outline: none;
+  box-shadow: none;
+}
+
+/*
+ * 3) 原生控件外观：appearance:none 管不到的伪元素控件单独杀——search 的清除
+ *    按钮/装饰、number 的 spin button（native 键盘没有这些控件，保留即三端
+ *    不齐）。margin: 0 防 spin button 残留占位。
+ */
+:where(input[type="search"])::-webkit-search-decoration,
+:where(input[type="search"])::-webkit-search-cancel-button,
+:where(input[type="search"])::-webkit-search-results-button,
+:where(input[type="search"])::-webkit-search-results-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+:where(input[type="number"])::-webkit-outer-spin-button,
+:where(input[type="number"])::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
+}
+
+/*
+ * 4) 自动填充亮底（Chrome/Safari 的 :-webkit-autofill UA !important 态）：
+ *    - 背景：Chrome 把 autofill 底色以 UA !important 写入，cascade 上 author
+ *      任何普通规则（含 !important）都压不过 UA !important；唯一杀法是 transition
+ *      强制——transition 声明在 cascade 中高于一切 !important，把这次变色拖进
+ *      999999s 的过渡，形同永不发生。对本 app 无副作用：输入体底色恒透明
+ *      （视觉全在容器），输入元素自身不存在合法的背景变化。
+ *      不用「inset box-shadow 盖色法」：输入体可能坐在 surface/raised/canvas
+ *      多档容器底色上，盖色需逐档硬编码，主题一动就露馅。
+ *    - 文字色：Chrome 同步以 UA !important 强制 color: field-text（OS 浅色档下
+ *      是黑字），深底上不可读；-webkit-text-fill-color 是独立绘制属性，直接接管
+ *      文字绘制（UA autofill 不写它，无 cascade 冲突）。取值 = theme.ts 的
+ *      palette.text token（浅 #171A1E / 深 #E7EAE9），与 native 输入字色
+ *      （field-input.tsx { color: palette.text }）同源同值——三端一致性取舍：
+ *      web CSS 引用不到 RN palette，此处硬编码双档登记，theme.ts 调色时需同步
+ *      本文件。caret-color 同受 UA color 污染（caret 跟随 color），一并钉到 token。
+ */
+:where(textarea, input):where(
+    :-webkit-autofill,
+    :-webkit-autofill:hover,
+    :-webkit-autofill:focus,
+    :-webkit-autofill:active
+  ) {
+  -webkit-text-fill-color: #171A1E;
+  caret-color: #171A1E;
+  transition: background-color 999999s ease-out 0s;
+}
+.dark :where(textarea, input):where(
+    :-webkit-autofill,
+    :-webkit-autofill:hover,
+    :-webkit-autofill:focus,
+    :-webkit-autofill:active
+  ) {
+  -webkit-text-fill-color: #E7EAE9;
+  caret-color: #E7EAE9;
 }
 
 /*
