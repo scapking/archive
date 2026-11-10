@@ -1280,6 +1280,11 @@ video {
   background-color: rgb(180 186 194 / var(--tw-bg-opacity, 1));
 }
 
+.bg-ink-negative {
+  --tw-bg-opacity: 1;
+  background-color: rgb(220 74 94 / var(--tw-bg-opacity, 1));
+}
+
 .bg-ink-negative-bg {
   --tw-bg-opacity: 1;
   background-color: rgb(253 236 239 / var(--tw-bg-opacity, 1));
@@ -1792,6 +1797,11 @@ video {
 .dark\:bg-inkd-faint:is(.dark *) {
   --tw-bg-opacity: 1;
   background-color: rgb(82 90 87 / var(--tw-bg-opacity, 1));
+}
+
+.dark\:bg-inkd-negative:is(.dark *) {
+  --tw-bg-opacity: 1;
+  background-color: rgb(229 86 111 / var(--tw-bg-opacity, 1));
 }
 
 .dark\:bg-inkd-negative-bg:is(.dark *) {
