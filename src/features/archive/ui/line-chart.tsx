@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Text, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { Animated, Easing, Text, View } from 'react-native';
 import Svg, { Defs, Line, LinearGradient, Path, Stop, Text as SvgText } from 'react-native-svg';
 import {
     areaPath,
@@ -17,8 +17,23 @@ let GRAD_SEQ = 0;
  * 折线图（app-screens §6 + 图表房规）：2px 直线、面积填充 ≤14%（accent→透明）、
  * 3-5 条横网格、刻度与 x 标签 12px（字号下限 11 的 SVG 场景）、无图例无数据点。
  * 色全部走 palette（grid/muted/accent），空数据显示空框。
+ *
+ * animated（opt-in，默认 false）：进场整图淡入一拍（420ms ease-out、延迟
+ * 260ms），为 Me 页「标题先立、曲线后到」的两拍节奏定制；不传即完全旧行为。
+ * 只动 opacity（RN Animated native driver；铁律：Animated style 只许
+ * transform/opacity——strokeDashoffset 画线式「描线」需 JS 逐帧驱动，违铁律，
+ * 不做）。目前唯一调用方是 Me 页，他屏接入不受影响。
  */
-export function LineChart({ points, height = 168 }: { points: ChartPoint[]; height?: number }) {
+export function LineChart({
+    points,
+    height = 168,
+    animated = false,
+}: {
+    points: ChartPoint[];
+    height?: number;
+    /** 进场淡入（opt-in）：true 时整图 opacity 0→1（420ms / 延迟 260ms）。 */
+    animated?: boolean;
+}) {
     const [width, setWidth] = useState(0);
     const gradientId = useState(() => `ink-chart-${(GRAD_SEQ += 1)}`)[0];
     const palette = getPalette(useEffectiveTheme());
@@ -27,8 +42,22 @@ export function LineChart({ points, height = 168 }: { points: ChartPoint[]; heig
     const m = plotMetrics(points, top, { width, height, lane: 34, foot: 20, head: 12 });
     const labels = xLabelPoints(points, 3);
     const hasData = points.length > 1 && maxV > 0;
+    // 淡入进度：opt-in 才从 0 起播；默认档初值即 1（不建时间线，渲染零差异）
+    const fade = useRef(new Animated.Value(animated ? 0 : 1)).current;
+    useEffect(() => {
+        if (!animated) return;
+        const anim = Animated.timing(fade, {
+            toValue: 1,
+            duration: 420,
+            delay: 260,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+        });
+        anim.start();
+        return () => anim.stop();
+    }, [animated, fade]);
     return (
-        <View onLayout={(event) => setWidth(event.nativeEvent.layout.width)} style={{ height }}>
+        <Animated.View onLayout={(event) => setWidth(event.nativeEvent.layout.width)} style={{ height, opacity: fade }}>
             {width > 0 ? (
                 <Svg width={width} height={height}>
                     <Defs>
@@ -86,7 +115,7 @@ export function LineChart({ points, height = 168 }: { points: ChartPoint[]; heig
                     还没有数据，写满一周就有一条线
                 </Text>
             ) : null}
-        </View>
+        </Animated.View>
     );
 }
 
