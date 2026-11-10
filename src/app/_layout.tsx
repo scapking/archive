@@ -32,6 +32,9 @@ import { runStartupOrphanMediaGc } from '@/features/archive/store';
 // 全局录制会话宿主（跨页面后台录制 + 归属铁律）：同 last-route/store 深路径直连
 // 先例——域 barrel index.ts 不在本次允许改动清单内。
 import { RecordingSessionHost, useRecordingSessionStore } from '@/features/archive/recording-session';
+// web 端数据库降级提示条（持久库打不开 → 会话内存库兜底时常驻提示，native 恒
+// 渲染 null）：状态与决策收口在 core/database（web-fallback），此处仅挂载注入色板。
+import { WebStorageDegradationBanner } from '@/core/database';
 import { archiveConfig } from '@/config/archive';
 
 /**
@@ -407,6 +410,15 @@ export default function RootLayout() {
                 点按重开的覆盖层同样以 scrim 覆盖 viewer，关闭后回到 viewer，
                 无层级穿透路径。空闲（无会话）渲染 null，零布局挤占。 */}
             <RecordingSessionHost />
+            {/* web 数据库降级提示条（见上方 import 注）：降级 ≠ 失败态——内存库模式下
+                全 app 功能照常，此条只提示「本次记录不落盘」。色板随生效主题注入。 */}
+            <WebStorageDegradationBanner
+                colors={{
+                    background: getPalette(theme).surface,
+                    border: getPalette(theme).negative,
+                    text: getPalette(theme).negative,
+                }}
+            />
         </>
     );
 }

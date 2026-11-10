@@ -1,0 +1,26 @@
+diff --git a/web/worker.ts b/web/worker.ts
+index 8564322163531ab7bf90bd68b60d584550acacb6..3572b2008459c74627c950bd444c4dc51a8081e4 100644
+--- a/web/worker.ts
++++ b/web/worker.ts
+@@ -789,6 +789,21 @@ async function maybeInitAsync(): Promise<{
+       if (_vfs == null) {
+         throw new Error('Failed to initialize AccessHandlePoolVFS');
+       }
++      // [archive patch] 池余量保障：AccessHandlePoolVFS 默认 6 槽（DEFAULT_CAPACITY），且
++      // 同一 origin 下所有 expo-sqlite 应用共享同一个 OPFS 目录——其他项目的库、崩溃
++      // 会话遗留的 journal（MAIN_JOURNAL 持久化、init 不清理）占满空槽后，任何写事务
++      // 在 journal 创建上被 jOpen 以 SQLITE_CANTOPEN(14) 拒绝（实测："cannot create
++      // file" → statement 期抛 "Error code 14: unable to open database file"，读操作
++      // 与建库本身均正常，极易误诊为 schema 问题）。这里幂等补足空槽：空槽 ≥4 则不
++      // 增长；新槽文件持久保留，后续会话自然就位，不会无限膨胀。
++      try {
++        if (_vfs.getCapacity() - _vfs.getSize() < 4) {
++          await _vfs.addCapacity(4);
++        }
++      } catch {
++        // 存储配额不足等场景尽力而为：补足失败时维持上游原始行为（打开/写入失败
++        // 由上层应用按既有错误路径处理）。
++      }
+     }
+     _sqlite3.vfs_register(_vfs, true);
+ 
