@@ -3,6 +3,7 @@ import {
     AccessibilityInfo,
     Animated,
     Easing,
+    Image,
     Pressable,
     ScrollView,
     Text,
@@ -12,8 +13,6 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import {
-    BouncyPressable,
-    LucideCalendar,
     LucideChevronRight,
     LucideFlag,
     LucideImage,
@@ -21,7 +20,23 @@ import {
 } from '@/core/icons';
 import { useArchiveStore, type TripCard } from './store';
 import { formatTripSpan } from './trip-logic';
-import { LineChart, LoadingView, StatusChip, usePalette, useThemePref, type ThemePref } from './ui';
+import { parseBlocks } from './journal-logic';
+import {
+    latestJournal,
+    mediaByJournalIds,
+    type JournalBlock,
+    type JournalMediaRow,
+    type JournalRow,
+} from './db';
+import {
+    LineChart,
+    LoadingView,
+    StatusChip,
+    useFileUrlState,
+    usePalette,
+    useThemePref,
+    type ThemePref,
+} from './ui';
 import { useMediaAlignPref, type MediaAlign } from './ui/theme';
 
 /**
@@ -265,22 +280,18 @@ export function MeScreen() {
                                     accessibilityLabel="事件"
                                 />
                             </Enter>
-                            {trips.length === 0 ? (
-                                <Enter delay={280 + ENTER_STAGGER * 2}>
-                                    <TripsEmptyBlock />
+                            {/* 行程行：有行程才渲染（空态块与创建行程按钮已按用户
+                                批注移除——Me 不做行程导流，空态交给 Archive 首页） */}
+                            {trips.map((trip, index) => (
+                                <Enter key={trip.id} delay={280 + ENTER_STAGGER * (2 + index)}>
+                                    <TripRow
+                                        trip={trip}
+                                        onPress={() =>
+                                            router.push({ pathname: '/trip/[id]', params: { id: trip.id } })
+                                        }
+                                    />
                                 </Enter>
-                            ) : (
-                                trips.map((trip, index) => (
-                                    <Enter key={trip.id} delay={280 + ENTER_STAGGER * (2 + index)}>
-                                        <TripRow
-                                            trip={trip}
-                                            onPress={() =>
-                                                router.push({ pathname: '/trip/[id]', params: { id: trip.id } })
-                                            }
-                                        />
-                                    </Enter>
-                                ))
-                            )}
+                            ))}
                         </View>
                     </View>
 
@@ -404,63 +415,63 @@ function TripRow({ trip, onPress }: { trip: TripCard; onPress: () => void }) {
 }
 
 /**
- * 行程空态（合并卡内的块，无卡壳——卡面归整卡）：图标行 + 一行"怎么做" +
- * CTA「创建行程」（frontend-design：空屏是指引，不是情绪）。块本身不是按压体，
- * 只有 CTA 可按；CTA h-11 全宽即命中盒，块内四周无相邻命中元素。按压反馈由
- * CTA 的 BouncyPressable 承担（控件级弹跳保留——它是按钮不是行），内层 View
- * 不用 active: 伪类（css-interop 会把 View 升级成 Pressable 首帧后 remount，同
- * EmptyState/ChooserRow 口径）。
- */
-function TripsEmptyBlock() {
-    const router = useRouter();
-    const palette = usePalette();
-    return (
-        <View className="px-4 py-3.5">
-            <View className="flex-row items-center gap-3">
-                <LucideCalendar size={18} strokeWidth={1.9} color={palette.secondary} />
-                <View className="min-w-0 flex-1">
-                    <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
-                        还没有行程
-                    </Text>
-                    <Text numberOfLines={1} className="mt-0.5 text-[12px] text-ink-muted dark:text-inkd-muted">
-                        建一个行程，路上的日子就有地方记了
-                    </Text>
-                </View>
-            </View>
-            <View className="mt-3">
-                <BouncyPressable onPress={() => router.push('/trip/new')} scaleTo={0.97}>
-                    <View className="h-11 items-center justify-center rounded-control border border-ink-border bg-ink-base dark:border-inkd-border dark:bg-inkd-base">
-                        <Text className="text-[13px] font-medium text-ink-text dark:text-inkd-text">
-                            创建行程
-                        </Text>
-                    </View>
-                </BouncyPressable>
-            </View>
-        </View>
-    );
-}
-
-/**
  * 外观卡（2026-11 四版迭代定稿：v1 文字分段滑块「太丑」、v2 预览缩略图
  * 「不行」、v3 去卡壳轻行式仍「太丑」；用户定调「多用卡片」）。复盘共同
  * 病根 = 卡内没有「主角」：v1/v2 全是控件没有内容，v3 孤行悬在页面底。
- * v4 = **实时预览卡**，设置自己演示自己：
- * - 卡上半 = 迷你日记页预览块（AppearancePreview）：报头日期 + 两行正文 +
- *   媒体块。随主题整块翻色（bg-ink-base / dark:bg-inkd-base CSS 类自动切，
- *   零 JS）；随图片对齐媒体块当场挪位（self-start/center/end，三元两侧
- *   常量类）——点「深色」的第一反馈就是预览变暗，语义零学习成本；
+ * v4 = **实时预览卡**，设置自己演示自己（2026-11-11 用户截图批注升级：
+ * 预览**按实际内容展示**——最新一篇日记的真实日期/摘录/图片，无日记退化
+ * 为今日日期 + 占位块，不再用固定假文案；同轮批注删除行程空态块与 Me 页
+ * 创建行程按钮，行程有数据才渲染行）：
+ * - 卡上半 = 迷你日记页预览块（AppearancePreview）。随主题整块翻色
+ *   （bg-ink-base / dark:bg-inkd-base CSS 类自动切，零 JS）；随图片对齐
+ *   媒体块当场挪位（self-start/center/end，三元两侧常量类）——点「深色」
+ *   的第一反馈就是预览变暗，语义零学习成本；
  * - 卡下半 = 两组「label 左 14px medium + CompactSegmented 右」字段行
  *   （主题三档 / 图片对齐三档，同构不复制粘贴）；编辑器媒体块渲染对齐的
  *   设置入口，渲染消费在编辑器侧（另一链路），此处只做设置 UI；
  * - 卡内分区零 hairline：预览块与行组 mt-4(16) 留白、行组间 mt-2；
  * - 消费 useThemePref / useMediaAlignPref（persist 均在 hook 内收口）；
- *   预览正文 = 固定常量（大厂风固定文案口径，禁随机话术池）；
+ *   预览数据 = latestJournal + mediaByJournalIds（屏层直连 db，trip-detail
+ *   先例；刷新键 = store revision，见组件内注）；
  * - 区块进场 = 标题（y=0 纯淡入）与卡体（y=8）两拍交错，时间线锚点由
  *   调用方传入（沿用原 ThemeSection 的「行组之后」口径，严格自上而下）。
  */
 function AppearanceSection({ delay }: { delay: number }) {
     const [pref, setPref] = useThemePref();
     const [align, setAlign] = useMediaAlignPref();
+    // 实时预览数据 = 最新一篇日记 + 其首个图片媒体（用户批注「有行程后再根据
+    // 实际调整内容」——预览不用固定假文案，有什么展示什么）；屏层直连 db
+    // （trip-detail 先例），刷新键 = store revision（写日记链路统一 bump，
+    // 双刷新频道口径），跨 tab 写完日记回 Me 即刷新
+    const revision = useArchiveStore((s) => s.revision);
+    const [journal, setJournal] = useState<JournalRow | null>(null);
+    const [imageMedia, setImageMedia] = useState<JournalMediaRow | null>(null);
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const row = await latestJournal();
+                if (cancelled) return;
+                if (row) {
+                    const mediaMap = await mediaByJournalIds([row.id]);
+                    if (cancelled) return;
+                    setImageMedia((mediaMap.get(row.id) ?? []).find((m) => m.kind === 'image') ?? null);
+                } else {
+                    setImageMedia(null);
+                }
+                setJournal(row);
+            } catch {
+                // 读失败退化为空态（今日日期 + 占位块）：预览永不阻塞页面
+                if (!cancelled) {
+                    setJournal(null);
+                    setImageMedia(null);
+                }
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [revision]);
     const themeOptions: Array<{ key: ThemePref; label: string }> = [
         { key: 'system', label: '跟随系统' },
         { key: 'light', label: '浅色' },
@@ -480,9 +491,9 @@ function AppearanceSection({ delay }: { delay: number }) {
             </Enter>
             <Enter delay={delay + ENTER_STAGGER} y={8}>
                 <View className="rounded-card bg-ink-surface dark:bg-inkd-surface">
-                    {/* 实时预览块：迷你日记页（随主题翻色、随对齐挪位） */}
+                    {/* 实时预览块：迷你日记页（真实最新日记，随主题翻色、随对齐挪位） */}
                     <View className="px-4 pt-4">
-                        <AppearancePreview align={align} />
+                        <AppearancePreview journal={journal} media={imageMedia} />
                     </View>
                     {/* 主题行：label 左 + 紧凑分段右（与预览块 mt-4 留白不加线） */}
                     <View className="mt-4 flex-row items-center justify-between px-4">
@@ -500,34 +511,82 @@ function AppearanceSection({ delay }: { delay: number }) {
     );
 }
 
-/** 预览块报头日期：真实本地日期（M月D日 · 周X，local 取值不落 UTC）。 */
+/** 预览块报头日期（空态回退）：真实本地日期（M月D日 · 周X，local 取值不落 UTC）。 */
 function previewDateLabel(): string {
     const now = new Date();
     const week = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][now.getDay()];
     return `${now.getMonth() + 1}月${now.getDate()}日 · ${week}`;
 }
 
+/** 日记 local_date（'YYYY-MM-DD'）→「M月D日 · 周X」（手动拆分防 UTC 偏移；异常回退今日）。 */
+function journalDateLabel(localDate: string): string {
+    const parts = localDate.split('-').map(Number);
+    const date = new Date(parts[0], (parts[1] ?? 1) - 1, parts[2] ?? 1);
+    if (Number.isNaN(date.getTime())) return previewDateLabel();
+    const week = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][date.getDay()];
+    return `${parts[1]}月${parts[2]}日 · ${week}`;
+}
+
+/** 预览摘录：标题优先，否则取前两个文本段拼接（真实内容，非固定文案）。 */
+function journalExcerpt(journal: JournalRow): string {
+    if (journal.title) return journal.title;
+    return parseBlocks(journal.blocks)
+        .filter((block): block is Extract<JournalBlock, { t: 'p' }> => block.t === 'p')
+        .map((block) => block.text.trim())
+        .filter(Boolean)
+        .slice(0, 2)
+        .join(' ');
+}
+
 /**
- * 迷你日记页预览块（外观卡的主角）：内容结构 = 编辑器真实层次（报头日期
- * 行 → 正文流 → 媒体块），文案固定常量非随机池；页 = ink-base（卡面
- * surface 的下一档 well，同原分段轨道阶梯，dark 反转自动翻色）；媒体块
- * 按 align 档 self-start/center/end 落位（三元两侧常量类，无变量凭空
- * 出现路径），块内 LucideImage 占位示「这是一张图」。
+ * 迷你日记页预览块（外观卡的主角，**真实数据驱动**——按用户批注「有行程
+ * 后根据实际调整内容」：展示最新一篇日记的真实日期/标题或正文/图片，不再
+ * 用固定假文案；无日记时 = 今日日期 + 占位媒体块，不虚构内容）：
+ * - 页 = ink-base（卡面 surface 的下一档 well，dark 反转自动翻色）；
+ * - 媒体位：有图 → useFileUrlState 解析真实文件（RN Image 同 media-view
+ *   口径，定高 56dp 宽随自然比例钳 88~188；未 ready 先落占位块）；无图 →
+ *   ink-control 占位块 + LucideImage；
+ * - 媒体位水平落位随对齐偏好（useMediaAlignPref 本组件直读，同 MediaImage
+ *   的 hook 口径），self-start/center/end 三元两侧常量类。
  */
-function AppearancePreview({ align }: { align: MediaAlign }) {
+function AppearancePreview({ journal, media }: { journal: JournalRow | null; media: JournalMediaRow | null }) {
     const palette = usePalette();
+    const [align] = useMediaAlignPref();
     const self = align === 'left' ? 'self-start' : align === 'center' ? 'self-center' : 'self-end';
+    const { status, uri } = useFileUrlState(media?.file_key ?? null);
+    const ready = media != null && status === 'ready' && uri != null;
+    // 定高 56dp、宽按自然比例派生并钳制（竖图不顶破卡、横图不细成条；无元
+    // 数据/占位回退 186 ≈ 预览列 3/5）
+    const mediaW =
+        media?.width && media?.height
+            ? Math.min(188, Math.max(88, Math.round(56 * (media.width / media.height))))
+            : 186;
     return (
         <View className="rounded-control bg-ink-base p-4 dark:bg-inkd-base">
-            <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">{previewDateLabel()}</Text>
-            <Text className="mt-2 text-[12px] leading-5 text-ink-secondary dark:text-inkd-secondary">
-                今天把三天行程串了一遍，效率比想象中高。
+            <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
+                {journal ? journalDateLabel(journal.local_date) : previewDateLabel()}
             </Text>
-            <Text className="mt-1 text-[12px] leading-5 text-ink-secondary dark:text-inkd-secondary">
-                给大理段补了两张图，晚上把账记了。
-            </Text>
-            <View className={`mt-3 h-14 w-3/5 items-center justify-center rounded-thumb bg-ink-control dark:bg-inkd-control ${self}`}>
-                <LucideImage size={18} strokeWidth={1.9} color={palette.muted} />
+            {journal ? (
+                <Text
+                    numberOfLines={2}
+                    className="mt-2 text-[12px] leading-5 text-ink-secondary dark:text-inkd-secondary"
+                >
+                    {journalExcerpt(journal)}
+                </Text>
+            ) : null}
+            <View
+                className={`mt-3 items-center justify-center overflow-hidden rounded-thumb bg-ink-control dark:bg-inkd-control ${self}`}
+                style={{ height: 56, width: mediaW }}
+            >
+                {ready ? (
+                    <Image
+                        source={{ uri }}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                        accessibilityLabel="最新日记图片预览"
+                    />
+                ) : (
+                    <LucideImage size={18} strokeWidth={1.9} color={palette.muted} />
+                )}
             </View>
         </View>
     );
