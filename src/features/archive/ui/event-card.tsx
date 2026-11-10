@@ -55,8 +55,19 @@ export function EventStatusChip({ status }: { status: EventStatus }) {
 /**
  * 事件卡（时间线轴 + 卡体）。轴列贯穿整行高——FlatList 相邻行轴自然连成
  * 一条「工单时间线」；行间距收在卡体一侧（pb-3），轴不因此断线。
+ * onLongPress 可选透传（列表页长按弹设置卡）：Pressability 语义 = 长按触发后
+ * 本次松手不再补发 onPress，点卡进详情与长按设置天然二选一。
  */
-export function EventCard({ event, onPress }: { event: Event; onPress: () => void }) {
+export function EventCard({
+    event,
+    onPress,
+    onLongPress,
+}: {
+    event: Event;
+    onPress: () => void;
+    /** 长按回调（可选；传入时 a11y label 追加长按提示，两入口语义一致）。 */
+    onLongPress?: () => void;
+}) {
     const palette = usePalette();
     const done = isEventDone(event);
     const hasGps = event.gps_lat != null && event.gps_lng != null;
@@ -91,11 +102,11 @@ export function EventCard({ event, onPress }: { event: Event; onPress: () => voi
             {/* 卡间距挂内容列（mb-4）：轴线列 self-stretch 随行高延伸，间隙内
                 时间线不断裂；末卡的尾段线属时间线收尾观感，可接受 */}
             <View className="mb-4 min-w-0 flex-1 pb-3 pl-2">
-                <BouncyPressable onPress={onPress} scaleTo={0.985}>
+                <BouncyPressable onPress={onPress} onLongPress={onLongPress} scaleTo={0.985}>
                     <View
                         className="rounded-card bg-ink-surface px-4 py-3.5 dark:bg-inkd-surface"
                         accessibilityRole="button"
-                        accessibilityLabel={`${event.statusLabel}事件：${event.title}，点开查看`}
+                        accessibilityLabel={`${event.statusLabel}事件：${event.title}，点开查看${onLongPress ? '，长按打开设置' : ''}`}
                     >
                         {/* 状态 + 标题行：已完成标题降 muted（工单「已结单」语言），
                             条件类两侧变量集合恒等 */}

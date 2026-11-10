@@ -11,6 +11,10 @@ import { decorateEvent, type Event, type EventStatus } from './event-logic';
 import { useArchiveRevision, useArchiveStore } from './store';
 import { EmptyState, LoadingView, ScreenHeader, usePalette } from './ui';
 import { EventCard } from './ui/event-card';
+// 设置卡共享组件（详情屏状态头同款）：不进详情页改元信息/删除——落库通道经
+// 回调注入（组件不 import store，RenameCard 先例），屏层实现 updateEventMeta
+// + db.getEvent 权威回读。
+import { EventSettingsCard } from './ui/event-settings-card';
 
 /**
  * 事件列表页（/events，工单式容器）：
@@ -108,6 +112,50 @@ export function EventsScreen() {
     const clearFilters = useCallback(() => {
         setQuery('');
         setStatusFilter('all');
+    }, []);
+
+    // ─── 长按设置卡（EventSettingsCard 共享组件，详情屏同款回调契约）──────────
+    // 卡片长按 → settingsEvent 持该装饰行；点卡进详情与长按设置并存（长按后
+    // Pressability 不补发 onPress）。保存成功**不关卡**（连续编辑多字段），
+    // 关闭 = onClose / scrim / Android 返回键（组件内既有出口）。
+    const [settingsEvent, setSettingsEvent] = useState<Event | null>(null);
+
+    /**
+     * 设置卡元信息落库通用链：updateEventMeta → 成功后 db.getEvent 权威回读 →
+     * settingsEvent 换装饰行（卡内 GPS/时间线只读位即时刷新，不滞留旧值）。
+     * 列表侧 revision 已由 store bump，既有 300ms 防抖通道自会刷新，这里不重复
+     * 拉列表；回读失败不回滚保存本体（下次打开按 DB 校正）。false = 失败（卡内
+     * errorText 就地可重试）。
+     */
+    const saveSettingsMeta = useCallback(
+        async (
+            eventId: string,
+            patch: Parameters<ReturnType<typeof useArchiveStore.getState>['updateEventMeta']>[1],
+        ): Promise<boolean> => {
+            const ok = await useArchiveStore.getState().updateEventMeta(eventId, patch);
+            if (!ok) return false;
+            try {
+                const fresh = await db.getEvent(eventId);
+                if (fresh) setSettingsEvent(decorateEvent(fresh));
+            } catch {
+                // 权威回读失败保留当前行（保存已确认），不阻塞卡内编辑流
+            }
+            return true;
+        },
+        [],
+    );
+
+    /** 设置卡删除：级联软删成功 → 关卡（列表项经 revision 防抖通道消失）。 */
+    const deleteSettingsEvent = useCallback(async (eventId: string): Promise<boolean> => {
+        const ok = await useArchiveStore.getState().deleteEvent(eventId);
+        if (ok) setSettingsEvent(null);
+        return ok;
+    }, []);
+
+    /** 设置卡错误上浮（定位失败等 store 外异常 → store.error 通道，详情屏
+     *  surfaceError 同语义；errorText 与屏头错误横幅同帧可见）。 */
+    const surfaceSettingsError = useCallback((message: string) => {
+        useArchiveStore.setState({ error: message });
     }, []);
 
     if (!ready || results === null) return <LoadingView />;
@@ -292,6 +340,9 @@ export function EventsScreen() {
                         <EventCard
                             event={item}
                             onPress={() => router.push(`/events/${item.id}` as never)}
+                            // 长按弹设置卡（不进详情改元信息/删除）；长按后松手
+                            // 不补发 onPress（Pressability 语义，天然二选一）
+                            onLongPress={() => setSettingsEvent(item)}
                         />
                     )}
                     // 空态在 EmptyState/卡片层兜住（FlatList 空数据时
@@ -319,6 +370,29 @@ export function EventsScreen() {
                         </View>
                     </BouncyPressable>
                 </View>
+                {/* 长按设置卡（scrim + 居中卡，条件渲染禁 RN Modal）：errorText =
+                    store.error 反应式（与屏头横幅同通道）；onSaveSubject 保持
+                    详情屏的原子对写法（kind null = 显式清除整对，归一在 store） */}
+                {settingsEvent ? (
+                    <EventSettingsCard
+                        event={settingsEvent}
+                        onSaveTitle={(value) => saveSettingsMeta(settingsEvent.id, { title: value })}
+                        onSaveStatus={(status) => saveSettingsMeta(settingsEvent.id, { status })}
+                        onSaveGps={(gps) => saveSettingsMeta(settingsEvent.id, { gps })}
+                        onSaveHandledBy={(value) => saveSettingsMeta(settingsEvent.id, { handledBy: value })}
+                        onSaveSubject={(kind, value) =>
+                            saveSettingsMeta(settingsEvent.id, {
+                                subjectKind: kind,
+                                subjectValue: kind === null ? null : value,
+                            })
+                        }
+                        onSaveDescription={(value) => saveSettingsMeta(settingsEvent.id, { description: value })}
+                        onDelete={() => deleteSettingsEvent(settingsEvent.id)}
+                        onSurfaceError={surfaceSettingsError}
+                        onClose={() => setSettingsEvent(null)}
+                        errorText={error}
+                    />
+                ) : null}
             </View>
         </View>
     );
