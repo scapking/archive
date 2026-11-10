@@ -21,6 +21,7 @@ import {
 import { useArchiveStore, type TripCard } from './store';
 import { formatTripSpan } from './trip-logic';
 import { LineChart, LoadingView, StatusChip, useEffectiveTheme, usePalette, useThemePref, type ThemePref } from './ui';
+import { useMediaAlignPref, type MediaAlign } from './ui/theme';
 
 /**
  * Me：身份行（Me 标题 + 连续天数）、指标卡（3 格 KPI 单行 + 30 天曲线）、
@@ -46,17 +47,30 @@ import { LineChart, LoadingView, StatusChip, useEffectiveTheme, usePalette, useT
  *   自己的卡面，BouncyPressable 的 scale 变形会让行在卡内「抖动」、整卡 dim
  *   会透出卡底，且相邻行静止 / 被按行缩放的联动观感怪——底色高亮与「一张
  *   大卡」的容器隐喻自洽；Pressable 本体直接挂 active: 类无 css-interop
- *   remount 风险（View 挂 active: 才会被升级 remount，ThemeSection 同款先例）。
+ *   remount 风险（View 挂 active: 才会被升级 remount，SegmentedTrack 同款先例）。
  *   行程数量增减时行自然增减；入口行 48dp 单行，行程行保留两行信息密度，
  *   副题行删除（题名自释，a11y 完整描述保留在入口行 label）；
- * - 层级：身份行 → 指标卡 → 我的内容组 → 外观，共 4 块；区块间距统一 24
- *   （mt-6），全部落在 4dp 网格上；
+ * - 层级：身份行 → 指标卡 → 我的内容组 → 外观大卡，共 4 块；区块间距统一
+ *   24（mt-6），全部落在 4dp 网格上；
+ * - 外观大卡（2026-11 用户反馈「外观设置增加图片对齐…跟外观的颜色合并为一个
+ *   大卡片」）：区块标题「外观」+ 一张 rounded-card surface 卡，卡内两个分组
+ *   ——主题三段（system/light/dark）+ 图片对齐三段（left/center/right，消费
+ *   useMediaAlignPref，编辑器媒体块对齐偏好，默认靠左），组间 24px（pt-6）
+ *   留白不加线（Apple Journal 卡内节奏，与指标卡同口径）；分组小标题 12px
+ *   muted 档，右侧 12px muted meta 显示当前值（主题 = 生效档、对齐 = 当前档）。
+ *   分段控件 = SegmentedTrack（原 ThemeSection spring 滑块实现的抽象复用，
+ *   两处同款不复制粘贴）：rounded-thumb 滑块 spring 跟随、hitSlop 纵 4 横 0、
+ *   选中 raised；轨道在 surface 卡上顺延 tone 阶梯——轨道用 ink-base（卡面
+ *   surface 的下一档 well），滑块保持 ink-raised（与 event-settings-card
+ *   「选中 = raised 填充」同语言），未选段按压 active: 即滑块色（按压预显
+ *   选中底色）；
  * - 动效（RN Animated native driver，同 BouncyPressable / boot-screen 通道，
  *   不用 reanimated——Fabric 上驱动触摸视图样式有概率吞按压）：内容单元
  *   fade + translateY 交错进场（300ms ease-out、60ms 步进、reduceMotion 直接
  *   终态，见 Enter），曲线 opt-in 淡入（line-chart.animated，仅本屏开启），
- *   外观分段滑块 spring 跟随（见 ThemeSection）；动画层与触摸层分离
- *   （Enter 只做 Animated.View，Pressable 一律在其 children 内部）；
+ *   外观分段滑块 spring 跟随（见 SegmentedTrack）；动画层与布局/触摸层分离
+ *   （Enter 外层普通 View 承担 className、内层 Animated.View 只挂动画 style，
+ *   Pressable 一律在其 children 内部）；
  * - 关于/版本：审计确认本页无此区块，不新增（无需折叠）。
  * 内联检索区已独立成 /search 页（DEV.md #5），此处只留组内一行入口。
  */
@@ -69,10 +83,20 @@ const ENTER_OFFSET_Y = 10;
 
 /**
  * 进场单元：fade + translateY 一次性入场（mount 即播，不重放）。
- * - 动画层与内容/触摸层分离：本组件只做 Animated.View（style 仅 opacity +
- *   transform、useNativeDriver，铁律），className 透传给动画层承担布局与
- *   留白；Pressable / BouncyPressable 一律在 children 内部，触摸面永不与本
- *   层动画 style 混挂；
+ * - 动画层与布局/触摸层分离：**className 挂外层普通 View，Animated.View 只挂
+ *   内联动画 style（仅 opacity + transform、useNativeDriver，铁律）**——
+ *   2026-11 修复 web desktop「Me 页部分 css 失效」：根因 = css-interop 的
+ *   interop 注册表只登记 RN 原生组件（wrapJSX 按类型查表替换，见
+ *   react-native-css-interop runtime/components.js），Animated.View 不在表；
+ *   native 上 RN 源码 JSX 经 nativewind jsxImportSource 编译、内部 View 命中
+ *   注册表，className「转发落地」恰好可用；web 上 react-native-web 是预编译
+ *   产物（无 JSX，且 css-interop babel 插件的 allowedFileRegex 明确排除
+ *   react-native-web 的 createElement 改写）→ Animated.View 内部渲染的 View
+ *   不经过 wrapJSX，className 被静默丢弃（desktop-shell ShellSlot 同款实测
+ *   先例）——本屏 KPI flex-1 ×3 与曲线段 px-4 py-3 在桌面 web 全数失效。
+ *   修复后布局类落在两端都注册的普通 View 上，动画层保持纯 style 契约；
+ *   Pressable / BouncyPressable 一律在 children 内部，触摸面永不与动画
+ *   style 混挂；
  * - reduceMotion（系统减弱动态）：异步检测，命中即收敛静态终态——boot-screen
  *   同款取舍（检测异步，最坏代价 = 命中前已起播的 300ms 被截停跳终态）。
  */
@@ -127,15 +151,16 @@ function Enter({
         return () => anim.stop();
     }, [reduceMotion, delay, progress]);
     return (
-        <Animated.View
-            className={className}
-            style={{
-                opacity: progress,
-                transform: [{ translateY: progress.interpolate({ inputRange: [0, 1], outputRange: [y, 0] }) }],
-            }}
-        >
-            {children}
-        </Animated.View>
+        <View className={className}>
+            <Animated.View
+                style={{
+                    opacity: progress,
+                    transform: [{ translateY: progress.interpolate({ inputRange: [0, 1], outputRange: [y, 0] }) }],
+                }}
+            >
+                {children}
+            </Animated.View>
+        </View>
     );
 }
 
@@ -207,8 +232,13 @@ export function MeScreen() {
                             </View>
                             {/* animated opt-in（组件默认行为不变，仅本屏开启）：曲线在段
                                 容器进场后再淡入一拍（组件内延迟 260ms）——标题先立、
-                                曲线后到，两拍节奏替代「一根横线」的段落划分 */}
-                            <LineChart points={metrics.curve} animated />
+                                曲线后到，两拍节奏替代「一根横线」的段落划分。
+                                height=120 显式定高（4dp 网格，96~120 档上沿）：不用
+                                aspectRatio/flex/百分比这类 web 宽容器下会计算失控的
+                                尺寸策略，LineChart 内部即「显式 height style + onLayout
+                                测宽」，两端一致；168 在空数据态显得空旷（desktop 大
+                                空白反馈的观感成分之一），120 收紧后 plotH 仍有 88 */}
+                            <LineChart points={metrics.curve} animated height={120} />
                         </Enter>
                     </View>
 
@@ -261,11 +291,11 @@ export function MeScreen() {
                         </View>
                     </View>
 
-                    {/* 主题偏好：区块在行组时间线之后淡入（严格自上而下），段内滑块
-                        spring 跟随选中项（见 ThemeSection） */}
-                    <Enter delay={280 + ENTER_STAGGER * (2 + trips.length)}>
-                        <ThemeSection />
-                    </Enter>
+                    {/* 外观大卡（主题 + 图片对齐）：区块在行组时间线之后淡入（严格
+                        自上而下，delay 锚点沿用原 ThemeSection 口径），卡内两组分段
+                        滑块 spring 跟随选中项（见 SegmentedTrack）；进场 = 标题与
+                        卡体两拍交错（克制） */}
+                    <AppearanceSection delay={280 + ENTER_STAGGER * (2 + trips.length)} />
                 </ScrollView>
             </View>
         </View>
@@ -418,38 +448,45 @@ function TripsEmptyBlock() {
 }
 
 /**
- * 主题偏好：system（跟随系统）/ light（灰白）/ dark。
- *
- * 分段滑块（Animated translateX spring 跟随选中项）：
- * - 滑块承载选中背景（raised，绝对定位铺在段后），段落本体不再挂条件 bg 类
- *   ——原「active ? bg-raised : bg-surface」三元是本区最大的 css-interop
- *   remount 风险点（bg-色 类携带 --tw-bg-opacity），滑块方案直接消除；
- *   文字层级仍随选中切换（font/色 纯静态类条件，沿用既有口径，无变量凭空
- *   出现路径）；按压反馈保留 active: 一档底色（未选中段按压可见，选中段与
- *   滑块同色不可见，天然无叠加冲突）；
+ * 三段分段滑块（原 ThemeSection spring 滑块实现的抽象复用版，本屏主题与
+ * 图片对齐两组同款共用，不复制粘贴两份）：
+ * - 滑块承载选中背景（raised，绝对定位铺在段后），段落本体不挂条件 bg 类
+ *   ——「active ? bg-raised : bg-surface」三元是 css-interop remount 风险点
+ *   （bg-色 类携带 --tw-bg-opacity），滑块方案直接消除；文字层级随选中切换
+ *   （font/色 纯静态类条件，两侧常量、无变量凭空出现路径）；按压反馈保留
+ *   active: 一档底色（未选中段按压可见 = 滑块同色，按压预显选中底色；选中段
+ *   与滑块同色不可见，天然无叠加冲突）；
  * - 几何：轨道 p-1(4) + 段间 gap-1(4)×2、三段 flex-1 等分 → 段宽 =
- *   (轨道宽 - 16) / 3；滑块 inset-y-1（高 = h-9 段高 36）、left-1、宽 = 段宽、
- *   translateX = 段序 × (段宽 + 4)。首次布局直接落位（不播「从最左横扫到位」），
- *   此后选中变更 spring 滑移（friction 9，BouncyPressable 回弹同档：短滑不
- *   过冲，克制）；
- * - 命中口径保留：分段本体 h-9(36) < 44 → 纵向 hitSlop 4 补足 44 等效；横向
- *   归 0（相邻段 gap-1 < 2×hitSlop，横向外扩会重叠误触）；
+ *   (轨道宽 - 16) / 3；滑块 top/bottom/left 4（= inset-y-1 left-1，高 = h-9
+ *   段高 36）、宽 = 段宽、translateX = 段序 × (段宽 + 4)。首次布局直接落位
+ *   （不播「从最左横扫到位」），此后选中变更 spring 滑移（friction 9，
+ *   BouncyPressable 回弹同档：短滑不过冲，克制）；
+ * - **滑块几何一律内联 style**（Animated 系组件上的 className 在 web 会被
+ *   css-interop 静默丢弃，根因见 Enter 注；desktop-shell ShellSlot 同款 style
+ *   契约）：Animated.View 只挂定位/宽度/transform，涂装（圆角 + raised 底）
+ *   交给内层普通 View 的 className（两端注册组件，dark: 变体照常生效）；
+ * - 命中口径：分段本体 h-9(36) < 44 → 纵向 hitSlop 4 补足 44 等效；横向归 0
+ *   （相邻段 gap-1 < 2×hitSlop，横向外扩会重叠误触）；
+ * - 轨道 tone（surface 卡内的顺延）：卡面 surface → 轨道 ink-base（下一档
+ *   well，rounded-control）→ 滑块 ink-raised（选中填充，与 event-settings-card
+ *   「选中 = raised」同语言）；未选段按压 active:ink-raised = 滑块色；
  * - 滑块 pointerEvents="none"（纯视觉层不参与触摸，EventCard 轴列同口径）；
  *   首帧轨道宽未测得时宽 0 不可见，onLayout 到位后落位。
  */
-function ThemeSection() {
-    const [pref, setPref] = useThemePref();
-    const theme = useEffectiveTheme();
-    const options: Array<{ key: ThemePref; label: string }> = [
-        { key: 'system', label: '跟随系统' },
-        { key: 'light', label: '浅色' },
-        { key: 'dark', label: '深色' },
-    ];
+function SegmentedTrack<T extends string>({
+    options,
+    value,
+    onChange,
+}: {
+    options: Array<{ key: T; label: string }>;
+    value: T;
+    onChange: (key: T) => void;
+}) {
     const [trackW, setTrackW] = useState(0);
     const placedRef = useRef(false);
     const sliderX = useRef(new Animated.Value(0)).current;
-    const activeIndex = Math.max(0, options.findIndex((option) => option.key === pref));
-    // 段宽：轨道 p-1(4)×2 + 段间 gap-1(4)×2 → (trackW - 16) / 3（flex-1 三等分内容区）
+    const activeIndex = Math.max(0, options.findIndex((option) => option.key === value));
+    // 段宽：轨道 p-1(4)×2 + 段间 gap-1(4)×2 → (trackW - 16) / options.length（flex-1 等分内容区）
     const segW = trackW > 0 ? (trackW - 16) / options.length : 0;
     useEffect(() => {
         if (segW <= 0) return;
@@ -466,48 +503,117 @@ function ThemeSection() {
         return () => spring.stop();
     }, [activeIndex, segW, sliderX]);
     return (
-        <View className="mt-6">
-            <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                外观（当前 {theme === 'dark' ? '深色' : '浅色'}）
-            </Text>
-            {/* 轨道无边框（#13 收敛：容器级描边清除，surface-on-base 即 tone 档），
-                与 trip-form EndModeSwitch / search 范围分段同一轨道语言 */}
-            <View
-                className="flex-row gap-1 rounded-control bg-ink-surface p-1 dark:bg-inkd-surface"
-                onLayout={(event) => setTrackW(event.nativeEvent.layout.width)}
+        <View
+            // 轨道无边框（#13 收敛：容器级描边清除，tone 阶梯即层次，见组件注）
+            className="flex-row gap-1 rounded-control bg-ink-base p-1 dark:bg-inkd-base"
+            onLayout={(event) => setTrackW(event.nativeEvent.layout.width)}
+        >
+            {/* 滑块：先于段落渲染（后绘的段落文字浮在其上），纯视觉层；几何内联
+                style（web 可靠性见组件注），涂装在内层普通 View */}
+            <Animated.View
+                pointerEvents="none"
+                style={{
+                    position: 'absolute',
+                    top: 4,
+                    bottom: 4,
+                    left: 4,
+                    width: segW,
+                    transform: [{ translateX: sliderX }],
+                }}
             >
-                {/* 滑块：先于段落渲染（后绘的段落文字浮在其上），纯视觉层 */}
-                <Animated.View
-                    pointerEvents="none"
-                    className="absolute inset-y-1 left-1 rounded-thumb bg-ink-raised dark:bg-inkd-raised"
-                    style={{ width: segW, transform: [{ translateX: sliderX }] }}
-                />
-                {options.map((option) => {
-                    const active = pref === option.key;
-                    return (
-                        <Pressable
-                            key={option.key}
-                            onPress={() => setPref(option.key)}
-                            // 分段本体 h-9(36px) < 44：纵向 hitSlop 4 补足 44 等效；
-                            // 横向必须归 0——相邻分段 gap-1(4px) < 2×hitSlop，横向外扩会重叠
-                            hitSlop={{ top: 4, bottom: 4, left: 0, right: 0 }}
-                            className="h-9 flex-1 items-center justify-center rounded-thumb active:bg-ink-raised dark:active:bg-inkd-raised"
-                            accessibilityRole="button"
-                            accessibilityState={{ selected: active }}
+                <View className="h-full w-full rounded-thumb bg-ink-raised dark:bg-inkd-raised" />
+            </Animated.View>
+            {options.map((option) => {
+                const active = value === option.key;
+                return (
+                    <Pressable
+                        key={option.key}
+                        onPress={() => onChange(option.key)}
+                        // 分段本体 h-9(36px) < 44：纵向 hitSlop 4 补足 44 等效；
+                        // 横向必须归 0——相邻分段 gap-1(4px) < 2×hitSlop，横向外扩会重叠
+                        hitSlop={{ top: 4, bottom: 4, left: 0, right: 0 }}
+                        className="h-9 flex-1 items-center justify-center rounded-thumb active:bg-ink-raised dark:active:bg-inkd-raised"
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: active }}
+                    >
+                        <Text
+                            className={`text-[12px] ${
+                                active
+                                    ? 'font-medium text-ink-text dark:text-inkd-text'
+                                    : 'text-ink-muted dark:text-inkd-muted'
+                            }`}
                         >
-                            <Text
-                                className={`text-[12px] ${
-                                    active
-                                        ? 'font-medium text-ink-text dark:text-inkd-text'
-                                        : 'text-ink-muted dark:text-inkd-muted'
-                                }`}
-                            >
-                                {option.label}
+                            {option.label}
+                        </Text>
+                    </Pressable>
+                );
+            })}
+        </View>
+    );
+}
+
+/**
+ * 外观大卡：区块标题「外观」+ 一张 rounded-card surface 卡，卡内两个分组
+ * （组间 pt-6 = 24px 留白不加线，Apple Journal 卡内节奏，同指标卡口径）：
+ * - 主题组：三段分段（跟随系统/浅色/深色），消费 useThemePref（点击即存，
+ *   colorScheme.set 副作用在 hook 内）；右侧 meta 显示**生效档**（pref 跟随
+ *   系统时与选中档不同，信息不冗余）；
+ * - 图片对齐组：三段分段（靠左/居中/靠右），消费 useMediaAlignPref（persist
+ *   自动，ui/theme 接口先行波次的既有 hook），编辑器媒体块（单张图/堆叠图
+ *   与视频）渲染对齐的设置入口，渲染消费在编辑器侧（另一链路），此处只做
+ *   设置 UI；右侧 meta 显示当前档（该偏好无生效副作用，选中即当前）；
+ * - 分组小标题 12px muted 档（规格口径）；区块进场 = 标题（y=0 纯淡入）与
+ *   卡体（y=8）两拍交错，时间线锚点由调用方传入（沿用原 ThemeSection 的
+ *   「行组之后」口径，严格自上而下）。
+ */
+function AppearanceSection({ delay }: { delay: number }) {
+    const [pref, setPref] = useThemePref();
+    const theme = useEffectiveTheme();
+    const [align, setAlign] = useMediaAlignPref();
+    const themeOptions: Array<{ key: ThemePref; label: string }> = [
+        { key: 'system', label: '跟随系统' },
+        { key: 'light', label: '浅色' },
+        { key: 'dark', label: '深色' },
+    ];
+    const alignOptions: Array<{ key: MediaAlign; label: string }> = [
+        { key: 'left', label: '靠左' },
+        { key: 'center', label: '居中' },
+        { key: 'right', label: '靠右' },
+    ];
+    const alignLabel = alignOptions.find((option) => option.key === align)?.label ?? alignOptions[0].label;
+    return (
+        <View className="mt-6">
+            <Enter delay={delay} y={0}>
+                <Text className="mb-3 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                    外观
+                </Text>
+            </Enter>
+            <Enter delay={delay + ENTER_STAGGER} y={8}>
+                <View className="rounded-card bg-ink-surface dark:bg-inkd-surface">
+                    {/* 主题组：小标题 12px muted + 右侧生效档 meta，轨道 tone 见
+                        SegmentedTrack 组件注（surface 卡上的顺延阶梯） */}
+                    <View className="px-4 pt-4">
+                        <View className="mb-2 flex-row items-center justify-between">
+                            <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">主题</Text>
+                            <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">
+                                生效 {theme === 'dark' ? '深色' : '浅色'}
                             </Text>
-                        </Pressable>
-                    );
-                })}
-            </View>
+                        </View>
+                        <SegmentedTrack options={themeOptions} value={pref} onChange={setPref} />
+                    </View>
+                    {/* 图片对齐组：组间 pt-6(24px) 留白不加线（卡内分区靠留白口径）；
+                        显示当前值 + 点击即存（persist 由 useMediaAlignPref 收口） */}
+                    <View className="px-4 pb-4 pt-6">
+                        <View className="mb-2 flex-row items-center justify-between">
+                            <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">图片对齐</Text>
+                            <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">
+                                当前 {alignLabel}
+                            </Text>
+                        </View>
+                        <SegmentedTrack options={alignOptions} value={align} onChange={setAlign} />
+                    </View>
+                </View>
+            </Enter>
         </View>
     );
 }
