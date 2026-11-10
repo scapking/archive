@@ -115,6 +115,21 @@ export function useThemePref(): [ThemePref, (pref: ThemePref) => void] {
     return [pref, setPref];
 }
 
+/**
+ * 笔记媒体块对齐偏好（单张与堆叠共用，日记/事件编辑器同源消费）：
+ * left（靠左，默认）/ center（居中）/ right（靠右）。纯展示偏好，无生效副作用
+ * （区别于 useThemePref 的 colorScheme.set）——消费方在渲染处直接读值。
+ */
+export type MediaAlign = 'left' | 'center' | 'right';
+
+export function useMediaAlignPref(): [MediaAlign, (align: MediaAlign) => void] {
+    const align = archiveConfig.use((state) => state['ui.mediaAlign']) as MediaAlign;
+    const setAlign = useCallback((next: MediaAlign) => {
+        archiveConfig.update({ 'ui.mediaAlign': next });
+    }, []);
+    return [align, setAlign];
+}
+
 /** 应用主题偏好（启动与切换共用；'system' 交还系统媒体查询）。 */
 export function applyThemePref(pref: ThemePref): void {
     colorScheme.set(pref);

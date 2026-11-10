@@ -17,6 +17,8 @@ export const archiveConfig = createConfigStore(
         'project.client.heartbeat': '',
         // 主题偏好：system（跟随系统）/ light（灰白）/ dark
         'ui.theme': 'system',
+        // 笔记媒体块对齐（单张与堆叠共用）：left（靠左，默认）/ center / right
+        'ui.mediaAlign': 'left',
     },
     {
         secure: ['zookeeper.key', 'gateway.key', 'project.client.key'],
