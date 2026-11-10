@@ -880,8 +880,12 @@ export async function nextDayPlanSortOrder(tripId: string, localDate: string): P
  */
 export async function softDeleteDayPlan(id: string, at: number): Promise<void> {
     const db = await getDb();
+    // 绑定参数 = 占位符逐一对应（deleted_at / updated_at / WHERE id）：此前漏传
+    // WHERE 段的 id（[at, id] 两个参数对三个 ?），SQLite 未绑定参数按 NULL 处理
+    // ——WHERE id = NULL 永假，UPDATE 静默 0 行（不抛错）→ 屏层横幅报成功但行
+    // 未删、进度统计不动的整条链路假象（2026-11-11 反馈三根因）。
     await db.run(
         'UPDATE day_plans SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL',
-        [at, id],
+        [at, at, id],
     );
 }

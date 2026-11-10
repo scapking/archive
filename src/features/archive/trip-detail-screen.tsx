@@ -27,8 +27,9 @@ import { tintIcon } from './ui/editor-icons';
 import { FieldInput } from './ui/field-input';
 import * as db from './db';
 // 屏层直连 db 的数据变化广播（同 me-screen 头像先例）：计划增/勾/删走屏层直连
-// db 的轻量行级取径，落库后经中立层 notifyDataRevision 广播（use-file-url 等
-// 订阅者复验失效；store mutation 则由 store 内部转发，两条通道同源不漂移）。
+// db 的轻量行级取径，落库后推进 store revision（useArchiveStore.setState——屏层
+// 直连 db 的行级操作必须走这条：notifyDataRevision 直发不在本屏订阅链上，历史
+// 踩坑；store 订阅者内部桥接 notifyDataRevision，两条通道同源不漂移）。
 import { useArchiveRevision, useArchiveStore } from './store';
 import {
     dayDiff,
@@ -96,7 +97,8 @@ import { DeadEndView } from './journal-edit-screen';
  * - **计划长按删除（2026-11-11 反馈三）**：计划行（未锁定）长按 → 删除操作卡
  *   （scrim + 居中卡，同范式；卡内预览计划原文）→ 直接删（db.softDeleteDayPlan
  *   软删，屏层直连 db 不经 store——轻量行级取径，同本屏 insertDayPlan 的既有
- *   变体）+ 屏级横幅可见反馈（4s 自动消退）+ notifyDataRevision 中立层广播；
+ *   变体）+ 屏级横幅可见反馈（4s 自动消退）+ store revision 推进（订阅链桥接
+ *   广播；notifyDataRevision 直发不在本屏订阅链，历史踩坑勿回填）；
  *   与勾选点按并存（Pressability 长按触发后不补发 onPress）；计划增/勾/删均
  *   广播数据版本，首页 deck 的计划完成度统计不再滞留旧值；
  * - 锁定（#7）：isTripLocked（已结束）→ 卡片只读（勾选禁用、无添加计划、无
@@ -416,8 +418,9 @@ const DayCard = memo(function DayCard({
             Keyboard.dismiss();
             onPlanAddingDone();
             onChanged();
-            // 中立层广播（屏层直连 db 取径的配套）：archive 首页 deck 的计划完成度
-            // 统计据此重载（首页卡不再滞留旧计划数），use-file-url 等订阅者复验
+            // store revision 推进（屏层直连 db 取径的配套，订阅链桥接广播）：
+            // archive 首页 deck 的计划完成度统计据此重载（首页卡不再滞留旧计划数），
+            // use-file-url 等订阅者复验
             useArchiveStore.setState((s) => ({ revision: s.revision + 1 }));
         } catch (caught) {
             // 失败可见：crypto/db 抛错（如 web 非安全上下文）不能静默吞掉，draft 保留不丢输入
@@ -432,7 +435,8 @@ const DayCard = memo(function DayCard({
             await db.setDayPlanDone(plan.id, plan.done === 0);
             setActionError(null);
             onChanged();
-            // 中立层广播（同 submitPlan）：计划完成度变化上浮到首页 deck 统计
+            // store revision 推进（同 submitPlan，订阅链桥接广播）：计划完成度变化
+            // 上浮到首页 deck 统计
             useArchiveStore.setState((s) => ({ revision: s.revision + 1 }));
         } catch (caught) {
             // 勾选态由父级 reload 数据派生（非乐观更新），失败无需回滚本地状态，但要可见报错
