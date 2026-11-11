@@ -9,6 +9,7 @@ import {
     ScrollView,
     Text,
     View,
+    type GestureResponderEvent,
     type ScrollViewInstance,
 } from 'react-native';
 import { Path, Rect } from 'react-native-svg';
@@ -1630,6 +1631,22 @@ export function DeadEndView({
  * dismissKeyboard 空引用闸、子元素认领优先；触摸面零 className；无障碍不挂
  * role（背景装饰层）。卸载零副作用。
  */
+/**
+ * Web 可编辑目标闸（#K2 补丁，2026-11-12 用户反馈 web「聚焦即失焦」）：
+ * RNW 的合成点击会从 `<textarea>`/`<input>` 一路冒泡到本层（native 的
+ * responder 体系由 TextInput 最深优先认领，本层根本不会收到——所以 native
+ * 无此 bug），onPress 直达 dismissKeyboard 会把刚聚焦的输入框 blur 掉，且
+ * 与 TextBlock 的容器兜底聚焦互相打架（focus→blur→refocus→blur 乒乓）。
+ * 目标为可编辑元素时本层让路；空白区域 target 仍是本层/画布容器，照常
+ * 收键。native 直接 false 零变化。
+ * 【同步锚点：journal-edit-screen / event-detail-screen 两份 CanvasDismissLayer 同字面量】
+ */
+const isWebEditablePressTarget = (e: GestureResponderEvent): boolean => {
+    if (Platform.OS !== 'web') return false;
+    const target = e.nativeEvent.target as { tagName?: string; isContentEditable?: boolean } | null;
+    return target?.tagName === 'TEXTAREA' || target?.tagName === 'INPUT' || target?.isContentEditable === true;
+};
+
 const CanvasDismissLayer = memo(function CanvasDismissLayer({
     bottomBaseline,
     onPress,
@@ -1643,7 +1660,12 @@ const CanvasDismissLayer = memo(function CanvasDismissLayer({
     const paddingBottom = useKeyboardCanvasBottomPadding(bottomBaseline);
     return (
         <Pressable
-            onPress={onPress}
+            onPress={(e) => {
+                // 内联箭头仅本层重渲时重建（memo 层重渲只发生在垫高变化），
+                // children 子树经元素引用相等 bail-out，无重渲波及
+                if (isWebEditablePressTarget(e)) return;
+                onPress();
+            }}
             style={{
                 // 画布顶部留白 16dp：叠加报头 pb-2(8dp) 后，报头→首段净间距
                 // 24dp（EDITOR_RHYTHM.mastheadToFirstBlock）

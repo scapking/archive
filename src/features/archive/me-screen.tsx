@@ -12,7 +12,6 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import {
-    BouncyPressable,
     LucideCalendar,
     LucideChevronRight,
     LucideFlag,
@@ -264,11 +263,17 @@ export function MeScreen() {
                                     accessibilityLabel="事件"
                                 />
                             </Enter>
-                            {/* 行程：空态块（还没有行程 + 创建行程 CTA，2026-11-11
-                                用户指令恢复）/ 行程行（有行程后按实际渲染） */}
+                            {/* 行程行：空态 = 静态「行程」单行（2026-11-11 用户指令：
+                                标签收敛「行程」两字、去副题与创建行程按钮）；
+                                有行程后按实际渲染行程行 */}
                             {trips.length === 0 ? (
                                 <Enter delay={280 + ENTER_STAGGER * 2}>
-                                    <TripsEmptyBlock />
+                                    <View className="flex-row items-center gap-3 px-4 py-3.5">
+                                        <LucideCalendar size={18} strokeWidth={1.9} color={palette.secondary} />
+                                        <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
+                                            行程
+                                        </Text>
+                                    </View>
                                 </Enter>
                             ) : (
                                 trips.map((trip, index) => (
@@ -405,44 +410,6 @@ function TripRow({ trip, onPress }: { trip: TripCard; onPress: () => void }) {
 }
 
 /**
- * 行程空态（合并卡内的块，无卡壳——卡面归整卡）：图标行 + 一行"怎么做" +
- * CTA「创建行程」（frontend-design：空屏是指引，不是情绪）。块本身不是按压体，
- * 只有 CTA 可按；CTA h-11 全宽即命中盒，块内四周无相邻命中元素。按压反馈由
- * CTA 的 BouncyPressable 承担（控件级弹跳保留——它是按钮不是行），内层 View
- * 不用 active: 伪类（css-interop 会把 View 升级成 Pressable 首帧后 remount，同
- * EmptyState/ChooserRow 口径）。（2026-11-11 曾按截图批注删除，同日用户指令
- * 恢复——Me 保留「搜索/事件/行程(空态或行)」完整结构。）
- */
-function TripsEmptyBlock() {
-    const router = useRouter();
-    const palette = usePalette();
-    return (
-        <View className="px-4 py-3.5">
-            <View className="flex-row items-center gap-3">
-                <LucideCalendar size={18} strokeWidth={1.9} color={palette.secondary} />
-                <View className="min-w-0 flex-1">
-                    <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
-                        还没有行程
-                    </Text>
-                    <Text numberOfLines={1} className="mt-0.5 text-[12px] text-ink-muted dark:text-inkd-muted">
-                        建一个行程，路上的日子就有地方记了
-                    </Text>
-                </View>
-            </View>
-            <View className="mt-3">
-                <BouncyPressable onPress={() => router.push('/trip/new')} scaleTo={0.97}>
-                    <View className="h-11 items-center justify-center rounded-control border border-ink-border bg-ink-base dark:border-inkd-border dark:bg-inkd-base">
-                        <Text className="text-[13px] font-medium text-ink-text dark:text-inkd-text">
-                            创建行程
-                        </Text>
-                    </View>
-                </BouncyPressable>
-            </View>
-        </View>
-    );
-}
-
-/**
  * 外观卡（2026-11 迭代五版：v1 文字分段滑块、v2 预览缩略图、v3 去卡壳轻行、
  * v4 实时预览卡均被否/调整；最终形态 = **紧凑行式卡**：卡内两组「label 左
  * 14px medium + CompactSegmented 右」字段行（主题三档 / 图片对齐三档，
@@ -503,12 +470,15 @@ function AppearanceSection({ delay }: { delay: number }) {
  * - **滑块几何一律内联 style**（Animated 系组件 className 在 web 被
  *   css-interop 静默丢弃，见 Enter 注）：Animated.View 只挂定位/宽度/
  *   transform，涂装交内层普通 View className；
- * - 几何：轨道 p-1(4)、段间无 gap、三段等分 → 段宽 = (轨道宽 - 8) / 3；
- *   滑块 top/bottom/left 4、宽 = 段宽、translateX = 段序 × 段宽；
+ * - **几何 = 逐段实测宽度**（2026-11-11 真机穿模根因：分段自然宽度——px-4
+ *   + 标签长短不一（「跟随系统」4 字 > 「浅色」2 字），旧等分假设
+ *   (trackW-8)/3 与实际分段错位，滑块盖不住选中段、文字顶着黑丸边缘）。
+ *   每段 onLayout 实测宽度 → 前缀和 offsets → 滑块宽 = 选中段实测宽、
+ *   translateX = 选中段前缀和；段数与标签实例持有恒定，实测值只随宽度
+ *   环境（旋转/拉伸）变化；v1 无此问题因其分段 flex-1 天然等宽；
  * - **轨道 overflow-hidden**：滑块是绝对定位层，轨道圆角（control 10）比
- *   滑块圆角（thumb 8）大——末端段选中时滑块方角从轨道圆角下穿出（真机
- *   穿模，2026-11-11 用户反馈），轨道层裁切兜住；滑块几何不出轨道内容区，
- *   裁切无副作用；
+ *   滑块圆角（thumb 8）大，末端段圆角差异区由轨道裁切兜住；实测几何下
+ *   滑块不越轨道内容区，裁切无副作用；
  * - 命中：段本体 h-8(32) < 44 → 纵向 hitSlop 4 补足；段间零间隙横向归 0
  *   （外扩会与邻段重叠误触）。
  */
@@ -523,15 +493,22 @@ function CompactSegmented<T extends string>({
     onChange: (key: T) => void;
     labelPrefix: string;
 }) {
-    const [trackW, setTrackW] = useState(0);
+    const [segWidths, setSegWidths] = useState<number[]>([]);
     const placedRef = useRef(false);
     const sliderX = useRef(new Animated.Value(0)).current;
     const activeIndex = Math.max(0, options.findIndex((option) => option.key === value));
-    // 段宽：轨道 p-1(4)×2、段间无 gap → (trackW - 8) / options.length（等分内容区）
-    const segW = trackW > 0 ? (trackW - 8) / options.length : 0;
+    // 逐段实测：offsets = 前缀和（段间零间隙，实测段宽和恒等于轨道内容区宽）
+    const measured = segWidths.length === options.length && segWidths.every((width) => width > 0);
+    let acc = 0;
+    const offsets = options.map((_, index) => {
+        const offset = acc;
+        acc += segWidths[index] ?? 0;
+        return offset;
+    });
+    const segW = measured ? segWidths[activeIndex] : 0;
     useEffect(() => {
-        if (segW <= 0) return;
-        const target = activeIndex * segW;
+        if (!measured) return;
+        const target = offsets[activeIndex];
         if (!placedRef.current) {
             placedRef.current = true;
             sliderX.setValue(target);
@@ -540,14 +517,12 @@ function CompactSegmented<T extends string>({
         const spring = Animated.spring(sliderX, { toValue: target, friction: 9, useNativeDriver: true });
         spring.start();
         return () => spring.stop();
-    }, [activeIndex, segW, sliderX]);
+        // offsets 随 segWidths 派生（O(段数) 每渲染直算），activeIndex 选中变更即重瞄准
+    }, [activeIndex, measured, offsets, sliderX]);
     return (
-        <View
-            className="flex-row overflow-hidden rounded-control bg-ink-border p-1 dark:bg-inkd-border"
-            onLayout={(event) => setTrackW(event.nativeEvent.layout.width)}
-        >
+        <View className="flex-row overflow-hidden rounded-control bg-ink-border p-1 dark:bg-inkd-border">
             {/* 滑块：纯视觉层先渲染（段落文字浮其上），几何内联 style（web 可靠性
-                见组件注），涂装在内层普通 View */}
+                见组件注），涂装在内层普通 View；实测未就绪时宽 0 不可见 */}
             <Animated.View
                 pointerEvents="none"
                 style={{
@@ -561,7 +536,7 @@ function CompactSegmented<T extends string>({
             >
                 <View className="h-full w-full rounded-thumb bg-ink-base dark:bg-inkd-base" />
             </Animated.View>
-            {options.map((option) => {
+            {options.map((option, index) => {
                 const active = value === option.key;
                 return (
                     <Pressable
@@ -569,6 +544,15 @@ function CompactSegmented<T extends string>({
                         onPress={() => onChange(option.key)}
                         hitSlop={{ top: 4, bottom: 4, left: 0, right: 0 }}
                         className="h-8 items-center justify-center px-4"
+                        onLayout={(event) =>
+                            setSegWidths((prev) => {
+                                const width = event.nativeEvent.layout.width;
+                                if (prev[index] === width) return prev;
+                                const next = [...prev];
+                                next[index] = width;
+                                return next;
+                            })
+                        }
                         accessibilityRole="button"
                         accessibilityState={{ selected: active }}
                         accessibilityLabel={`${labelPrefix}：${option.label}`}
