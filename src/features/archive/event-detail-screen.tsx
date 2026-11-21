@@ -143,10 +143,6 @@ import { EventSettingsCard } from './ui/event-settings-card';
  * 屏内不产生新的路由字面量。
  */
 
-/** 每个事件的媒体上限（防误触爆量；对齐 journal-edit 的 MAX_MEDIA 口径）。
- *  事件无九图配额语义（工单媒体密度低于日记），单闸收口。 */
-const MAX_MEDIA = 12;
-
 /** 画布底部静态垫高基线（dp）：给 + 浮钮让位（journal-edit 同款几何）。 */
 const CANVAS_BOTTOM_BASE_INSET = 96;
 
@@ -380,7 +376,7 @@ export function EventDetailScreen() {
         return () => {
             const row = eventRef.current;
             if (!row || deletedRef.current) return;
-            const pending = Array.from(pendingUploadsRef.current.values(), (entry) => entry.promise);
+            const pending = Array.from(pendingUploadsRef.current.values());
             if (!dirtyRef.current && pending.length === 0) return;
             dirtyRef.current = false;
             void (async () => {
@@ -587,11 +583,10 @@ export function EventDetailScreen() {
     // 多选模式 ref 镜像（离开屏/确认回调读取，journal-edit 同款）
     const selectModeRef = useRef(selectMode);
     selectModeRef.current = selectMode;
-    // 在途媒体上传注册表（进程内 Map）：pendingId → { promise, kind }——多任务
-    // 并行互不影响；任务收敛即自摘除
-    const pendingUploadsRef = useRef(
-        new Map<string, { promise: Promise<void>; kind: 'image' | 'video' }>(),
-    );
+    // 在途媒体上传注册表（进程内 Map）：pendingId → promise——多任务并行互不
+    // 影响；任务收敛即自摘除。（kind 槽已随媒体数量上限移除退役——原仅供
+    // 选取上限计数）
+    const pendingUploadsRef = useRef(new Map<string, Promise<void>>());
     // 相册选取互斥（系统 picker 单例，防重复拉起）
     const pickingRef = useRef(false);
 
@@ -605,17 +600,13 @@ export function EventDetailScreen() {
      * 纯函数（真实文末追加、原位替换）；updater 纯函数（块 id 在 updater 外
      * 预生成——#1.2 纪律）。taskId = 占位 id：视频直迁流有逐块进度，占位块
      * 经 progressByPendingId 显示百分比（journal 同口径；图片/音频字节路径
-     * 无进度拍，占位保持 spinner 态）。
+     * 无进度拍，占位保持 spinner 态）。媒体数量上限已按用户指令全域移除
+     * （2026-11-20）：插入入口不再设总量闸。
      */
     const doAttach = useCallback(
         (kind: 'image' | 'video', uri: string, width: number | null, height: number | null) => {
             const row = eventRef.current;
             if (!row || deletedRef.current) return;
-            // 媒体总量守卫：blocks 已含在途 pending 占位（同为 t:'media'，天然计入）
-            if (blocksRef.current.filter((block) => block.t === 'media').length >= MAX_MEDIA) {
-                store.setState({ error: `本事件媒体最多 ${MAX_MEDIA} 个。` });
-                return;
-            }
             const pendingId = newBlockId();
             applyBlocks((current) => insertPendingBlock(current, pendingId));
             const label = kind === 'video' ? '视频' : '图片';
@@ -643,7 +634,7 @@ export function EventDetailScreen() {
                     applyBlocks((current) => resolvePendingBlock(current, pendingId, null));
                 }
             })();
-            pendingUploadsRef.current.set(pendingId, { promise: task, kind });
+            pendingUploadsRef.current.set(pendingId, task);
             void task.then(() => {
                 pendingUploadsRef.current.delete(pendingId);
             });
@@ -652,9 +643,10 @@ export function EventDetailScreen() {
     );
 
     /**
-     * 相册通道（多选）：权限 → 批量选图/选视频 → 按选取顺序逐张插入流。多选
-     * 上限 = 媒体总量剩余配额（事件无九图配额语义，单闸 MAX_MEDIA）；不严格
-     * 执行 selectionLimit 的环境由插入侧尾部裁掉并提示（journal pick 同口径）。
+     * 相册通道（多选）：权限 → 批量选图/选视频 → 按选取顺序逐张插入流。
+     * allowsMultipleSelection 不设 selectionLimit——媒体数量上限已按用户指令
+     * 全域移除（2026-11-20），选取数量不封顶；orderedSelection = 序号角标 +
+     * 严格按选取顺序返回，Android/web 忽略。
      */
     const pick = useCallback(
         async (kind: 'image' | 'video') => {
@@ -674,29 +666,20 @@ export function EventDetailScreen() {
                         return;
                     }
                 }
-                const selectionLimit = MAX_MEDIA - blocksRef.current.filter((block) => block.t === 'media').length;
-                if (selectionLimit <= 0) {
-                    store.setState({ error: `本事件媒体最多 ${MAX_MEDIA} 个。` });
-                    return;
-                }
                 const result = await imagePicker.launchImageLibraryAsync({
                     mediaTypes: [kind === 'video' ? 'videos' : 'images'],
+                    // 多选不设上限；orderedSelection（iOS 15+）= 序号角标 +
+                    // 严格按选取顺序返回，Android/web 忽略
                     allowsMultipleSelection: true,
-                    selectionLimit,
                     orderedSelection: true,
                     quality: 1,
                     exif: false,
                 });
                 if (result.canceled || result.assets.length === 0) return;
-                const allowed = result.assets.slice(0, selectionLimit);
-                for (const asset of allowed) {
+                // picked 顺序 = 插入顺序：assets 按选取序逐张同步插 pending 占位
+                //（各自独立后台任务并行上传，占位块各挂各的进度）
+                for (const asset of result.assets) {
                     doAttach(kind, asset.uri, asset.width ?? null, asset.height ?? null);
-                }
-                const overflow = result.assets.length - allowed.length;
-                if (overflow > 0) {
-                    store.setState({
-                        error: `已插入 ${allowed.length} 个，其余 ${overflow} 个超出媒体上限（${MAX_MEDIA} 个）。`,
-                    });
                 }
             } catch (caught) {
                 store.setState({
@@ -1477,20 +1460,23 @@ const CanvasDismissLayer = memo(function CanvasDismissLayer({
  * 事件块操作卡（媒体长按/双击、文本聚焦 ⋯ 钮 → 屏根浮层，条件渲染禁 RN Modal）：
  * 编辑器核心块操作（上移/下移/删除——删到空补可落笔段，journal-logic removeBlock
  * 口径）+ 堆叠锚块分档（deck prop 非 null 时，与 journal-edit BlockActionCard
- * **同词表 / 同 hint / 同图标 / 同行结构**——日记与事件的媒体块行为一致，用户
+ * **同词表 / 同图标 / 同行结构**——日记与事件的媒体块行为一致，用户
  * 口径「作用是全部笔记编辑。和事件操作」）：
  * - 「上移/下移」= **整组移动**（组首/组尾连续段同进退，journal-logic
- *   .moveBlockRun；禁用态按组界判定而非锚块下标），hint 标「整组 N 张」；
+ *   .moveBlockRun；禁用态按组界判定而非锚块下标）；
  * - 「指定删除」：进入堆叠勾选模式（白名单 = 组内成员，组外媒体照常可查看，
  *   勾完经顶栏「删除」确认——屏层 openDeckDeleteSelect/confirmDeckDelete）；
- * - 「删除整组」：批量删除组内全部块（danger，hint「N 张全部删除」，软删除
- *   语义与单块删除一致）；
+ * - 「删除整组」：批量删除组内全部块（danger，软删除语义与单块删除一致）；
  * - 「删除」行改义为「删除当前张」（只删当前显示的前卡成员）。
  *
+ * 行结构（2026-11-19 容器化）：与 journal-edit BlockActionCard 同一单容器行组
+ * （卡壳 max-w-sm p-3 + rounded-card surface 单容器 + 行 h-12 px-4 贴靠零线条
+ * + 行级 active:bg），行名四字（hint 已退役，journal-edit 2026-11-19 同口径）。
+ *
  * 词表一致性选法（回报项）：journal-edit-screen.tsx 为上一波成果（禁改），其
- * 行词表/hint 为卡内字面量、未抽共享模块——事件侧取「两边同字面量」，行词表 /
- * hint / 图标（ChevronUp/Down、ListChecks、Trash）逐项对齐并各自挂注释锚点；
- * 改动任一侧行词表时两侧必须同改（后续若建共享词表模块再一并收口）。
+ * 行词表为卡内字面量、未抽共享模块——事件侧取「两边同字面量」，行词表 /
+ * 图标（ChevronUp/Down、ListChecks、Trash）逐项对齐并各自挂注释锚点；
+ * 改动任一侧行词表/行结构时两侧必须同改（后续若建共享词表模块再一并收口）。
  *
  * 合并堆叠/解散堆叠/保存到手机等 journal 编辑器专属动作未纳入事件块操作卡
  * （既有范围决策；块模型同构，后续可平移）。
@@ -1533,30 +1519,26 @@ function EventBlockActionCard({
     // 组尾块之下无块才能下移）；单块路径按锚块下标（原口径）
     const canUp = deck ? deck.firstIndex > 0 : index > 0;
     const canDown = deck ? deck.lastIndex < total - 1 : index < total - 1;
-    // 整组移动的提示语（堆叠锚块行 hint，journal-edit 同字面量）
-    const moveHint = deck ? `整组 ${deck.size} 张` : null;
     const rows: Array<{
         key: string;
         icon: React.ReactNode;
         label: string;
-        hint?: string | null;
         danger?: boolean;
         disabled: boolean;
         onPress(): void;
     }> = [
+        // 行名统一四字 + hint 退役（2026-11-19 与 journal-edit 块操作卡同口径）
         {
             key: 'up',
             icon: <ChevronUpIcon size={18} strokeWidth={1.9} color={palette.secondary} />,
-            label: '上移',
-            hint: moveHint,
+            label: '上移一格',
             disabled: !canUp,
             onPress: () => onMove(-1),
         },
         {
             key: 'down',
             icon: <ChevronDownIcon size={18} strokeWidth={1.9} color={palette.secondary} />,
-            label: '下移',
-            hint: moveHint,
+            label: '下移一格',
             disabled: !canDown,
             onPress: () => onMove(1),
         },
@@ -1568,7 +1550,6 @@ function EventBlockActionCard({
                           <ListChecksIcon size={18} strokeWidth={1.9} color={palette.secondary} />
                       ),
                       label: '指定删除',
-                      hint: '勾选堆叠内单张',
                       disabled: false,
                       onPress: onSelectDelete,
                   },
@@ -1577,7 +1558,6 @@ function EventBlockActionCard({
                       key: 'delete-deck',
                       icon: <LucideTrash size={16} strokeWidth={1.9} color={palette.negative} />,
                       label: '删除整组',
-                      hint: `${deck.size} 张全部删除`,
                       danger: true,
                       disabled: false,
                       onPress: onDeleteDeck,
@@ -1591,7 +1571,7 @@ function EventBlockActionCard({
             // 堆叠锚块：本行只删当前显示的前卡成员（整组走「删除整组」、逐张
             // 勾选走「指定删除」——三条删除路径语义互斥不打架；journal-edit
             // 同字面量）
-            label: deck ? '删除当前张' : '删除',
+            label: deck ? '删除此张' : '删除本块',
             danger: true,
             disabled: false,
             onPress: onDelete,
@@ -1605,7 +1585,7 @@ function EventBlockActionCard({
                 onPress={onClose}
                 accessibilityLabel="关闭块操作"
             >
-                <Pressable className="w-full max-w-xs rounded-card bg-ink-base p-2 dark:bg-inkd-base">
+                <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base">
                     {/* 卡头（关闭语言统一 #8）：题 + 右上关闭钮；堆叠锚块标明
                         「这一堆」（操作语义 = 整组），单块保持「这一块」 */}
                     <View className="flex-row items-center justify-between pl-4 pr-1.5 pt-0.5">
@@ -1615,45 +1595,36 @@ function EventBlockActionCard({
                         {/* 44 视觉盒：左邻题文字非按压体，右侧贴卡内边距，无重叠核算项 */}
                         <CloseButton onPress={onClose} />
                     </View>
-                    <View className="gap-0.5">
-                        {/* 行高 44 视觉盒 ≥44：不传 hitSlop（0）；行间 gap-0.5(2px)
-                            为不可点间隙，命中盒无重叠。onPress 恒挂接 + disabled
-                            显式传导（#3 条件置空显式化）：row.disabled 随移动操作
-                            翻转，条件置空会在翻转瞬间重配置 Pressability 吞首点 */}
+                    {/* 单容器行组（2026-11-19 与 journal-edit BlockActionCard 统一：
+                        rounded-card surface 单容器包裹，行 h-12 px-4 贴靠零线条，
+                        裸图标 + 题单行，行级 active:bg 高亮替代旧「每行一个小卡」
+                        ；同步锚点：journal-edit-screen BlockActionCard 同字面量，
+                        改任一侧行结构/行距必须同改）。onPress 恒挂接 + disabled
+                        显式传导（#3 条件置空显式化）：row.disabled 随移动操作
+                        翻转，条件置空会在翻转瞬间重配置 Pressability 吞首点 */}
+                    <View className="mt-3 overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface">
                         {rows.map((row) => (
-                            <BouncyPressable
+                            <Pressable
                                 key={row.key}
                                 onPress={row.onPress}
                                 disabled={row.disabled}
-                                scaleTo={0.98}
+                                className={`h-12 flex-row items-center gap-3 px-4 active:bg-ink-raised dark:active:bg-inkd-raised ${
+                                    row.disabled ? 'opacity-30' : ''
+                                }`}
+                                accessibilityRole="button"
+                                accessibilityLabel={row.label}
                             >
-                                <View
-                                    className={`h-11 flex-row items-center gap-3 rounded-control bg-ink-surface px-3.5 dark:bg-inkd-surface ${
-                                        row.disabled ? 'opacity-30' : ''
+                                <View pointerEvents="none">{row.icon}</View>
+                                <Text
+                                    className={`flex-1 text-[15px] font-medium ${
+                                        row.danger
+                                            ? 'text-ink-negative dark:text-inkd-negative'
+                                            : 'text-ink-text dark:text-inkd-text'
                                     }`}
-                                    accessibilityRole="button"
-                                    accessibilityLabel={row.label}
                                 >
-                                    <View pointerEvents="none">{row.icon}</View>
-                                    <Text
-                                        className={`text-[15px] font-medium ${
-                                            row.danger
-                                                ? 'text-ink-negative dark:text-inkd-negative'
-                                                : 'text-ink-text dark:text-inkd-text'
-                                        }`}
-                                    >
-                                        {row.label}
-                                    </Text>
-                                    {row.hint ? (
-                                        <Text
-                                            numberOfLines={1}
-                                            className="ml-auto shrink text-[11px] text-ink-muted dark:text-inkd-muted"
-                                        >
-                                            {row.hint}
-                                        </Text>
-                                    ) : null}
-                                </View>
-                            </BouncyPressable>
+                                    {row.label}
+                                </Text>
+                            </Pressable>
                         ))}
                     </View>
                 </Pressable>

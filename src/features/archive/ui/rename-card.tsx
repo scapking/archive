@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { BackHandler, Pressable, Text, TextInput, View } from 'react-native';
-import { BouncyPressable, LucideCheck, LucideClose } from '@/core/icons';
+import { LucideCheck, LucideClose } from '@/core/icons';
 import { CloseButton } from './close-button';
 import { usePalette } from './theme';
 // 标题长度上限与 store 落库钳制同源（normalizeJournalTitle / JOURNAL_TITLE_MAX）：
@@ -84,7 +84,7 @@ export function RenameCard({
                 onPress={onClose}
                 accessibilityLabel="关闭重命名"
             >
-                <Pressable className="w-full max-w-xs rounded-card bg-ink-base p-5 dark:bg-inkd-base">
+                <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base">
                     {/* 卡头（关闭语言统一 #8）：题 + 右上关闭钮（scrim 点击与 Android
                         返回键之外的显式出口；底部「取消」钮保留——与「保存」成对的
                         显式动作语义，卡头 X = 逃生口，二者职责不同） */}
@@ -112,7 +112,7 @@ export function RenameCard({
                             onFocus={() => setFocused(true)}
                             onBlur={() => setFocused(false)}
                             onSubmitEditing={() => void save()}
-                            placeholder="标题（选填）"
+                            placeholder="标题"
                             placeholderTextColor={palette.muted}
                             className="text-[15px] font-medium text-ink-text dark:text-inkd-text"
                             underlineColorAndroid="transparent"
@@ -128,33 +128,32 @@ export function RenameCard({
                             {errorText}
                         </Text>
                     ) : null}
-                    <View className="mt-4 gap-2.5">
-                        {/* 两行视觉盒 h-11 ≥44：不传 hitSlop（0）；行距 gap-2.5(10px)
-                            为不可点间隙（同 chooser 行距口径） */}
-                        <BouncyPressable onPress={() => void save()} scaleTo={0.97}>
-                            <View
-                                className="h-11 flex-row items-center gap-3 rounded-control bg-ink-surface px-3.5 dark:bg-inkd-surface"
-                                accessibilityRole="button"
-                                accessibilityLabel="保存标题"
-                            >
-                                <LucideCheck size={18} strokeWidth={1.9} color={palette.secondary} />
-                                <Text className="text-[15px] font-medium text-ink-text dark:text-inkd-text">
-                                    保存
-                                </Text>
-                            </View>
-                        </BouncyPressable>
-                        <BouncyPressable onPress={onClose} scaleTo={0.97}>
-                            <View
-                                className="h-11 flex-row items-center gap-3 rounded-control bg-ink-surface px-3.5 dark:bg-inkd-surface"
-                                accessibilityRole="button"
-                                accessibilityLabel="取消重命名"
-                            >
-                                <LucideClose size={18} strokeWidth={1.9} color={palette.muted} />
-                                <Text className="text-[15px] font-medium text-ink-muted dark:text-inkd-muted">
-                                    取消
-                                </Text>
-                            </View>
-                        </BouncyPressable>
+                    {/* 单容器行组（2026-11-19 弹窗统一：与 + 菜单/ActionMenuCard
+                        同语言）：rounded-card surface 包裹，行 h-12 贴靠零线条，
+                        行级 active:bg 高亮 */}
+                    <View className="mt-4 overflow-hidden rounded-control bg-ink-surface dark:bg-inkd-surface">
+                        <Pressable
+                            onPress={() => void save()}
+                            className="h-12 flex-row items-center gap-3 px-4 active:bg-ink-raised dark:active:bg-inkd-raised"
+                            accessibilityRole="button"
+                            accessibilityLabel="保存标题"
+                        >
+                            <LucideCheck size={18} strokeWidth={1.9} color={palette.secondary} />
+                            <Text className="flex-1 text-[15px] font-medium text-ink-text dark:text-inkd-text">
+                                保存
+                            </Text>
+                        </Pressable>
+                        <Pressable
+                            onPress={onClose}
+                            className="h-12 flex-row items-center gap-3 px-4 active:bg-ink-raised dark:active:bg-inkd-raised"
+                            accessibilityRole="button"
+                            accessibilityLabel="取消重命名"
+                        >
+                            <LucideClose size={18} strokeWidth={1.9} color={palette.muted} />
+                            <Text className="flex-1 text-[15px] font-medium text-ink-muted dark:text-inkd-muted">
+                                取消
+                            </Text>
+                        </Pressable>
                     </View>
                 </Pressable>
             </Pressable>

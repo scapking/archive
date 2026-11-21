@@ -14,7 +14,6 @@ import { useRouter } from 'expo-router';
 import {
     BouncyPressable,
     LucideCalendar,
-    LucidePlus,
     LucideTrash,
     LucideVideo,
 } from '@/core/icons';
@@ -25,6 +24,7 @@ import {
     isTripLocked,
     isTripOpenEnded,
     isValidLocalDate,
+    todayLocal,
     validateTripInput,
 } from './trip-logic';
 import { safeBack } from './ui';
@@ -32,6 +32,7 @@ import { safeBack } from './ui';
 // 域内深取；ui/index.ts 出口扩充时收口（同 close-button / editor-icons 先例）。
 import { FieldInput } from './ui/field-input';
 import {
+    ActionMenuCard,
     DateInput,
     EmptyState,
     isDateInputComplete,
@@ -153,17 +154,18 @@ function DeleteTripControl({
  * - 图标 = 默认徽章 + 点击换：当前图标以 TripBadge 常驻名称行左侧，点徽章展开
  *   一行横滑选择格（选完即收，一步完成）——替代旧 2 行 16 格平铺（首屏高度 -56，
  *   选择是低频动作，不该常驻两行）；
- * - 描述默认收起：一行「添加描述」轻量入口，点击展开 FieldInput；编辑模式已有
- *   描述则默认展开（内容在场不折叠）。展开为单向（不提供收起）——空描述随表单
- *   提交即可，收起按钮是多余的 chrome；
- * - 封面视频（编辑模式）视觉降级：104px 大虚线框 → 与「添加描述」同语言的一行
- *   轻量入口；已有视频保留预览 + 更换/移除（预览是内容不是步骤，必保）。
+ * - 描述默认展开（R4「默认一个输入框而不是点击后才出现」）：multiline
+ *   FieldInput 常驻表单（新建/编辑同一形态，placeholder 自说明选填）；
+ * - 封面视频（编辑模式）视觉降级：104px 大虚线框 → 一行轻量入口；已有视频
+ *   保留预览 + 更换/移除（预览是内容不是步骤，必保）。
  *
- * 字段契约不变：标题 + 出发日期必填；结束日期可选——分段切换「持续进行（默认）/
- * 设定结束」；提交统一走 endDate: string | null 语义（null = 持续进行，store 落
- * TRIP_OPEN_ENDED 哨兵），日期原值透传（#2：date-input 的自然输入归一已在组件内
- * 完成，表单不再二次加工）。已结束行程（isTripLocked）整表只读锁定：直达深链在
- * 此拦下，删除入口保留。
+ * 字段契约（R2 放宽）：标题选填（空串落库，展示层 tripDisplayTitle 兜底「未
+ * 命名行程」）；出发日期选填——新建预填今天，清空仍须补齐才可提交；结束日期
+ * 可选——分段切换「持续进行（默认）/ 设定结束」；提交统一走
+ * endDate: string | null 语义（null = 持续进行，store 落 TRIP_OPEN_ENDED 哨兵），
+ * 日期原值透传（#2：date-input 的自然输入归一已在组件内完成，表单不再二次
+ * 加工）。已结束行程（isTripLocked）整表只读锁定：直达深链在此拦下，删除入口
+ * 保留。
  */
 export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
     const router = useRouter();
@@ -179,7 +181,9 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
     // 空值时仍回退到同一常量，两条路径共用一个决策点，不再散落字面量
     const [icon, setIcon] = useState<string | null>(trip?.icon ?? TRIP_ICON_DEFAULT);
     const [title, setTitle] = useState(trip?.title ?? '');
-    const [startDate, setStartDate] = useState(trip?.start_date ?? '');
+    // 出发日期默认今天（R2「触发时间非必须自动按照当前时间设置」）：新建预填
+    // today，可清可改；编辑模式原值透传
+    const [startDate, setStartDate] = useState(trip?.start_date ?? todayLocal());
     // 结束语义：'open' = 持续进行 / 'fixed' = 有返回日。编辑既有行程按 end_date
     // 哨兵初始化，新建默认 open；DateInput 值域是日期串，'open' 绝不能进输入框
     const [endMode, setEndMode] = useState<'open' | 'fixed'>(
@@ -193,14 +197,10 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
     const [submitting, setSubmitting] = useState(false);
     const [videoBusy, setVideoBusy] = useState(false);
     const [confirmDelete, setConfirmDelete] = useState(false);
+    // 封面视频管理菜单（长按预览入口）：更换 = pickVideo 通道；移除 = removeVideo
+    const [coverMenu, setCoverMenu] = useState(false);
     // 图标选择格展开态：默认收起（徽章已展示当前图标）；选完即收（一步完成）
     const [iconPickerOpen, setIconPickerOpen] = useState(false);
-    // 描述展开态：新建默认收起（轻量入口）；编辑模式已有描述则默认展开
-    //（内容在场不折叠——折叠已有内容等于隐藏用户数据）
-    const [descExpanded, setDescExpanded] = useState(() => Boolean(trip?.description));
-    // 展开 ≠ 聚焦：autoFocus 只跟随「用户点了入口」这条路径——编辑模式默认展开时
-    // 若也 autoFocus，打开编辑表单即弹键盘盖住上部主字段（回归级体验问题）
-    const [descAutoFocus, setDescAutoFocus] = useState(false);
 
     const isEdit = Boolean(trip);
     // 锁定（#7）：已结束行程只读。store.updateTrip 无锁预检，UI 是唯一闸门——
@@ -237,6 +237,14 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
         });
         return () => sub.remove();
     }, [confirmDelete]);
+    useEffect(() => {
+        if (!coverMenu) return;
+        const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+            setCoverMenu(false);
+            return true;
+        });
+        return () => sub.remove();
+    }, [coverMenu]);
 
     const switchEndMode = (mode: 'open' | 'fixed') => {
         setEndMode(mode);
@@ -377,12 +385,9 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                 标题 20px semibold ml-2.5；safeBack 退出——全部经 ScreenHeader
                 单点收口，两态（新建/编辑）零分叉。 */}
             <View style={{ paddingTop: insets.top }}>
-                <ScreenHeader
-                    title={isEdit ? '编辑行程' : '新建行程'}
-                    // 副标固定一条（大厂风收敛，随机池已删）：新建 = 必填字段的名词
-                    // 短语；编辑 = 保存语义一句话
-                    subtitle={isEdit ? '改动即时生效' : '行程名称与出发日期'}
-                />
+                {/* 副标已删（2026-11-19 简洁化口径：屏头描述性副标全线退役——字段
+                    自说明，placeholder/分段标签即说明，屏头只留屏题） */}
+                <ScreenHeader title={isEdit ? '编辑行程' : '新建行程'} />
             </View>
             <ScrollView
                 contentContainerStyle={{
@@ -490,42 +495,23 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                     ) : null}
                 </View>
 
-                {/* ── 描述：默认收起，「添加描述」轻量入口点击展开 ── */}
-                {descExpanded ? (
-                    <View className="mt-5">
-                        {/* 多行起手高度 + 顶距：容器随内容自然撑开（minHeight 80 为
-                            Yoga border-box 口径），调用侧 paddingTop 16 让首行与容器
-                            顶缘有呼吸（调用侧 style 位于合并数组末位，覆盖
-                            INPUT_TRANSPARENT_STYLE 的 paddingVertical: 0 简写）；
-                            FieldInput 口径与标题输入同源（tone surface） */}
-                        <FieldInput
-                            tone="surface"
-                            multiline
-                            value={description}
-                            onChangeText={setDescription}
-                            placeholder="行程描述（选填）"
-                            maxLength={500}
-                            autoFocus={descAutoFocus}
-                            style={{ minHeight: 80, paddingTop: 16 }}
-                        />
-                    </View>
-                ) : (
-                    // 入口行 h-11 即命中盒（无 hitSlop；上下均为留白，无重叠核算项）
-                    <Pressable
-                        onPress={() => {
-                            setDescExpanded(true);
-                            setDescAutoFocus(true);
-                        }}
-                        className="mt-5 h-11 flex-row items-center gap-1.5"
-                        accessibilityRole="button"
-                        accessibilityLabel="添加描述"
-                    >
-                        <LucidePlus size={16} strokeWidth={1.9} color={palette.muted} />
-                        <Text className="text-[13px] text-ink-secondary dark:text-inkd-secondary">
-                            添加描述
-                        </Text>
-                    </Pressable>
-                )}
+                {/* ── 描述：默认展开的输入框（R4）——新建/编辑同一形态，不再「点击
+                    后才出现」。多行起手高度 + 顶距：容器随内容自然撑开（minHeight 80
+                    为 Yoga border-box 口径），调用侧 paddingTop 16 让首行与容器顶缘
+                    有呼吸（调用侧 style 位于合并数组末位，覆盖 INPUT_TRANSPARENT_STYLE
+                    的 paddingVertical: 0 简写）；FieldInput 口径与标题输入同源
+                    （tone surface）。不 autofocus：进表单即弹键盘盖住上部主字段 */}
+                <View className="mt-5">
+                    <FieldInput
+                        tone="surface"
+                        multiline
+                        value={description}
+                        onChangeText={setDescription}
+                        placeholder="行程描述"
+                        maxLength={500}
+                        style={{ minHeight: 80, paddingTop: 16 }}
+                    />
+                </View>
 
                 {/* ── 封面视频（编辑模式；锁定态整表已提前返回，不会到这里）──
                     视觉降级取舍：大虚线框 → 一行轻量入口（与「添加描述」同语言，
@@ -534,27 +520,17 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                 {isEdit ? (
                     videoKey ? (
                         <View className="mt-5 gap-2">
-                            <TripCoverVideo fileKey={videoKey} height={176} />
-                            {/* 更换/移除并排：两钮同高 44 且「更换」闭 slop（0）——原 40 高 +
-                                BouncyPressable 默认 hitSlop 10 会跨过 8px gap 压进「移除」左缘
-                                2px，边缘点击误触发更换；44 高本体已达命中规范，slop 无必要 */}
-                            <View className="flex-row gap-2">
-                                <BouncyPressable onPress={() => void pickVideo()} scaleTo={0.97} hitSlop={0}>
-                                    <View className="h-11 items-center justify-center rounded-control border border-ink-border bg-ink-surface px-4 dark:border-inkd-border dark:bg-inkd-surface">
-                                        <Text className="text-[13px] text-ink-secondary dark:text-inkd-secondary">
-                                            更换
-                                        </Text>
-                                    </View>
-                                </BouncyPressable>
-                                <Pressable
-                                    onPress={() => void removeVideo()}
-                                    className="h-11 items-center justify-center rounded-control border border-ink-border bg-ink-surface px-4 dark:border-inkd-border dark:bg-inkd-surface"
-                                >
-                                    <Text className="text-[13px] text-ink-negative dark:text-inkd-negative">
-                                        移除
-                                    </Text>
-                                </Pressable>
-                            </View>
+                            <TripCoverVideo
+                                fileKey={videoKey}
+                                height={176}
+                                onCoverAction={() => setCoverMenu(true)}
+                            />
+                            {/* 封面管理入口收敛为「长按预览」（2026-11-19 用户指令
+                                「两个按钮删除，改成长按弹出」）：长按预览 → 封面视频
+                                菜单（更换/移除，单容器 ActionMenuCard） */}
+                            <Text className="mt-1 text-[12px] text-ink-muted dark:text-inkd-muted">
+                                长按封面可更换或移除
+                            </Text>
                         </View>
                     ) : (
                         // 入口行 h-11 即命中盒；busy 态禁按（pickVideo 内亦有守卫，双道闸）
@@ -572,6 +548,32 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                             </Text>
                         </Pressable>
                     )
+                ) : null}
+
+                {/* 封面视频管理菜单（长按预览入口，单容器 ActionMenuCard） */}
+                {coverMenu ? (
+                    <ActionMenuCard
+                        title="封面"
+                        rows={[
+                            {
+                                key: 'replace',
+                                icon: <LucideVideo size={18} strokeWidth={1.9} />,
+                                title: '更换视频',
+                            },
+                            {
+                                key: 'remove',
+                                icon: <LucideTrash size={18} strokeWidth={1.9} />,
+                                title: '移除视频',
+                                danger: true,
+                            },
+                        ]}
+                        onAction={(key) => {
+                            setCoverMenu(false);
+                            if (key === 'replace') void pickVideo();
+                            else void removeVideo();
+                        }}
+                        onClose={() => setCoverMenu(false)}
+                    />
                 ) : null}
 
                 {validation ? (

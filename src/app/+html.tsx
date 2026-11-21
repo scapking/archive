@@ -54,7 +54,7 @@ const responsiveBackground = `
  * 见 nativewind/nativewind#1489）。
  */
 :root {
-  --css-interop-darkMode: class;
+  --css-interop-darkMode: class dark;
 }
 /*
  * body 初始底色对齐浅色调色板底（ink.base / theme.ts LIGHT.sceneBg = #FFFFFF，

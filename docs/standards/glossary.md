@@ -53,14 +53,15 @@ core 是**通用能力接口层**：把 Expo 提供的三端（iOS/Android/Web�
 | `cache-store` | **通用缓存接口**（TTL、前缀清除） | 经 database |
 | `file-storage` | **通用文件调用接口**（S3 风格 put/putFromUri/get/stat/list/remove/move/copy/url，key 防路径穿越；checksum=三端统一 SHA-256，元数据在 file_meta 表；底座 native=expo-file-system，web=OPFS 直连——SDK 58 web 变体是纯 stub，见 web-opfs.ts）。**大文件直迁能力**（2026-11-08 登记）：moveFromUri/copyFromUri——native 用原生 File.move/copy 落盘（JS 线程零字节拷贝，checksum 走原生 File.digest('SHA-256')，非 file:// 源自动回退字节路径）；web 用 OPFS 流式分块写（fetch body → 2MB 块 write + 每块让出主线程）。两路均支持 onProgress（bytesWritten/totalBytes）进度上抛，节流（100ms）由调用方负责 | expo-file-system（native）/ OPFS（web）+ database |
 | `video-thumbnails` | **视频首帧缩略图生成**（getThumbnailAsync，time/quality 参数；产物常经 image-manipulator 缩边 ≤512 后落 file-storage）。web 无原生实现（官方 web stub 调用期抛错），运行时按平台分流，调用方须回退占位 | expo-video-thumbnails（native；web 官方 stub） |
-| `migration` | **通用迁移接口**（单个 zip 打包导出/导入：documents + files + 可选 cache；自研 store 模式 zip，防 zip-slip + CRC 校验，跨设备传输三端可用） | 组合上三者 + zip.ts |
+| `migration` | **通用迁移接口**（单个 zip 打包导出/导入：documents + files + 可选 cache；自研 store 模式 zip，防 zip-slip + CRC 校验，跨设备传输三端可用）。**zip 原语出口（2026-11-17 登记）**：createZip/readZip/ZipEntry 随目录出口开放（条目名白名单 `manifest.json` + `files/<key>`），供业务域组合自定义备份包（archive 全量备份消费面在 features 层） | 组合上三者 + zip.ts |
 | `notifications` | **通用通知接口**（权限/本地调度/push token/渠道/handler） | expo-notifications |
 | `camera` | 相机权限与扫码纯函数（取景拍照走 CameraView 组件） | expo-camera |
 | `location` | 前台定位、地理编码（后台定位不支持 web，未纳入） | expo-location |
 | `audio` | 音频模式、播放器工厂、录音权限（录制器走 useAudioRecorder hook） | expo-audio |
 | `video` | 播放器工厂、缓存管理（画面走 VideoView 组件） | expo-video |
 | `image-picker` | 相册/相机选取图片视频 | expo-image-picker |
-| `image-manipulator` | 图片变换（resize / 旋转 / 格式压缩）并读取结果字节（三端；变换结果常与 file-storage 配套落盘） | expo-image-manipulator + expo-file-system |
+| `document-picker` | **系统文档选取**（2026-11-17 登记）：用户从系统文件面板挑文件（本域消费面 = 备份包导入）；native 默认拷 cache 产 file:// URI，web 走浏览器文件输入（uri 为 blob:），字节读取统一走 file-storage.readUriBytes；用户取消是正常路径（canceled: true，不抛错） | expo-document-picker |
+| `image-manipulator` | 图片变换（resize / 旋转 / 格式压缩）并读取结果字节（三端；变换结果常与 file-storage 配套落盘）。**像素读取扩展（2026-11-17 登记）**：readPixelsAsync——编码图片 → RGBA 原始字节（Skia 解码 + 离屏 surface 绘制 + canvas.readPixels，只缩不放 maxWidth），供 GIF 编码等像素级下游消费 | expo-image-manipulator + expo-file-system + @shopify/react-native-skia |
 | `clipboard` | 剪贴板文本/URL/图片 | expo-clipboard |
 | `crypto` | UUID、随机字节、摘要、**AES-256-GCM 加解密**（encrypt/decrypt/encryptText）、**PBKDF2 密钥派生**（deriveKey）——三端同实现（@noble/ciphers + @noble/hashes，因 Hermes 无完整 WebCrypto） | expo-crypto + @noble/* |
 | `sharing` | 系统分享（web 用 isAvailableAsync 判定） | expo-sharing |
@@ -69,6 +70,11 @@ core 是**通用能力接口层**：把 Expo 提供的三端（iOS/Android/Web�
 | `linking` | 深链构造/解析/监听、系统打开 URL | expo-linking + RN Linking |
 | `icons` | **自绘 SVG 图标/logo 基础设施**：三层来源——内置手绘（icons.tsx）+ lucide 现成集（per-icon 深路径导入，**禁止桶导入**，实测 +5MB）+ createIcon 自定义；动效（reanimated 弹跳/呼吸）、morphicons 形变（MorphIcon spring）、循环变色渐变 GradientCycle（宿主分层，全 UI 线程） | react-native-svg + lucide + morphicons + reanimated |
 | `svg` | **Skia GPU 自定义 SVG 渲染**：任意 SVG 字符串 → Skia.SVG 解析 → GPU 绘制（ImageSVG）；HatchLogoSkia 用 reanimated 派生值驱动 Skia 着色器（GPU 端色彩流动） | @shopify/react-native-skia |
+| `haptics` | **触觉反馈**（2026-11-17 登记）：impact/selection/success 三通道；web 无振动语义恒 no-op，任何失败降级为无触感（console.warn 留痕不抛——触感是反馈增强层，失败绝不打断调用方业务动作），API 同步 fire-and-forget 形态 | expo-haptics |
+| `local-auth` | **本地身份认证**（2026-11-17 登记）：isSupportedAsync（硬件 ∧ 已录入，唯一探测口径）+ authenticateAsync（面容/指纹/设备凭据自动回退；resolve false = 取消/失败，不抛错）；web stub 恒不可用，消费方据此关入口 | expo-local-authentication |
+| `print` | **HTML→PDF 文档生成**（2026-11-17 登记）：printToFileAsync（native 系统打印管线离线产物，落临时目录返回 file:// URI）；web stub，isSupported() 为唯一分流口径（web 降级 HTML 下载） | expo-print |
+| `gif-encoding` | **GIF89a 动图编码**（2026-11-17 登记，纯 JS 零依赖可独立单测）：RGBA 帧序列 → GIF 字节（中位切分全局调色板 ≤256 色 + 5-bit 桶缓存最近邻 + GIF LZW 变长码 + NETSCAPE2.0 循环）；契约 = 全帧同尺寸（混尺寸 RangeError） | 纯 JS（无三方依赖） |
+| `screen-capture` | **防截屏与录屏**（2026-11-19 登记）：prevent/allow 一对开关——Android FLAG_SECURE 系统级真防（截屏黑图/录屏黑屏/最近任务预览同黑，进程重启需重设）；iOS 无官方阻止 API，库内 SecureWindowCanvas 覆盖层近似防护 + 录屏 isCaptured 盖黑块（addScreenshotListener 事件监听未收口）；web 恒 no-op；薄封装透传 expo 错误不包装 | expo-screen-capture |
 
 > **almightydb** = 上述存储五件套（config-store / database / data-store / cache-store / file-storage / migration）的**统称**，不是目录。存储位置：文件与迁移包在 `Paths.document/almightydb/`，数据库文件 `almightydb.db`。
 

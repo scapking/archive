@@ -1,6 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
+    AccessibilityInfo,
     ActivityIndicator,
+    Animated,
+    Easing,
     Keyboard,
     KeyboardAvoidingView,
     Platform,
@@ -8,10 +11,12 @@ import {
     ScrollView,
     Text,
     View,
+    type NativeEventSubscription,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { LucideMapPin } from '@/core/icons';
+import { haptics } from '@/core/haptics';
 import { location } from '@/core/location';
 // 深路径注记：FieldInput 未入 ui/index.ts 出口（同 trip-detail 深取先例，
 // barrel 出口扩充时收口）。
@@ -32,37 +37,125 @@ import {
     normalizeEventSubject,
 } from './event-logic';
 import { useArchiveStore } from './store';
-import { PrimaryButton, ScreenHeader, usePalette } from './ui';
+import { ScreenHeader, usePalette } from './ui';
 
 /**
- * 新建事件页（/events/new，极简表单）：
+ * 新建事件页（/events/new，**交互式分步**，2026-11-19 用户指令重构）：
  *
- * - 字段即需求词表（全字段完整铺开，顺序 = 标题 / 位置 / 处理人 / 对象 /
- *   手机号 / 邮箱 / 描述）：
- *   标题（必填，FieldInput，maxLength 与 EVENT_TITLE_MAX 同源）/
- *   GPS（进页自动经 core/location 取当前位置，**不可手输**——自动定位行保留，
- *   已定位展示**完整 GPS 信息**（状态行「已定位 · ±Nm」+ 原始经纬度行）；失败/
- *   拒绝降级为 muted「未定位」行，创建时 gps 置 null）/ 处理人（可选）/ 对象
- *   （自定义自由文本单输入，kind 固定 'custom'，原子对由 normalizeEventSubject
- *   在提交前归一——留空即整对清除）/ 手机号、邮箱（v7 可选独立联系方式，排在
- *   对象之后——对象=跟谁有关，手机号/邮箱=联系通道语义相邻；phone-pad/email
- *   键盘、autoCapitalize none，无强格式校验，trim 与邮箱空白剥除收口在 store）/
- *   描述（可选，multiline 自然增高收起式）；
- *   placeholder = event-logic 固定常量（EVENT_*_PLACEHOLDER，与设置卡同一
- *   常量源；大厂风收敛：名词短语 + 可选字段「（选填）」后缀）；created_at 时间由 store
- *   落库时统一打，表单不出现时间字段；行间距统一 4dp 网格（组间 gap-4=16、
- *   标签 mb-2=8、提示 mt-1=4、提交 mt-2=8）；
- * - 定位可靠性：权限预检（已授权跳过弹窗）→ 系统服务检查 → 8s 超时兜底
- *   （定位挂起不阻塞表单填写）；卸载后 discarded（cancelled 守卫防旧响应回填）；
- * - 提交 → store.createEvent（校验失败走 error 通道返回 null，横幅可见不
- *   静默）→ 成功 **replace** 到 /events/[id]（创建即进入详情编辑，栈里不再
- *   留创建页——返回键语义回到列表而非死表单）；
- * - 标题为空：提交钮禁用（PrimaryButton disabled 视觉降透明 + 不触发按压）
- *   + 字段下 muted 提示行（可见提示，不用占位符兼职说明）。
+ * - **分步节奏**：一次只出一个字段（标题 → 位置 → 处理人 → 对象 → 手机号 →
+ *   邮箱 → 描述，顺序沿用原词表），下方两个动作——「下一步」逐一揭示后续
+ *   字段（跳过的字段保持默认空值不处理），「直接创建」随时用已填内容创建
+ *   （默认只填名称即可创建）；最后一步的主钮即创建；
+ * - **创建门槛**：标题必填（store 校验同源），空标题时两个动作禁用 + muted
+ *   提示；步骤指示「X / 7」（tabular，与 deck 页码同语言）；
+ * - GPS（不可手输）：进页自动定位（权限预检 → 服务检查 → 8s 超时兜底），
+ *   状态行只在「位置」步骤展示——失败/拒绝降级 muted「未定位」，创建 gps
+ *   置 null 不阻塞；
+ * - 提交 → store.createEvent（校验失败走 error 通道，横幅可见）→ 成功
+ *   **replace** 到 /events/[id]（返回键回列表不留死表单）；
+ * - **换步滑动过渡（2026-11-20）**：步进 pane（StepPane，key={step} 换步重挂）
+ *   挂载即播滑入——前进自右 / 后退自左（方向在换步动作处记录），200ms
+ *   ease-out + 淡入；动画层与布局层分离（Animated.View 只挂内联动画 style，
+ *   className 恒在外层普通 View——css-interop web 端静默丢弃 Animated
+ *   className 的仓库铁律坑）；首步静态进场（无换步语义，不播）；
+ * - 布局：字段块 + 动作行（直接创建 = surface 次级，下一步/创建 = 近黑主钮，
+ *   flex-1 等分 h-12）；键盘避让 + keyboardShouldPersistTaps。
  */
 
 /** 定位超时上限（ms）：单次 getCurrentPosition 的等待上限，超时按失败降级。 */
 const LOCATE_TIMEOUT_MS = 8000;
+
+/** 分步总数（步骤指示分母）。 */
+const STEP_TOTAL = 7;
+
+/** 换步过渡时长（ms）：180~220 档内取中——比注意力阈值短、够读完方向感。 */
+const STEP_TRANSITION_MS = 200;
+
+/** 换步滑入的水平位移（dp）：位移 + 淡入双轴同动（me 页 Enter 同语言），
+ *  48dp 足以下「来自右/左」的方向感，不做全屏横扫（大位移在键盘在场时
+ *  显得剧）。 */
+const STEP_SLIDE_OFFSET_DP = 48;
+
+/** 换步方向（滑入侧的语义名）：forward = 新字段自右滑入；back = 自左。 */
+type StepDirection = 'forward' | 'back';
+
+/**
+ * 步进 pane（换步滑动过渡的动画壳）：key={step} 换步重挂 → 挂载即播滑入
+ * （Animated.timing native driver，仅 opacity + translateX——仓库铁律禁
+ * reanimated 驱动触摸视图样式，RN Animated 是最保守通道）。
+ *
+ * - **动画层与布局层分离**：Animated.View 只挂内联动画 style，className
+ *   恒落在外层普通 View/children 内的普通 View 上——css-interop 对
+ *   Animated 组件的 className 在 web 静默丢弃（me-screen Enter 同款实测
+ *   先例，仓库铁律注释）；触摸面（FieldInput）在其 children 内部。
+ * - animate=false（首步挂载）静态终态：屏幕进场无换步语义，不播。
+ * - reduceMotion（系统减弱动态）：命中即静态终态跳过动画（boot-screen /
+ *   me-screen Enter 同款口径；检测异步，最坏代价 = 命中前已起播的 200ms
+ *   被截停跳终态）。
+ */
+function StepPane({
+    direction,
+    animate,
+    children,
+}: {
+    direction: StepDirection;
+    animate: boolean;
+    children: ReactNode;
+}) {
+    const [reduceMotion, setReduceMotion] = useState(false);
+    useEffect(() => {
+        let cancelled = false;
+        AccessibilityInfo.isReduceMotionEnabled()
+            .then((enabled) => {
+                if (!cancelled) setReduceMotion(enabled);
+            })
+            .catch(() => {
+                // 读不到系统设置 → 按「无减弱」处理（动画照常，可接受的降级）
+            });
+        let sub: NativeEventSubscription | null = null;
+        try {
+            sub = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduceMotion);
+        } catch {
+            // 事件通道不可用的极端环境：只认首拍检测结果
+        }
+        return () => {
+            cancelled = true;
+            sub?.remove();
+        };
+    }, []);
+    const progress = useRef(new Animated.Value(0)).current;
+    useEffect(() => {
+        if (!animate || reduceMotion) {
+            progress.setValue(1);
+            return;
+        }
+        const anim = Animated.timing(progress, {
+            toValue: 1,
+            duration: STEP_TRANSITION_MS,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+        });
+        anim.start();
+        return () => anim.stop();
+    }, [animate, reduceMotion, progress]);
+    return (
+        <Animated.View
+            style={{
+                opacity: progress,
+                transform: [
+                    {
+                        translateX: progress.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [direction === 'forward' ? STEP_SLIDE_OFFSET_DP : -STEP_SLIDE_OFFSET_DP, 0],
+                        }),
+                    },
+                ],
+            }}
+        >
+            {children}
+        </Animated.View>
+    );
+}
 
 export function EventFormScreen() {
     const router = useRouter();
@@ -70,7 +163,12 @@ export function EventFormScreen() {
     const palette = usePalette();
     const error = useArchiveStore((s) => s.error);
 
-    // ─── 表单字段 ────────────────────────────────────────────────────────────
+    // ─── 表单字段 + 分步 ─────────────────────────────────────────────────────
+    const [step, setStep] = useState(0);
+    // 换步方向（StepPane 滑入侧）：与 step 同批 setState（React 自动合并渲染
+    // 一帧），前进自右 / 后退自左；当前词表只有前进动作，back 侧为返回路径
+    // 预留（方向判定在换步动作处显式记录，不在渲染期推断）
+    const [stepDirection, setStepDirection] = useState<StepDirection>('forward');
     const [title, setTitle] = useState('');
     const [handledBy, setHandledBy] = useState('');
     const [subjectValue, setSubjectValue] = useState('');
@@ -141,7 +239,7 @@ export function EventFormScreen() {
     }, []);
 
     const titleValid = title.trim().length > 0;
-
+    const isLastStep = step === STEP_TOTAL - 1;
 
     const submit = async () => {
         if (!titleValid || submittingRef.current) return;
@@ -162,13 +260,13 @@ export function EventFormScreen() {
                 subjectKind: subject.kind ?? undefined,
                 subjectValue: subject.value ?? undefined,
                 // 手机号/邮箱（v7）：原样上交（可选、无格式校验），trim 与邮箱
-                // 值内空白剥除由 store 归一化统一收口（normalizeEventText /
-                // normalizeEventEmail），表单不做第二套清洗
+                // 值内空白剥除由 store 归一化统一收口，表单不做第二套清洗
                 phone,
                 email,
                 description,
             });
             if (row) {
+                haptics.success();
                 // 成功：replace 进详情编辑页（不留创建页在栈底）。typedRoutes
                 // 动态路径类型未生成 → as never 最小妥协（同 me 页先例）
                 router.replace(`/events/${row.id}` as never);
@@ -185,13 +283,21 @@ export function EventFormScreen() {
         }
     };
 
+    const goNext = () => {
+        // 标题未填不得前进（创建门槛同源）
+        if (!titleValid) return;
+        haptics.selection();
+        setStepDirection('forward');
+        setStep((prev) => Math.min(prev + 1, STEP_TOTAL - 1));
+    };
+
     return (
         <KeyboardAvoidingView
             className="flex-1 bg-ink-base dark:bg-inkd-base"
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
             <View style={{ paddingTop: insets.top }} className="flex-1">
-                <ScreenHeader title="新建事件" subtitle="标题必填，其余都可以之后补" />
+                <ScreenHeader title="新建事件" />
                 <ScrollView
                     className="flex-1"
                     contentContainerStyle={{
@@ -210,188 +316,216 @@ export function EventFormScreen() {
                             {error}
                         </Text>
                     ) : null}
-                    <View className="gap-4">
-                        {/* 标题（必填） */}
-                        <View>
-                            <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                标题
-                            </Text>
-                            <FieldInput
-                                value={title}
-                                onChangeText={setTitle}
-                                placeholder={EVENT_TITLE_PLACEHOLDER}
-                                maxLength={EVENT_TITLE_MAX}
-                                autoFocus
-                                accessibilityLabel="事件标题"
-                            />
-                            {!titleValid ? (
-                                // 可见提示（需求口径：标题为空禁用提交 + 提示）；
-                                // 条件渲染非条件类，不涉恒等铁律
-                                <Text className="mt-1 text-[12px] text-ink-muted dark:text-inkd-muted">
-                                    创建后可在正文补充细节
+
+                    {/* 步骤指示（与 deck 页码同语言：X / 7，tabular） */}
+                    <Text
+                        className="mb-2 text-[11px] text-ink-muted dark:text-inkd-muted"
+                        style={{ fontVariant: ['tabular-nums'] }}
+                    >
+                        {`${step + 1} / ${STEP_TOTAL}`}
+                    </Text>
+
+                    {/* ── 当前步骤的字段（一次只出一个）：StepPane 以 key={step}
+                        换步重挂 → 新字段按方向滑入（前进右/后退左，200ms
+                        ease-out + 淡入；animate=false 首步静态进场）。
+                        className 全部在 pane children 的普通 View 上，
+                        Animated.View 只挂内联动画 style（web 铁律坑） ── */}
+                    <StepPane key={step} direction={stepDirection} animate={step > 0}>
+                        {step === 0 ? (
+                            <View>
+                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    标题
                                 </Text>
-                            ) : null}
-                        </View>
-
-                        {/* GPS（进页自动定位，不可手输）：行容器与 FieldInput 同
-                            视觉语言（rounded-control 近色底 + min-h-11），内容为
-                            只读状态行——定位中 spinner / 已定位（**完整 GPS 信息**：
-                            首行「已定位 · ±Nm」、次行原始经纬度 tabular-nums，
-                            自动定位行保留）/ 未定位（muted 全行） */}
-                        <View>
-                            <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                位置
-                            </Text>
-                            <View className="min-h-11 flex-row items-center gap-2 rounded-control bg-ink-surface px-3.5 py-2 dark:bg-inkd-surface">
-                                {gpsStatus === 'locating' ? (
-                                    <>
-                                        <ActivityIndicator
-                                            size="small"
-                                            color={palette.spinner}
-                                        />
-                                        <Text className="text-[13px] text-ink-secondary dark:text-inkd-secondary">
-                                            定位中…
-                                        </Text>
-                                    </>
-                                ) : gpsStatus === 'ok' && gps ? (
-                                    <>
-                                        <LucideMapPin
-                                            size={14}
-                                            strokeWidth={1.9}
-                                            color={palette.accent}
-                                        />
-                                        {/* 完整 GPS 信息：状态行（定位成功 + 精度）+
-                                            原始坐标行（不取整——入库值即展示值，详情
-                                            设置卡同口径）；tabular-nums 防数字抖动 */}
-                                        <View className="min-w-0 flex-1">
-                                            <Text className="text-[13px] text-ink-secondary dark:text-inkd-secondary">
-                                                {`已定位${
-                                                    gps.accuracy != null
-                                                        ? ` · ±${Math.round(gps.accuracy)}m`
-                                                        : ''
-                                                }`}
-                                            </Text>
-                                            <Text
-                                                numberOfLines={1}
-                                                className="mt-1 text-[12px] text-ink-muted dark:text-inkd-muted"
-                                                style={{ fontVariant: ['tabular-nums'] }}
-                                            >
-                                                {`${gps.lat}, ${gps.lng}`}
-                                            </Text>
-                                        </View>
-                                    </>
-                                ) : (
-                                    <>
-                                        <LucideMapPin
-                                            size={14}
-                                            strokeWidth={1.9}
-                                            color={palette.muted}
-                                        />
-                                        <Text className="flex-1 text-[13px] text-ink-muted dark:text-inkd-muted">
-                                            未定位（未授权或服务不可用，不影响创建）
-                                        </Text>
-                                    </>
-                                )}
+                                <FieldInput
+                                    value={title}
+                                    onChangeText={setTitle}
+                                    placeholder={EVENT_TITLE_PLACEHOLDER}
+                                    maxLength={EVENT_TITLE_MAX}
+                                    autoFocus
+                                    containerClassName="h-14"
+                                    accessibilityLabel="事件标题"
+                                />
                             </View>
-                        </View>
+                        ) : null}
 
-                        {/* 处理人（可选） */}
-                        <View>
-                            <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                处理人
+                        {step === 1 ? (
+                            <View>
+                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    位置
+                                </Text>
+                                {/* GPS（自动定位，不可手输）：行容器与 FieldInput 同视觉
+                                    语言；定位中 spinner / 已定位（完整 GPS 信息）/ 未定位 */}
+                                <View className="min-h-11 flex-row items-center gap-2 rounded-control bg-ink-surface px-3.5 py-2 dark:bg-inkd-surface">
+                                    {gpsStatus === 'locating' ? (
+                                        <>
+                                            <ActivityIndicator size="small" color={palette.spinner} />
+                                            <Text className="text-[13px] text-ink-secondary dark:text-inkd-secondary">
+                                                定位中…
+                                            </Text>
+                                        </>
+                                    ) : gpsStatus === 'ok' && gps ? (
+                                        <>
+                                            <LucideMapPin size={14} strokeWidth={1.9} color={palette.accent} />
+                                            <View className="min-w-0 flex-1">
+                                                <Text className="text-[13px] text-ink-secondary dark:text-inkd-secondary">
+                                                    {`已定位${
+                                                        gps.accuracy != null
+                                                            ? ` · ±${Math.round(gps.accuracy)}m`
+                                                            : ''
+                                                    }`}
+                                                </Text>
+                                                <Text
+                                                    numberOfLines={1}
+                                                    className="mt-1 text-[12px] text-ink-muted dark:text-inkd-muted"
+                                                    style={{ fontVariant: ['tabular-nums'] }}
+                                                >
+                                                    {`${gps.lat}, ${gps.lng}`}
+                                                </Text>
+                                            </View>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <LucideMapPin size={14} strokeWidth={1.9} color={palette.muted} />
+                                            <Text className="flex-1 text-[13px] text-ink-muted dark:text-inkd-muted">
+                                                未定位（未授权或服务不可用，不影响创建）
+                                            </Text>
+                                        </>
+                                    )}
+                                </View>
+                            </View>
+                        ) : null}
+
+                        {step === 2 ? (
+                            <View>
+                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    处理人
+                                </Text>
+                                <FieldInput
+                                    value={handledBy}
+                                    onChangeText={setHandledBy}
+                                    placeholder={EVENT_HANDLED_BY_PLACEHOLDER}
+                                    maxLength={EVENT_HANDLED_BY_MAX}
+                                    autoFocus
+                                    containerClassName="h-14"
+                                    accessibilityLabel="处理人"
+                                />
+                            </View>
+                        ) : null}
+
+                        {step === 3 ? (
+                            <View>
+                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    对象
+                                </Text>
+                                <FieldInput
+                                    value={subjectValue}
+                                    onChangeText={setSubjectValue}
+                                    placeholder={EVENT_SUBJECT_PLACEHOLDER}
+                                    maxLength={EVENT_SUBJECT_VALUE_MAX}
+                                    autoFocus
+                                    containerClassName="h-14"
+                                    accessibilityLabel="对象"
+                                />
+                            </View>
+                        ) : null}
+
+                        {step === 4 ? (
+                            <View>
+                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    手机号
+                                </Text>
+                                <FieldInput
+                                    value={phone}
+                                    onChangeText={setPhone}
+                                    placeholder={EVENT_PHONE_PLACEHOLDER}
+                                    maxLength={EVENT_PHONE_MAX}
+                                    keyboardType="phone-pad"
+                                    inputMode="tel"
+                                    autoCapitalize="none"
+                                    autoCorrect={false}
+                                    autoFocus
+                                    containerClassName="h-14"
+                                    accessibilityLabel="手机号"
+                                />
+                            </View>
+                        ) : null}
+
+                        {step === 5 ? (
+                            <View>
+                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    邮箱
+                                </Text>
+                                <FieldInput
+                                    value={email}
+                                    onChangeText={setEmail}
+                                    placeholder={EVENT_EMAIL_PLACEHOLDER}
+                                    maxLength={EVENT_EMAIL_MAX}
+                                    keyboardType="email-address"
+                                    inputMode="email"
+                                    autoCapitalize="none"
+                                    autoCorrect={false}
+                                    autoFocus
+                                    containerClassName="h-14"
+                                    accessibilityLabel="邮箱"
+                                />
+                            </View>
+                        ) : null}
+
+                        {step === 6 ? (
+                            <View>
+                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    描述
+                                </Text>
+                                <FieldInput
+                                    value={description}
+                                    onChangeText={setDescription}
+                                    placeholder={EVENT_DESCRIPTION_PLACEHOLDER}
+                                    multiline
+                                    maxLength={EVENT_DESCRIPTION_MAX}
+                                    autoFocus
+                                    style={{ minHeight: 120, paddingTop: 16 }}
+                                    accessibilityLabel="事件描述"
+                                />
+                            </View>
+                        ) : null}
+                    </StepPane>
+
+                    {/* ── 动作行：直接创建（次级）+ 下一步/创建（主钮）等分 ──
+                        标题未填双禁用；直接创建随时可用已填内容创建（用户口径
+                        「默认只要输入事件名称即可创建」）；最后一步主钮即创建 */}
+                    <View className="mt-6 flex-row gap-3">
+                        <Pressable
+                            onPress={() => void submit()}
+                            disabled={!titleValid || submitting}
+                            className={`h-12 flex-1 items-center justify-center rounded-control bg-ink-surface active:bg-ink-raised dark:bg-inkd-surface dark:active:bg-inkd-raised ${
+                                !titleValid || submitting ? 'opacity-40' : ''
+                            }`}
+                            accessibilityRole="button"
+                            accessibilityLabel="直接创建"
+                        >
+                            <Text className="text-[15px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                直接创建
                             </Text>
-                            <FieldInput
-                                value={handledBy}
-                                onChangeText={setHandledBy}
-                                placeholder={EVENT_HANDLED_BY_PLACEHOLDER}
-                                maxLength={EVENT_HANDLED_BY_MAX}
-                                accessibilityLabel="处理人"
-                            />
-                        </View>
-
-                        {/* 对象（可选，自定义自由文本：一句话描述这个事件针对
-                            的对象——手机号 / 邮箱 / 地址 / 坐标皆可） */}
-                        <View>
-                            <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                对象
-                            </Text>
-                            <FieldInput
-                                value={subjectValue}
-                                onChangeText={setSubjectValue}
-                                placeholder={EVENT_SUBJECT_PLACEHOLDER}
-                                maxLength={EVENT_SUBJECT_VALUE_MAX}
-                                accessibilityLabel="对象"
-                            />
-                        </View>
-
-                        {/* 手机号（v7 可选独立联系方式）：phone-pad 数字键盘 +
-                            inputMode 'tel'（RN 0.88 InputModeOptions 词表无
-                            'phone-pad'，tel 是 HTML inputmode 手机号档）；不做
-                            强格式校验——号码排版空格/横线是合法书写习惯，按
-                            原样入库 */}
-                        <View>
-                            <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                手机号
-                            </Text>
-                            <FieldInput
-                                value={phone}
-                                onChangeText={setPhone}
-                                placeholder={EVENT_PHONE_PLACEHOLDER}
-                                maxLength={EVENT_PHONE_MAX}
-                                keyboardType="phone-pad"
-                                inputMode="tel"
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                                accessibilityLabel="手机号"
-                            />
-                        </View>
-
-                        {/* 邮箱（v7 可选）：email 键盘 + autoCapitalize none——
-                            邮箱地址不分大小写歧义，禁掉 iOS 首字母自动大写坏掉
-                            地址；值内明显空白由 store 归一化剥除（宽容收下手滑，
-                            不做格式拒绝） */}
-                        <View>
-                            <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                邮箱
-                            </Text>
-                            <FieldInput
-                                value={email}
-                                onChangeText={setEmail}
-                                placeholder={EVENT_EMAIL_PLACEHOLDER}
-                                maxLength={EVENT_EMAIL_MAX}
-                                keyboardType="email-address"
-                                inputMode="email"
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                                accessibilityLabel="邮箱"
-                            />
-                        </View>
-
-                        {/* 描述（可选，multiline 收起式：单行高度起步、随内容长高） */}
-                        <View>
-                            <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                描述
-                            </Text>
-                            <FieldInput
-                                value={description}
-                                onChangeText={setDescription}
-                                placeholder={EVENT_DESCRIPTION_PLACEHOLDER}
-                                multiline
-                                maxLength={EVENT_DESCRIPTION_MAX}
-                                accessibilityLabel="事件描述"
-                            />
-                        </View>
-
-                        {/* 提交（近黑主行动，PrimaryButton；标题为空禁用）。
-                            mt-2(8dp)：叠 gap-4(16) 后与上一字段净距 24dp（4dp 网格
-                            主行动独立档） */}
-                        <View className="mt-2">
-                            <PrimaryButton
-                                label={submitting ? '创建中…' : '创建事件'}
-                                disabled={!titleValid || submitting}
-                                onPress={() => void submit()}
-                            />
-                        </View>
+                        </Pressable>
+                        <Pressable
+                            onPress={() => (isLastStep ? void submit() : goNext())}
+                            disabled={!titleValid || submitting}
+                            className="h-12 flex-1 items-center justify-center rounded-control active:opacity-90"
+                            style={{ backgroundColor: palette.primaryBtn }}
+                            accessibilityRole="button"
+                            accessibilityLabel={isLastStep ? '创建事件' : '继续填写'}
+                        >
+                            {submitting ? (
+                                <ActivityIndicator size="small" color={palette.onPrimaryBtn} />
+                            ) : (
+                                <Text
+                                    className="text-[15px] font-semibold"
+                                    style={{ color: palette.onPrimaryBtn }}
+                                >
+                                    {isLastStep ? '创建事件' : '继续填写'}
+                                </Text>
+                            )}
+                        </Pressable>
                     </View>
                 </ScrollView>
             </View>

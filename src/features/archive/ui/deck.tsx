@@ -1,272 +1,393 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated as RNAnimated, PanResponder, Pressable, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Animated as RNAnimated, PanResponder, Pressable, Text, View } from 'react-native';
 import type { PanResponderGestureState } from 'react-native';
 
 /**
- * 重叠若隐若现双卡（archive 首页）：卡宽 = 容器−PEEK，后卡右移 PEEK 露出
- * 一条可点区域（缩放 + 降透明）。点前卡 → onPressCard(id, true) 直接打开内容；
- * 点后卡（露出的那条）→ 交换前后（spring）。两张卡固定身份：日记 / 行程。
+ * 重叠露条多卡 deck（archive 首页 + /notes、/trips 共用）：**原双卡 deck 的
+ * N 卡泛化**（2026-11-19 用户指令「首页保持之前的 ui 但是扩展支持多卡片」）——
+ * 卡宽 = 容器−PEEK；前卡全显，背卡按层位右移（每层 STRIDE=24px）在右侧露条
+ * 形成堆叠边（层位超出的卡淡出）；点前卡 → onFrontPress（打开内容），点背卡
+ * 露条 → 该卡提前到前位（环形），左右拖拽跟手、松手过阈值翻卡。
  *
- * 几何铁律：前卡 right=PEEK 留出露条，后卡 translateX=PEEK 对齐右缘——
- * 露条必须真实可点（前卡 zIndex 高但不覆盖该区域）。两卡高度由槽位
- * top/bottom 0 恒等（前卡即基准，露条几何不随内容高度变化）。
+ * 几何铁律（原 deck 沿用）：前卡 right=PEEK 留出露条；背卡 translateX =
+ * depth×STRIDE，右侧三条 24px 堆叠边（不越容器右缘：72 ≤ PEEK）。两卡高度由
+ * 槽位 top/bottom 0 恒等，height prop 定 deck 高（首页 430 原样；/notes、/trips
+ * 520 长卡——互不影响）。
  *
- * 结构铁律：**zIndex 用 React state 驱动（静态 style），禁止写进动画值**；
- * 动画底层 = **RN 内置 Animated（native driver）**——reanimated 在 Fabric 上
- * 驱动样式会使同视图触摸概率性失效（Expo Go 实测，见 BouncyPressable 注释）。
+ * 结构铁律（原 deck 沿用）：**zIndex 用 React state 驱动（静态 style），禁止
+ * 写进动画值**；动画底层 = **RN 内置 Animated（native driver）**——reanimated
+ * 在 Fabric 上驱动样式会使同视图触摸概率性失效；卡体 Pressable **零
+ * className**（触摸面纯净：按压 observable 在触摸面跑 JS 状态机 + native 动画
+ * 叠加会概率性吞点击，deck 是导航关键面，按压反馈让位给触摸可靠性）；插值
+ * 节点经 useMemo 固定（重渲不重建 native 动画图）；Animated.Value 经 key 惰性
+ * 注册表持有（N 卡非 hook）。
  *
- * 静态 key 收口（P0 审计）：槽位几何（absolute inset）与 zIndex 全部挂在普通
- * wrapper View 上（zIndex 仍由 state 派生，铁律不变）；AnimatedSlot 的 style
- * 只留 `flex: 1` + transform/opacity（native driver 白名单键，flex/opacity/
- * transform 均在 NativeAnimatedAllowlist 的常驻区，position/width 等布局键
- * 只在 shared animated backend 旗标下可用——不可回填）。flex: 1 是唯一保留
- * 的静态布局键，把 wrapper 的定尺寸主轴直接分给槽位；卡体 Pressable 同样用
- * flex: 1 填充（不用 h-full 百分比）——整条「wrapper → AnimatedSlot → 卡体」
- * 尺寸链全部走 flex 分配，不依赖任何一层的百分比基准解析，命中区与视觉
- * frame 由同一份 Yoga 布局给出，结构上不可能错位/塌 0。
+ * 页码（2026-11-19 用户指令「卡片容器的一部分」）：页码 = 卡容器的最后一个
+ * 子元素（卡底内部居中裸数字，`X / N`），随卡面同底色——不是覆盖层/悬浮物。
  *
- * 触摸面纯净（#9 前卡点击失效回归修复，2026-11）：卡体 Pressable **零
- * className**——上一轮加的 `active:opacity-90` 会让 css-interop 在按压体上
- * 注入按压 observable（onPressIn → dispatch → 重渲 + style commit），手势
- * DOWN..UP 窗口内在触摸面上跑 JS 状态机，与父级 native-driven 动画变换叠加
- * 后在 Fabric/Expo Go 上概率性吞点击（与本仓库已两次归档的「UI 线程样式
- * 更新杀触摸」同类：reanimated 驱动样式失效、RN Modal 触摸失效）。deck 卡
- * 是导航关键面，按压反馈让位给触摸可靠性：内层封面自带 BouncyPressable
- * 反馈，卡体不再做按压视觉。同理，插值节点经 useSlotStyle 以 useMemo 固定
- * ——deck 任意重渲不再重建 native 动画图（旧实现每次 render 新建
- * interpolate 节点，重挂载/重编组发生在 AnimatedSlot 上，同为手势窗口内
- * 的原生层扰动源）。
+ * 手势（原 deck 沿用）：PanResponder 方向锁认领（|dx|>10 且 |dx|>1.5|dy|）——
+ * 纵向语义（卡面长按菜单、误触抖动）不受伤；纯点按从不认领（点卡语义全保）；
+ * 认领即抢占（capture 声明，内层 Pressable 收到 terminate 即 abort 未完成点
+ * 按）；拖拽只动 translateX（跟手值），松手 |dx|>60 提交（左滑下一张 / 右滑
+ * 上一张，环形），否则弹回。
  *
- * 卡内按压体启停（#3 垂直重构新增）：卡片内容可能自带按压体（封面 → 屏级
- * 预览）。后卡的封面右缘落在露条命中区，若保持可按会抢走「点露条换位」——
- * 因此 deck 经 DeckSlotContext 广播本槽位是否在前，卡内按压体在后位时
- * 自行让位（onPress 置空 → 非响应体，触摸穿透到 deck 卡 Pressable）。
- * 「置空即穿透」依赖 BouncyPressable 的 disabled 传导（2026-11 修复：仅置空
- * 回调时 Pressable 仍抢 responder，露条曾是死区；现非交互态显式传导
- * disabled=true，本注释描述的行为才真实成立，见 bouncy-pressable 文件头）。
+ * 手感调优（2026-11-19，用户反馈左右滑动卡顿不丝滑；本环境无法真机验证，
+ * 以「结构正确 + 参数合理」交付）：①弹簧 friction 8 → 11（收尾更快，区间
+ * 依据见常量注）；②settle 收敛面从 O(N) 收窄到 O(可见层)（grant 已全量归零，
+ * 逐卡 spring 纯开销）；③插值输入区间收窄到实际值域 0..2（死段清除）。
+ * move 通道「只 setValue 不 stop」的原纪律保持并加注（高频回调里 stopAnimation
+ * 打断 native 弹簧图会跳帧）；reanimated 与动画化 zIndex 均不引入（仓库铁律）。
  *
- * 水平拖拽换位（2026-11）：deck 容器挂 PanResponder，方向锁认领（|dx|>10 且
- * |dx|>1.5|dy| 才接管——纵向语义（长按重命名、误触抖动）不受伤）：
- * - 跟手：前卡 translateX 1:1 跟 dx（超过 PEEK 橡皮筋阻尼 0.3），后卡反向
- *   0.12 倍小跟手（露条宽度随拖拽联动，深度视差）；PanResponder 在 grant 时
- *   把 dx 重置为认领点起累计，卡片从认领点静止开始跟手（认领零跳变），
- *   提交阈值的 |dx| 即卡片实际跟手位移（触点起全程 ≈ +10~15px 认领距离）。
- * - 提交：松手 |dx|>60 → 复用既有 swap()（zIndex state 翻转 + 双卡 offset
- *   spring 到对方槽位），拖拽位移值 spring 归零与 swap 并行——前卡已拖近
- *   PEEK（提交阈值 60 ≈ 露条宽），松手后只做小幅"靠岸"，对卡扫入前位是主运动。
- * - 接管口径：手势只认领 **拖拽值**（stopAnimation 后由 setValue 接管，残量
- *   丢弃——残量重挂到新角色上会放大跳变）；offset 弹簧从不被手势 stop，
- *   恒向当前 state 目标收敛，快速连滑由「spring 替换语义 + 拖拽值收口」串行化，
- *   提交动画中途再拖立即可用。
- * - 点按吞噬：认领即抢占 responder（capture 声明），内层 Pressable 收到
- *   terminate 后 abort 点按——拖拽窗口内不会误触导航/换位；纯点按（无
- *   10px 水平位移）从不认领，点前卡导航 / 点露条换位 / 点后卡穿透不变。
- * - 动画铁律：拖拽只动 translateX（RN Animated native driver），zIndex 仍
- *   state 驱动；卡体 Pressable 零 className 不变。空态/单卡态不挂 deck
- *   （屏侧 noContent 走 EmptyState），滑动语义天然不存在。
+ * **InteractionManager 交互句柄项不适用**（调优清单原第 4 项）：RN 0.88
+ * （SDK 58）已把 InteractionManager 从 react-native core 移除（index.js 运行
+ * 时 invariant 报错，官方指引改用 requestIdleCallback）——全局交互队列不复
+ * 存在，「防全局动画卡顿指标污染」目标随之失效；本 deck 拖拽链路 move 只做
+ * setValue（JS 侧零调度、动画全 native），本就不构成 JS 线程长任务，故不加
+ * 等价物（为不存在的能力建 polyfill 属过度工程）。
  */
-const PEEK = 76;
-const SPRING_FRICTION = 8;
 
-// 拖拽换位参数：认领阈值/方向锁比例、提交阈值、橡皮筋阻尼、后卡反向跟手系数
+export interface DeckItem {
+    /** 稳定 key（动画值注册表 + React key）。 */
+    key: string;
+    /** 卡面（原 deck 卡样式由调用方组装；卡体 Pressable 由本组件承担）。 */
+    node: React.ReactNode;
+    /** 点前卡（背卡点按 = 提前到前位，不经此回调）。 */
+    onPress?(): void;
+    /** 长按前卡（操作菜单入口；整个卡面任何位置长按可达——卡面内部按压体
+     *  自带长按语义时内层优先，deck 层是兜底覆盖面）。 */
+    onLongPress?(): void;
+    /** 前卡无障碍标签（选填）。 */
+    accessibilityLabel?: string;
+    /** 页码色调（选填）：light = 白（渐变类卡面），缺省 muted（素面卡面）。 */
+    pageLabelTone?: 'light' | 'muted';
+}
+
+const PEEK = 76;
+/**
+ * 弹簧摩擦系数（2026-11-19 手感调优）：原 8 偏肉——拖拽松手后的回弹与翻卡
+ * 层位动画收敛慢（低 friction = 长时间过冲振荡，观感「拖泥带水」）。在 10~12
+ * 试验区间取 11（中位档）：friction 增大 = 弹簧更快静止、过冲更少，跟手拖拽
+ * 的收尾更干脆；stiffness 未动（RN spring 默认），避免快到发硬。真机手感无法
+ * 在本环境验证，此参数为结构正确下的合理档位，不丝滑可在 10~12 内微调。
+ */
+const SPRING_FRICTION = 11;
+/**
+ * 可见层数 = 1（2026-11-19 用户指令「只要两个，左右堆叠，不显示过深的堆叠」）：
+ * 前卡全显 + 一张背卡按原双卡几何右移 PEEK（露条 = 原版 76px 宽），更深的卡
+ * 一律淡出——回到原版两卡观感。
+ */
+const VISIBLE_DEPTH = 1;
+/** 隐藏层位（超出可见深度的收敛目标：完全淡出）。 */
+const DECK_HIDDEN = VISIBLE_DEPTH + 1;
+/** 拖拽参数（原 deck 沿用）：认领阈值/方向锁比例、提交阈值、橡皮筋阻尼、背卡视差。 */
 const PAN_CLAIM_DX = 10;
 const PAN_CLAIM_RATIO = 1.5;
 const PAN_COMMIT_DX = 60;
+const PAN_RUBBER_START = 80;
 const PAN_RUBBER_RESIST = 0.3;
 const PAN_BACK_FOLLOW = 0.12;
 
-/** 超过 PEEK 的拖拽量按 0.3 倍阻尼（橡皮筋），其余 1:1 跟手。 */
+/** 超过起点的拖拽量按阻尼收敛（橡皮筋），其余 1:1 跟手。 */
 function rubberBand(dx: number): number {
     const abs = Math.abs(dx);
-    if (abs <= PEEK) return dx;
-    return Math.sign(dx) * (PEEK + (abs - PEEK) * PAN_RUBBER_RESIST);
+    if (abs <= PAN_RUBBER_START) return dx;
+    return Math.sign(dx) * (PAN_RUBBER_START + (abs - PAN_RUBBER_START) * PAN_RUBBER_RESIST);
 }
 
 const AnimatedSlot = RNAnimated.createAnimatedComponent(View);
 
-/** 本槽位是否处于前位（false = 后卡：内层按压体应让位给露条换位）。 */
-const DeckSlotContext = createContext(false);
-
-/** 卡内组件读取自己在前/后（封面等内层按压体的启停依据）。 */
-export function useDeckSlotFront(): boolean {
-    return useContext(DeckSlotContext);
-}
-
-/**
- * 槽位动效样式（插值节点 useMemo 固定）：0(在前) → 原位/原样，
- * 1(在后) → 右移 PEEK/微缩/降透明；dragX 追加一条 translateX（水平拖拽
- * 跟手通道，静止时恒 0，不改变槽位几何）。每次 render 新建 interpolate
- * 节点会触发 native 动画图重编组（手势窗口内的原生层扰动，#9），故节点
- * 只建一次、跨渲染复用；offset/dragX 均为 useRef 持有的稳定 Value，
- * 依赖恒不变（角色映射在 JS 手势层做，样式不依赖 aFront，重渲不重建）。
- */
-function useSlotStyle(offset: RNAnimated.Value, dragX: RNAnimated.Value) {
-    return useMemo(
-        () => ({
-            transform: [
-                { translateX: offset.interpolate({ inputRange: [0, 1], outputRange: [0, PEEK] }) },
-                { translateX: dragX },
-                { scale: offset.interpolate({ inputRange: [0, 1], outputRange: [1, 0.95] }) },
-            ],
-            opacity: offset.interpolate({ inputRange: [0, 1], outputRange: [1, 0.45] }),
-        }),
-        [offset, dragX],
-    );
+/** 每卡动画值注册表条目：depth = 层位（0 = 前卡），dragX = 拖拽跟手通道。 */
+interface DeckValues {
+    depth: RNAnimated.Value;
+    dragX: RNAnimated.Value;
+    /** 首轮定位标记：false = 尚未落位（首帧 setValue 不播飞行）。 */
+    placed: boolean;
 }
 
 export function CardDeck({
-    a,
-    b,
+    items,
     height = 430,
-    onPressCard,
+    emptyState,
 }: {
-    a: { id: string; node: React.ReactNode };
-    b: { id: string; node: React.ReactNode };
+    items: DeckItem[];
+    /** deck 高度（首页 430 原样；/notes、/trips 传 520 长卡，互不影响）。 */
     height?: number;
-    /** isFront=true 时点击语义为"打开内容"；false 时由 deck 内部交换前后。 */
-    onPressCard(id: string, isFront: boolean): void;
+    /** 卡序列为空时的占位（空态是行动邀请，由调用方给方向）。 */
+    emptyState?: React.ReactNode;
 }) {
-    const aOffset = useRef(new RNAnimated.Value(0)).current; // 0=在前，1=在后
-    const bOffset = useRef(new RNAnimated.Value(1)).current;
-    // 拖拽跟手值（按卡身份各一条，静止恒 0）：前卡 1:1 跟 dx、后卡反向 0.12 倍。
-    // 角色映射在 JS 手势层按 aFrontRef 分派，样式不依赖前后 state（重渲不重建）
-    const aDragX = useRef(new RNAnimated.Value(0)).current;
-    const bDragX = useRef(new RNAnimated.Value(0)).current;
-    // 前后关系（zIndex 与 isFront 判定）走 state：与动画值解耦；ref 镜像供
-    // 一次性创建的 PanResponder 闭包读取（防陈旧闭包读错角色）
-    const [aFront, setAFront] = useState(true);
-    const aFrontRef = useRef(true);
+    // 前卡下标（环形）；ref 镜像供一次性创建的 PanResponder 闭包读取（原 deck
+    // aFrontRef 同款防陈旧闭包）
+    const [index, setIndex] = useState(0);
+    const indexRef = useRef(0);
+    indexRef.current = index;
+    const itemsRef = useRef(items);
+    itemsRef.current = items;
+    // 越界自愈：卡序列收缩后把前卡指针收回首张
+    useEffect(() => {
+        if (index >= items.length && items.length > 0) setIndex(0);
+    }, [index, items.length]);
 
-    const swap = () => {
-        const next = !aFrontRef.current;
-        aFrontRef.current = next;
-        setAFront(next);
-        RNAnimated.parallel([
-            RNAnimated.spring(aOffset, { toValue: next ? 0 : 1, friction: SPRING_FRICTION, useNativeDriver: true }),
-            RNAnimated.spring(bOffset, { toValue: next ? 1 : 0, friction: SPRING_FRICTION, useNativeDriver: true }),
-        ]).start();
+    // 每卡动画值注册表（key 惰性创建，渲染期幂等；卡卸载后条目留存——会话级小对象）
+    const valuesRef = useRef(new Map<string, DeckValues>());
+    const getValues = (key: string): DeckValues => {
+        let entry = valuesRef.current.get(key);
+        if (!entry) {
+            entry = {
+                depth: new RNAnimated.Value(DECK_HIDDEN),
+                dragX: new RNAnimated.Value(0),
+                placed: false,
+            };
+            valuesRef.current.set(key, entry);
+        }
+        return entry;
     };
 
+    // 层位定位：index 或卡序列变化时每卡 spring 到目标层位（pos = 环形距离：
+    // 0 前卡 / 1..VISIBLE_DEPTH 背卡露条 / 超出 = 隐藏）。首帧 setValue 直接
+    // 落位（placed 标记），之后 spring（翻卡动画通道）。
     useEffect(() => {
-        aOffset.setValue(0);
-        bOffset.setValue(1);
-        aDragX.setValue(0);
-        bDragX.setValue(0);
-        aFrontRef.current = true;
-        setAFront(true);
-    }, [aOffset, bOffset, aDragX, bDragX]);
-
-    // 手势图只建一次（同 useSlotStyle 口径）：闭包仅引用 ref/稳定 Value 与
-    // 读取 ref 的 swap，不捕获任何随渲染变化的值
-    const panResponder = useMemo(() => {
-        // 角色分派：[前卡拖拽值, 后卡拖拽值]
-        const dragPair = (): [RNAnimated.Value, RNAnimated.Value] =>
-            aFrontRef.current ? [aDragX, bDragX] : [bDragX, aDragX];
-        let claimed = false;
-        // 方向锁认领（capture/bubble 双挂，capture 先行）：此阶段 gestureState.dx
-        // 是触点起的全程累计（grant 时才重置），阈值即「触点起 |dx|>10」
-        const claim = (g: PanResponderGestureState): boolean => {
-            if (claimed) return true;
-            const dx = Math.abs(g.dx);
-            if (dx > PAN_CLAIM_DX && dx > Math.abs(g.dy) * PAN_CLAIM_RATIO) {
-                claimed = true;
-                return true;
+        const animations: RNAnimated.CompositeAnimation[] = [];
+        items.forEach((item, i) => {
+            const pos = Math.min((i - index + items.length) % items.length, DECK_HIDDEN);
+            const entry = getValues(item.key);
+            if (!entry.placed) {
+                entry.placed = true;
+                entry.depth.setValue(pos);
+                return;
             }
-            return false;
-        };
-        // 认领接管：PanResponder 在 grant 时把 dx 重置为认领点起累计，卡片
-        // 从认领点静止开始跟手（认领瞬间零跳变）。只接管拖拽值（stopAnimation
-        // 后 setValue(0)，残量丢弃——残量重挂到翻转后的角色上会放大跳变）；
-        // offset 弹簧不受手势干预，恒向当前 state 目标收敛
-        const takeOver = () => {
-            const [front, back] = dragPair();
-            front.stopAnimation(() => front.setValue(0));
-            back.stopAnimation(() => back.setValue(0));
-        };
-        // 跟手：前卡 1:1（超 PEEK 橡皮筋 0.3），后卡反向 0.12 倍（露条联动）
-        const follow = (dx: number) => {
-            const [front, back] = dragPair();
-            const displaced = rubberBand(dx);
-            front.setValue(displaced);
-            back.setValue(-PAN_BACK_FOLLOW * displaced);
-        };
-        // 收口：拖拽值 spring 归零；提交时复用既有 swap（zIndex 翻转 + 双卡
-        // offset spring 到对方槽位）。release 的 g.dx 是认领点起累计
-        const settle = (committed: boolean) => {
-            claimed = false;
-            if (committed) swap();
-            RNAnimated.parallel([
-                RNAnimated.spring(aDragX, { toValue: 0, friction: SPRING_FRICTION, useNativeDriver: true }),
-                RNAnimated.spring(bDragX, { toValue: 0, friction: SPRING_FRICTION, useNativeDriver: true }),
-            ]).start();
-        };
-        return PanResponder.create({
-            // 方向锁：认领 |dx|>10 且 |dx|>1.5|dy|（capture 声明——内层
-            // Pressable 被 terminate 即 abort 未完成点按，拖拽吞点按）；
-            // 纯点按从不认领：panHandlers 的 start 声明在无 Pan start 回调时
-            // 恒 false，点前卡导航 / 点露条换位 / 点后卡穿透全部原样。
-            onMoveShouldSetPanResponder: (_e, g) => claim(g),
-            onMoveShouldSetPanResponderCapture: (_e, g) => claim(g),
-            onPanResponderGrant: () => takeOver(),
-            onPanResponderMove: (_e, g) => follow(g.dx),
-            onPanResponderRelease: (_e, g) => settle(Math.abs(g.dx) > PAN_COMMIT_DX),
-            onPanResponderTerminate: () => settle(false),
-            // 认领被现任 responder 拒绝（如长按重命名保持中）：没有 grant/
-            // release 链，claimed 旗标必须就地复位，否则下次手势会绕过方向锁
-            onPanResponderReject: () => {
-                claimed = false;
-            },
-            // 已认领的拖拽不让位给普通竞争者；系统强夺由 terminate 兜底归位
-            onPanResponderTerminationRequest: () => false,
+            animations.push(
+                RNAnimated.spring(entry.depth, { toValue: pos, friction: SPRING_FRICTION, useNativeDriver: true }),
+            );
         });
-    }, [aDragX, bDragX, aOffset, bOffset]);
+        if (animations.length > 0) RNAnimated.parallel(animations).start();
+        // items 引用变化（数据重载）与 index 翻转共用同一重定位通道
+    }, [index, items]);
 
-    const aStyle = useSlotStyle(aOffset, aDragX);
-    const bStyle = useSlotStyle(bOffset, bDragX);
+    // 认领旗标（PanResponder 各回调间跨调用存活，原 deck 闭包内 let 同语义）
+    const claimedFlag = useRef(false);
+    const claim = (g: PanResponderGestureState): boolean => {
+        if (claimedFlag.current) return true;
+        const dx = Math.abs(g.dx);
+        if (dx > PAN_CLAIM_DX && dx > Math.abs(g.dy) * PAN_CLAIM_RATIO) {
+            claimedFlag.current = true;
+            return true;
+        }
+        return false;
+    };
+    // 收口：提交翻卡（dir = 0 不翻）+ 本手势动过的卡拖拽值弹回零（层位重定位
+    // spring 由 index effect 并行接管，depth 弹簧从不被手势 stop——原 deck 同款）
+    const settle = (direction: number) => {
+        claimedFlag.current = false;
+        if (direction !== 0) {
+            const len = itemsRef.current.length;
+            if (len > 0) setIndex((indexRef.current + direction + len) % len);
+        }
+        // 只收敛本手势动过的卡（2026-11-19 调优：原实现遍历注册表逐卡 spring，
+        // N 卡泛化后每次松手挂 O(N) 个 native 弹簧——grant 已把全部 dragX stop
+        // 并归零，move 只写前卡与可见背卡窗口，其余卡 dragX 恒 0，对其 spring
+        // 是纯开销）。收敛面 O(可见层) = 1 前卡 + VISIBLE_DEPTH 背卡
+        const i = indexRef.current;
+        const movedKeys: string[] = [];
+        const front = itemsRef.current[i];
+        if (front) movedKeys.push(front.key);
+        for (let k = 1; k <= VISIBLE_DEPTH; k++) {
+            const back = itemsRef.current[i + k];
+            if (back) movedKeys.push(back.key);
+        }
+        const springs: RNAnimated.CompositeAnimation[] = [];
+        for (const key of movedKeys) {
+            const entry = valuesRef.current.get(key);
+            if (entry) {
+                springs.push(RNAnimated.spring(entry.dragX, { toValue: 0, friction: SPRING_FRICTION, useNativeDriver: true }));
+            }
+        }
+        if (springs.length > 0) RNAnimated.parallel(springs).start();
+    };
 
-    // 卡槽：left 0 / right PEEK；后卡 translateX(PEEK) 后右缘对齐容器，露条可点
+    // 手势图只建一次（闭包只引 ref 与稳定函数；原 deck 同款恒定依赖）
+    const panResponder = useMemo(
+        () =>
+            PanResponder.create({
+                onMoveShouldSetPanResponder: (_e, g: PanResponderGestureState) => claim(g),
+                onMoveShouldSetPanResponderCapture: (_e, g: PanResponderGestureState) => claim(g),
+                onPanResponderGrant: () => {
+                    // 认领即接管拖拽通道：停掉在途的 dragX 弹簧并归零（只在 grant
+                    // 做，move 通道纪律 = 只 setValue 不 stop——move 高频回调里
+                    // stopAnimation 会打断 native 弹簧图造成跳帧）
+                    for (const entry of valuesRef.current.values()) {
+                        entry.dragX.stopAnimation(() => entry.dragX.setValue(0));
+                    }
+                },
+                onPanResponderMove: (_e, g) => {
+                    const i = indexRef.current;
+                    const displaced = rubberBand(g.dx);
+                    const front = itemsRef.current[i];
+                    if (front) valuesRef.current.get(front.key)?.dragX.setValue(displaced);
+                    for (let k = 1; k <= VISIBLE_DEPTH; k++) {
+                        const back = itemsRef.current[i + k];
+                        if (back) valuesRef.current.get(back.key)?.dragX.setValue(-PAN_BACK_FOLLOW * displaced);
+                    }
+                },
+                onPanResponderRelease: (_e, g) => {
+                    settle(Math.abs(g.dx) > PAN_COMMIT_DX ? (g.dx < 0 ? 1 : -1) : 0);
+                },
+                onPanResponderTerminate: () => settle(0),
+                onPanResponderReject: () => {
+                    // 认领被拒：grant 从未执行，无句柄可清，只复位旗标
+                    claimedFlag.current = false;
+                },
+                // 已认领的拖拽不让位给普通竞争者；系统强夺由 terminate 兜底归位
+                onPanResponderTerminationRequest: () => false,
+            }),
+        [],
+    );
+
+    // 背卡露条点按 = 该卡提前到前位（环形前进 k 层）
+    const advance = (k: number) => {
+        const len = itemsRef.current.length;
+        if (len > 0) setIndex((indexRef.current + k) % len);
+    };
+
+    if (items.length === 0) {
+        return <View className="items-center justify-center" style={{ height }}>{emptyState}</View>;
+    }
+
+    return (
+        // PanResponder 挂容器：纯点按不认领，内层卡体 Pressable 的全部点按语义不受影响
+        <View>
+            <View className="relative" style={{ height }} {...panResponder.panHandlers}>
+                {/* 卡槽：每卡一层（left 0 / right PEEK + 层位右移），普通 wrapper 承担
+                    静态几何 + state 驱动 zIndex；AnimatedSlot 只挂 transform/opacity
+                    （native driver 白名单键，原 deck 静态 key 收口铁律不变） */}
+                {items.map((item, i) => {
+                    const depth = (i - index + items.length) % items.length;
+                    const values = getValues(item.key);
+                    return (
+                        <DeckCardLayer
+                            key={item.key}
+                            item={item}
+                            values={values}
+                            depth={depth}
+                            total={items.length}
+                            pageLabel={`${index + 1} / ${items.length}`}
+                            onAdvance={advance}
+                        />
+                    );
+                })}
+            </View>
+        </View>
+    );
+}
+
+/**
+ * 单卡层：普通 wrapper（静态几何 + state 驱动 zIndex）→ AnimatedSlot（flex:1 +
+ * transform/opacity 动画）→ 卡 Pressable（flex:1 填充，零 className——触摸面
+ * 纯净铁律）。前卡点按 = item.onPress（打开内容）；背卡点按 = 提前到前位
+ * （环形；原 deck「点露条换位」的 N 卡语义）。背卡对触摸透明由 wrapper
+ * pointerEvents="none" 承担？——**否**：背卡露条必须可点（提前到前位），故
+ * 背卡 Pressable 保持可按（露条命中区 = 层位右移后露出的右缘窄条，与原 deck
+ * 露条命中区同机制）；卡内深层内容（封面/文字区按压体）由卡面自理。
+ */
+function DeckCardLayer({
+    item,
+    values,
+    depth,
+    total,
+    pageLabel,
+    onAdvance,
+}: {
+    item: DeckItem;
+    values: DeckValues;
+    depth: number;
+    total: number;
+    /** 页码文案（前卡消费；全卡同值，仅前卡可见）。 */
+    pageLabel: string;
+    /** 背卡露条点按：该卡提前到前位（k = 层位）。 */
+    onAdvance(k: number): void;
+}) {
+    // 插值节点 useMemo 固定（原 deck useSlotStyle 同款防重建）：depth 0..2 →
+    // 右移 / 原缩放降透明语言（原 deck 背卡 scale 0.95 + opacity 0.45 的分层化）；
+    // dragX 追加一条 translateX（跟手通道，静止恒 0）。2026-11-19 调优：输入
+    // 区间从原 0..4 收窄到实际值域 0..DECK_HIDDEN(2)——层位定位经 Math.min 收敛
+    // 恒不出 2，区间尾巴 3/4 是插值图里的死段；每卡 native 节点数不增不减，
+    // 区间收窄只瘦插值表达式（结构上再省节点会牺牲视觉分层，不做）
+    const layerStyle = useMemo(
+        () => ({
+            transform: [
+                {
+                    // 背卡右移 = PEEK（原双卡几何：露条宽 76px，左右堆叠）；更深
+                    // 层位保持 PEEK（不可见，仅作淡出目标）
+                    translateX: values.depth.interpolate({
+                        inputRange: [0, 1, DECK_HIDDEN],
+                        outputRange: [0, PEEK, PEEK],
+                    }),
+                },
+                { translateX: values.dragX },
+                {
+                    scale: values.depth.interpolate({
+                        inputRange: [0, 1, DECK_HIDDEN],
+                        outputRange: [1, 0.95, 0.9],
+                    }),
+                },
+            ],
+            opacity: values.depth.interpolate({
+                inputRange: [0, 1, DECK_HIDDEN],
+                outputRange: [1, 0.45, 0],
+            }),
+        }),
+        [values],
+    );
     const slot = useMemo(
         () => ({ position: 'absolute' as const, top: 0, bottom: 0, left: 0, right: PEEK }),
         [],
     );
 
     return (
-        // PanResponder 挂容器（水平拖拽换位，方向锁见文件头）：纯点按不认领，
-        // 内层卡体 Pressable 的全部点按语义不受影响
-        <View className="relative" style={{ height, paddingRight: 0 }} {...panResponder.panHandlers}>
-            {/* 卡槽三层：普通 wrapper（静态几何 + state 驱动 zIndex）→ AnimatedSlot
-                （flex:1 撑满 + transform/opacity 动画）→ 卡 Pressable（flex:1 填充，
-                零 className——触摸面纯净铁律见文件头）。静态 key 收口依据见文件头注 */}
-            <View style={[slot, { zIndex: aFront ? 1 : 2 }]}>
-                <AnimatedSlot style={[{ flex: 1 }, bStyle]}>
-                    <Pressable
-                        onPress={() => {
-                            if (aFront) swap();
-                            else onPressCard(b.id, true);
-                        }}
-                        // 无按压视觉（触摸面纯净，#9）；命中区 = 槽位 frame 经
-                        // translateX 变换后的实际可视区，露条恒在其中
-                        style={{ flex: 1 }}
-                        accessibilityLabel="行程卡"
-                    >
-                        <DeckSlotContext.Provider value={!aFront}>{b.node}</DeckSlotContext.Provider>
-                    </Pressable>
-                </AnimatedSlot>
-            </View>
-            <View style={[slot, { zIndex: aFront ? 2 : 1 }]}>
-                <AnimatedSlot style={[{ flex: 1 }, aStyle]}>
-                    <Pressable
-                        onPress={() => {
-                            if (aFront) onPressCard(a.id, true);
-                            else swap();
-                        }}
-                        style={{ flex: 1 }}
-                        accessibilityLabel="日记卡"
-                    >
-                        <DeckSlotContext.Provider value={aFront}>{a.node}</DeckSlotContext.Provider>
-                    </Pressable>
-                </AnimatedSlot>
-            </View>
+        <View style={[slot, { zIndex: total - depth }]}>
+            <AnimatedSlot style={[{ flex: 1 }, layerStyle]}>
+                <Pressable
+                    onPress={depth === 0 ? item.onPress : () => onAdvance(depth)}
+                    onLongPress={depth === 0 ? item.onLongPress : undefined}
+                    style={{ flex: 1 }}
+                    accessibilityLabel={depth === 0 ? (item.accessibilityLabel ?? '当前卡片') : '下一张卡片'}
+                >
+                    {/* 卡容器（deck 统一绘制 surface 圆角壳——调用方卡面不再自带
+                        卡壳）+ **页码为卡容器的最后一个子元素**（2026-11-19 用户
+                        指令「卡片容器的一部分，不是悬浮窗口」：页码嵌在卡底内部
+                        居中，裸数字随卡面同底色，非覆盖层）；pointerEvents none
+                        不挡卡面触摸 */}
+                    <View className="h-full w-full flex-1 flex-col overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface">
+                        {/* 卡面铺满整卡（flex-1 占满壳）——渐变类卡面的颜色自然
+                            延伸到卡底，页码叠加其上同属一块渐变（2026-11-20 用户
+                            指令「整个容器一致颜色，页码包裹在渐变里」） */}
+                        <View className="min-h-0 flex-1">{item.node}</View>
+                        {/* 页码 = 卡底内侧居中叠加（非独立行）：色调随卡面
+                            pageLabelTone（渐变白 / 素面 muted），pointerEvents
+                            none 不挡卡面触摸 */}
+                        <View
+                            pointerEvents="none"
+                            style={{
+                                position: 'absolute',
+                                bottom: 6,
+                                left: 0,
+                                right: 0,
+                                alignItems: 'center',
+                            }}
+                        >
+                            <Text
+                                className={`text-[12px] ${
+                                    item.pageLabelTone === 'light'
+                                        ? 'text-white/80'
+                                        : 'text-ink-muted dark:text-inkd-muted'
+                                }`}
+                                style={{ fontVariant: ['tabular-nums'] }}
+                            >
+                                {pageLabel}
+                            </Text>
+                        </View>
+                    </View>
+                </Pressable>
+            </AnimatedSlot>
         </View>
     );
 }

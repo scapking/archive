@@ -40,6 +40,15 @@ import Clock from 'lucide-react-native/icons/clock';
 // 静态组件用法无需 __iconData（同 Calendar/Camera 先例）。
 import Flag from 'lucide-react-native/icons/flag';
 import MapPin from 'lucide-react-native/icons/map-pin';
+// M3 扩充（2026-11-17）：Lock = App 锁（锁屏/设置页开关行）、Download = 导出动作行、
+// FileText = PDF 导出行、ImagePlay = 视频转 GIF 动作行。同 per-icon 深路径先例，
+// 静态组件用法无需 __iconData。
+import Lock from 'lucide-react-native/icons/lock';
+import Download from 'lucide-react-native/icons/download';
+import FileText from 'lucide-react-native/icons/file-text';
+import ImagePlay from 'lucide-react-native/icons/image-play';
+import Upload from 'lucide-react-native/icons/upload';
+import NotebookPen from 'lucide-react-native/icons/notebook-pen';
 
 import {
     __iconData as houseData,
@@ -103,7 +112,14 @@ export {
     TrendingUp as LucideTrendingUp,
     Clock as LucideClock,
     Flag as LucideFlag,
-    MapPin as LucideMapPin,};
+    MapPin as LucideMapPin,
+    Lock as LucideLock,
+    Download as LucideDownload,
+    FileText as LucideFileText,
+    ImagePlay as LucideImagePlay,
+    Upload as LucideUpload,
+    NotebookPen as LucideNotebookPen,
+};
 
 export { MorphIcon, type MorphIconProps, type MorphHandle } from 'morphicons/react-native';
 

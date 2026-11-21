@@ -8,6 +8,13 @@ import {
 } from '@/core/file-storage';
 import { imageManipulator } from '@/core/image-manipulator';
 import { videoThumbnails } from '@/core/video-thumbnails';
+// 行程项通知（v9）：权限/渠道走 core/notifications 门面收口；调度/取消直连
+// expo-notifications——门面 schedule 只收 (content, trigger)，不支持 identifier
+// 形参，而行程项约定用确定性 identifier（trip-item-<itemId>，取消/重排无需持久
+// 登记表）。core/notifications 本轮不在改动权限内，capability 未覆盖面直连与
+// camera-overlay 直连 CameraView 同款先例（门面为主、参数级补充为辅）。
+import * as ExpoNotifications from 'expo-notifications';
+import { notifications, type NotificationContentInput } from '@/core/notifications';
 import * as db from './db';
 import { PENDING_MEDIA_ID, TRIP_OPEN_ENDED } from './db';
 import type {
@@ -17,6 +24,8 @@ import type {
     EventSubjectKind,
     JournalBlock,
     JournalMediaKind,
+    TripItemRow,
+    TripItemStatus,
     TripMediaKind,
     TripRow,
 } from './db';
@@ -27,14 +36,17 @@ import {
     isValidLocalDate,
     pickDeckTrip,
     todayLocal,
+    tripDisplayTitle,
     type Trip,
 } from './trip-logic';
 import {
     curveSeries,
     isEditable,
+    JOURNAL_TITLE_MAX,
     newBlockId,
     newParagraphBlock,
     normalizeJournalTitle,
+    NOTE_DESCRIPTION_MAX,
     parseBlocks,
     serializeBlocks,
     streakFromDates,
@@ -183,12 +195,18 @@ export interface TripCard extends Trip {
  * - streak / journalDays 同一记录日集合口径（db.activityDates：用户内容活动日
  *   并集——有内容日记（日常+行程同表）∪ 事件创建/更新日 ∪ 行程创建/更新日 ∪
  *   媒体上传日，排除打开即自动建行的空页）；
- * - totalWords / curve 仍为日记字数口径（事件行程无字数，曲线不动）。
+ * - totalWords / curve 仍为日记字数口径（事件行程无字数，曲线不动）；
+ * - eventCounts / noteCount（2026-11-20 用户指令新增）：事件三态计数（open =
+ *   进行中 / done = 完成 / failed = 失败）与独立笔记总数（不分 open/closed），
+ *   Me 指标卡 KPI 用；历史行程数不从 db 另取——store.trips 已有全量行程卡，
+ *   UI 按 status === 'finished' 派生（与进行中行程同款派生口径）。
  */
 export interface MeMetrics {
     streak: number;
     journalDays: number;
     totalWords: number;
+    eventCounts: { open: number; done: number; failed: number };
+    noteCount: number;
     curve: Array<{ date: string; value: number }>;
 }
 
@@ -232,6 +250,9 @@ interface ArchiveStore {
     /**
      * 行程内媒体（v4，DEV.md #4）：直接落盘+落库（无块模型，不需要日记媒体那套
      * pending 占位链路——两者取简者），返回 mediaId 供卡片引用；行程已结束则拒绝（#7）。
+     * opts 为 2026-11-08 落盘异步化配套（进度注册键 / 直迁语义 / 原始进度监听）；
+     * itemId（v9）传入时媒体行落 item_id（行程项图片/视频归属，仅 attachTripItemMedia
+     * 使用）。
      */
     attachTripMedia(
         tripId: string,
@@ -240,6 +261,8 @@ interface ArchiveStore {
         width: number | null,
         height: number | null,
         durationMs?: number | null,
+        opts?: AttachMediaOptions,
+        itemId?: string,
     ): Promise<string | null>;
     /**
      * 删单条行程媒体（行程媒体卡长按删除入口）：行软删 + 文件尽力清理
@@ -260,15 +283,74 @@ interface ArchiveStore {
         width: number | null,
         height: number | null,
     ): Promise<boolean>;
+    // ─── 行程项（v9：trip_items，行程表页）────────────────────────────────────
+    // 刷新口径：行程项不进 loadAll 的 store 状态（trips/metrics 与行程项无关），
+    // mutation 成功只 bump revision——行程表页由屏层按 useArchiveRevision 局部
+    // 重载（对齐事件/笔记的取径）。
     /**
-     * 清除日卡背景：摘指针行 + 背景媒体行软删 + 文件尽力清理（清的是行程内
-     * 副本，源图仍在系统相册，无需确认）；无背景时幂等成功。已结束行程拒绝（#7）。
+     * 创建行程项（行程表页 + 表单卡）：title 必填非空、time 须合法 'HH:mm'、
+     * date 须合法本地日期（错误进 error 通道返回 null，不 throw）。成功落库 +
+     * 调度本地通知（确定性 identifier trip-item-<itemId>；权限被拒静默降级，
+     * 不阻塞创建）+ bump revision。
      */
-    clearTripDayBackground(tripId: string, date: string): Promise<boolean>;
+    createTripItem(input: { tripId: string; date: string; time: string; title: string; description?: string }): Promise<TripItemRow | null>;
+    /**
+     * 行程项状态更新：标记 done/failed 受**时间闸**约束——行程项时刻
+     * （local_date + time）未到时拒绝，error 文案「时间还没到，还不能标记完成」；
+     * done/failed 可改回 pending（回退不受时间闸约束）。通知随状态取消（终态）/
+     * 重排（回退 pending）。同状态幂等成功（不 bump revision）。
+     */
+    updateTripItemStatus(id: string, status: TripItemStatus): Promise<boolean>;
+    /**
+     * 删除行程项：软删 + 摘 item_id 媒体关联（媒体行保留，记录留档）+ 取消通知。
+     * true = 成功。
+     */
+    deleteTripItem(id: string): Promise<boolean>;
+    /**
+     * 行程项媒体（图片/视频挂 trip_media 既有链路，item_id 关联到行程项）：
+     * 复用 attachTripMedia 上传管线（落盘 key 同规则 trip-media/<tripId>/…），
+     * 行程锁定（#7）与存在性预检在内部完成，返回 mediaId。
+     */
+    attachTripItemMedia(
+        tripItemId: string,
+        kind: TripMediaKind,
+        uri: string,
+        width: number | null,
+        height: number | null,
+        durationMs?: number | null,
+    ): Promise<string | null>;
     /** 行程搜索（DEV.md #5）：标题+描述 LIKE，range 为行程区间与 [from, to] 相交。 */
     searchTrips(keyword: string, range?: { from?: string; to?: string }): Promise<TripCard[]>;
-    /** 笔记搜索（DEV.md #5 扩展）：正文/标题 LIKE + local_date ∈ [from, to]。 */
+    /** 笔记搜索（DEV.md #5 扩展）：正文/标题 LIKE + local_date ∈ [from, to]。
+     *  v8 起独立笔记同样被搜到（不筛 kind，期望行为）。 */
     searchJournals(keyword: string, range?: { from?: string; to?: string }): Promise<JournalRow[]>;
+    // ─── 独立笔记（v8：journals.kind = 'note'，复用日记容器管线）──────────────
+    // 刷新口径与 events 相同：笔记不进 loadAll 的 store 状态（trips/metrics 与
+    // 笔记无关），mutation 成功只 bump revision——笔记列表由屏层按
+    // useDataRevision 局部重载（读取走 db.listNotes）。
+    // 复用既有 mutation，无需为笔记新增对应入口：正文保存走 saveJournalBlocks
+    // （块模型/占位过滤/媒体引用对账全量同构）、插图/录音走 attachJournalMedia、
+    // 删除走 deleteJournal（级联媒体行 + 文件清理，笔记无行程级联分支）、标题
+    // 走 updateJournalTitle（笔记 status 恒 'open'，isEditable 闸天然放行）。
+
+    /**
+     * 新建独立笔记（显式建页动作，像建行程/事件一样走表单；同日可建任意多篇）：
+     * 标题与描述均选填。校验先行（错误进 error 通道返回 null）：title trim 后
+     * ≤ JOURNAL_TITLE_MAX、description trim 后 ≤ NOTE_DESCRIPTION_MAX，超长
+     * 整体拒绝不走截断（对齐事件标题口径；trim 后空串合法 = 未命名/无描述）。
+     * 成功返回新行（deleted_at = null）并 bump revision（不 loadAll）。
+     */
+    createNote(input: { title: string; description: string }): Promise<JournalRow | null>;
+
+    /**
+     * 独立笔记元信息更新（标题/描述，均可选）：title null = 清除；字符串经
+     * normalizeJournalTitle（空串归一为 null = 未命名，超长钳制——对齐
+     * updateJournalTitle 口径）；description trim 后超 NOTE_DESCRIPTION_MAX
+     * 整体拒绝（与创建同口径），空串合法。仅接受 kind = 'note' 的行（日记的
+     * 标题清除语义走 updateJournalTitle，日记无 description，防误写）。
+     * true = 成功（bump revision，不 loadAll）。
+     */
+    updateNoteMeta(id: string, patch: { title?: string | null; description?: string }): Promise<boolean>;
     /**
      * 建事件（v6，类似工单）：标题必填，其余可选；正文 blocks 以单空文本段初始化；
      * 状态恒从 'open' 起。GPS 注入不在 store（UI 层经 core/location 取好后传参）。
@@ -543,6 +625,120 @@ async function removeFilesBestEffort(keys: string[]): Promise<{ key: string; mes
     return failures;
 }
 
+/* ------------------------------------------------------------------ */
+/* 行程项本地通知（v9，行程表页）                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 行程项通知的确定性 identifier 约定：`trip-item-<itemId>`。
+ * 取消/重排按同一 identifier 先 cancel 再 schedule——无需持久登记表
+ * （expo 侧调度表按 identifier 收口，JS 上下文重启后依然可寻址）。
+ */
+const TRIP_ITEM_NOTIFICATION_PREFIX = 'trip-item-';
+
+/**
+ * Android 通知渠道（expo-notifications：Android 8+ 展示通知必须有渠道；
+ * iOS 无渠道概念，createChannel 在门面内按平台短路）。importance HIGH +
+ * 渠道默认声音：行程提醒是到点即时动作，不作静默档。
+ */
+const TRIP_ITEM_NOTIFICATION_CHANNEL = 'trip-items';
+/** 渠道已建标记（每 JS 会话一次；渠道创建幂等，标记只为省重复原生调用）。 */
+let tripItemChannelEnsured = false;
+/** 通知标题 = `${time} ${item.title}`（2026-11-19 系统通知卡片化：时间 +
+ * 内容 + 描述三段；subtitle = 所属行程名，正文 = 描述——见调度函数注）。 */
+const TRIP_ITEM_NOTIFICATION_TITLE = '行程提醒';
+
+/** 行程项通知 identifier（确定性，约定见上注）。 */
+function tripItemNotificationId(itemId: string): string {
+    return `${TRIP_ITEM_NOTIFICATION_PREFIX}${itemId}`;
+}
+
+/**
+ * 行程项触发时刻（local_date + 'HH:mm' → epoch ms，本地时区）：
+ * 本地日期口径铁律同 trip-logic（禁 UTC 组合判断「哪天」），时间闸与通知调度
+ * 共用本单一事实源。输入合法性由 store 写入口保证（isValidTripItemTime /
+ * isValidLocalDate），此处不重复校验。行程表页（deck 排序/应用内闹钟）经此
+ * 导出复用同一口径，禁止屏层另写时刻组合。
+ */
+export function tripItemDueAt(localDate: string, time: string): number {
+    const [year, month, day] = localDate.split('-').map(Number);
+    const [hour, minute] = time.split(':').map(Number);
+    return new Date(year, month - 1, day, hour, minute, 0, 0).getTime();
+}
+
+/** 'HH:mm' 合法性（24 小时制；创建入口的第一道闸，屏层表单复用同一导出）。 */
+export function isValidTripItemTime(time: string): boolean {
+    return /^([01]\d|2[0-3]):([0-5]\d)$/.test(time);
+}
+
+/** Android 渠道确保（幂等；非 Android 平台门面内短路，iOS 直接过）。 */
+async function ensureTripItemNotificationChannel(): Promise<void> {
+    if (tripItemChannelEnsured) return;
+    await notifications.createChannel(
+        TRIP_ITEM_NOTIFICATION_CHANNEL,
+        TRIP_ITEM_NOTIFICATION_TITLE,
+        ExpoNotifications.AndroidImportance.HIGH,
+    );
+    tripItemChannelEnsured = true;
+}
+
+/**
+ * 调度/重排行程项通知（best-effort，绝不阻塞数据面）：
+ * - 权限未授权先请求一次，仍被拒：静默降级 console.warn 留痕，不调度——
+ *   通知是提醒增强，不是数据完整性依赖，行程项照常落库（产品口径）；
+ * - 触发时刻已过去：跳过（不调度过去的闹钟；页内应用内闹钟兜底前台提醒）；
+ * - 重排语义：先按确定性 identifier 取消旧调度（无则幂等成功）再落新调度。
+ * 任何失败 console.warn 留痕、不进 error 通道（对齐 ensureVideoThumbnail 的
+ * 增强失败文档化降级口径）。
+ */
+async function scheduleTripItemNotification(
+    item: Pick<TripItemRow, 'id' | 'trip_id' | 'local_date' | 'time' | 'title' | 'description'>,
+): Promise<void> {
+    try {
+        let granted = await notifications.getPermission();
+        if (!granted) granted = await notifications.requestPermission();
+        if (!granted) {
+            console.warn(`[archive-trip-item] 通知权限被拒，行程提醒降级为仅应用内（item: ${item.id}）`);
+            return;
+        }
+        const dueAt = tripItemDueAt(item.local_date, item.time);
+        if (dueAt <= Date.now()) return;
+        await ensureTripItemNotificationChannel();
+        // 系统通知卡片化（2026-11-19 用户指令「系统组件显示行程内容：时间和
+        // 内容和描述」）：标题 = 时间 + 行程项名，subtitle = 所属行程名，
+        // 正文 = 描述（Android shade 卡片 / iOS 横幅按 title+subtitle+body
+        // 三段卡片式呈现；iOS 与 Android 展开态即 BigText 卡片形态）。
+        const trip = await db.getTrip(item.trip_id).catch(() => null);
+        const body = item.description || item.title;
+        await ExpoNotifications.cancelScheduledNotificationAsync(tripItemNotificationId(item.id));
+        await ExpoNotifications.scheduleNotificationAsync({
+            identifier: tripItemNotificationId(item.id),
+            content: {
+                title: `${item.time} ${item.title}`,
+                subtitle: trip ? tripDisplayTitle(trip.title) : undefined,
+                body,
+                sound: true,
+            } satisfies NotificationContentInput,
+            trigger: {
+                type: ExpoNotifications.SchedulableTriggerInputTypes.DATE,
+                date: new Date(dueAt),
+                channelId: TRIP_ITEM_NOTIFICATION_CHANNEL,
+            },
+        });
+    } catch (error) {
+        console.warn(`[archive-trip-item] 行程提醒调度失败（不阻塞行程项，item: ${item.id}）:`, error);
+    }
+}
+
+/** 取消行程项通知（幂等 best-effort：identifier 无对应调度视为成功；失败仅告警）。 */
+async function cancelTripItemNotification(itemId: string): Promise<void> {
+    try {
+        await ExpoNotifications.cancelScheduledNotificationAsync(tripItemNotificationId(itemId));
+    } catch (error) {
+        console.warn(`[archive-trip-item] 行程提醒取消失败（item: ${itemId}）:`, error);
+    }
+}
+
 // ─── 启动孤儿文件 GC（上传中断恢复）────────────────────────────────────────
 
 /**
@@ -652,7 +848,14 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
     revision: 0,
     savingJournal: false,
     trips: [],
-    metrics: { streak: 0, journalDays: 0, totalWords: 0, curve: [] },
+    metrics: {
+        streak: 0,
+        journalDays: 0,
+        totalWords: 0,
+        eventCounts: { open: 0, done: 0, failed: 0 },
+        noteCount: 0,
+        curve: [],
+    },
     mediaUploadProgress: {},
 
     async loadAll() {
@@ -660,7 +863,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             const today = todayLocal();
             // 本地时区 24:00 自动收笔：加载即收口昨日及更早的 open 日记
             await db.closeStaleOpenJournals(today);
-            const [tripRows, stats, totalWords, dates] = await Promise.all([
+            const [tripRows, stats, totalWords, dates, eventCounts, noteCount] = await Promise.all([
                 db.listTrips(),
                 db.tripStats(),
                 db.journalTotalWords(),
@@ -668,6 +871,8 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 // 创建/更新日 ∪ 媒体上传日）——journalDays 与 streak 同一集合口径
                 //（「写过 X 天」与「连续 N 天」不分裂），排除自动建行的空页灌水
                 db.activityDates(),
+                db.eventStatusCounts(),
+                db.noteCount(),
             ]);
             // 曲线窗口覆盖最近 30 天
             const window30 = await db.wordCountByDate(addDaysLocal(today, -29));
@@ -679,6 +884,8 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                     streak: streakFromDates(dates, today),
                     journalDays: dates.size,
                     totalWords,
+                    eventCounts,
+                    noteCount,
                     curve: curveSeries(window30, 30, today),
                 },
             });
@@ -759,9 +966,14 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
 
     async deleteTrip(id) {
         try {
-            // ① 先收集文件 key：级联软删后行不可见（所有查询过滤 deleted_at IS NULL）。
+            // ① 先收集文件 key：级联软删后行不可见（所有查询过滤 deleted_at）。
             //    封面视频 video_key 一并回收（首页卡片「删了还引用」的直接来源之一）。
-            const [trip, journalRows] = await Promise.all([db.getTrip(id), db.listJournalsByTrip(id)]);
+            const [trip, journalRows, tripItems] = await Promise.all([
+                db.getTrip(id),
+                db.listJournalsByTrip(id),
+                // 行程项（v9）：级联软删后行不可见，identifier 需在此先收集
+                db.listTripItemsByTrip(id),
+            ]);
             const journalMedia = await db.mediaByJournalIds(journalRows.map((row) => row.id));
             const tripMediaRows = await db.listTripMediaByTrip(id);
             const fileKeys = [
@@ -769,8 +981,10 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 ...tripMediaRows.map((m) => m.file_key),
                 ...(trip?.video_key ? [trip.video_key] : []),
             ];
-            // ② 行级级联一个事务（日记/日记媒体/行程媒体/逐日计划/行程本体，软删）
+            // ② 行级级联一个事务（日记/日记媒体/行程媒体/逐日计划/行程项/行程本体，软删）
             await db.softDeleteTripCascade(id, Date.now());
+            // ②' 行程项通知随级联取消（best-effort；identifier 已在 ① 收集）
+            await Promise.all(tripItems.map((item) => cancelTripItemNotification(item.id)));
             // ③ 文件清理不阻塞行删除：失败聚合上浮（行已删，孤儿文件只浪费存储不再被引用）
             const failures = await removeFilesBestEffort(fileKeys);
             set({
@@ -803,7 +1017,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         }
     },
 
-    async attachTripMedia(tripId, kind, uri, width, height, durationMs = null, opts?: AttachMediaOptions) {
+    async attachTripMedia(tripId, kind, uri, width, height, durationMs = null, opts?: AttachMediaOptions, itemId?: string) {
         const sink = makeProgressSink(opts?.taskId, opts?.onProgress);
         try {
             // 锁定预检（#7）：已结束的行程不可再增内容（UI 侧入口同样要挡，这里是兜底）
@@ -841,6 +1055,8 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 width,
                 height,
                 duration_ms: durationMs,
+                // 行程项归属（v9）：undefined = 无主媒体（日卡背景等既有形态）
+                item_id: itemId ?? null,
                 created_at: Date.now(),
             });
             if (kind === 'video') void ensureVideoThumbnail(key);
@@ -927,6 +1143,8 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 width: prepared.width,
                 height: prepared.height,
                 duration_ms: null,
+                // 日卡背景 = 无主媒体（item_id 恒 null，v9 列默认语义显式落）
+                item_id: null,
                 created_at: Date.now(),
             });
             // 指针切换在新行落库之后：任何时刻指针都指向活行（顺序见 db.upsertTripDayBackground）
@@ -964,42 +1182,154 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         }
     },
 
-    async clearTripDayBackground(tripId, date) {
+    // ─── 行程项（v9：trip_items，行程表页）────────────────────────────────────
+    // 刷新口径（见接口段注）：行程项不进 loadAll 状态，mutation 成功只 bump
+    // revision，行程表页按 useArchiveRevision 局部重载。
+
+    async createTripItem({ tripId, date, time, title, description }) {
+        // 校验先行（错误进 error 通道，对齐 createEvent 口径）：标题必填非空、
+        // 时间合法 'HH:mm'、日期合法本地日期；超长不设截断（备注为自由短文）
+        const trimmedTitle = title.trim();
+        if (trimmedTitle.length === 0) {
+            set({ error: '给行程项起个名字' });
+            return null;
+        }
+        if (!isValidTripItemTime(time)) {
+            set({ error: `时间格式不对，用 HH:mm（如 09:30）` });
+            return null;
+        }
+        if (!isValidLocalDate(date)) {
+            set({ error: `行程项日期不合法：${date}` });
+            return null;
+        }
+        // row 构造留在 try 内：web 非安全上下文 crypto.randomUUID 会抛 TypeError，
+        // 失败必须走 error 通道（对齐 createTrip 的注释口径）。行以完整 TripItemRow
+        // 形态构造（deleted_at 显式 null），传给 insertTripItem 的 Omit 形参按结构
+        // 兼容放行
+        let row: TripItemRow | null = null;
         try {
-            // 预检（#7）：与设置背景同口径（UI 侧锁定态无长按入口，这里兜底）
+            // 存在性 + 锁定预检（#7）：已结束行程内容只读（UI 侧入口先挡，这里兜底）
             const trip = await db.getTrip(tripId);
+            if (!trip) {
+                set({ error: '行程不存在或已删除' });
+                return null;
+            }
+            if (isTripLocked(trip)) {
+                set({ error: '行程已结束，内容锁定，不能添加行程项' });
+                return null;
+            }
+            const now = Date.now();
+            const created: TripItemRow = {
+                id: crypto.randomUUID(),
+                trip_id: tripId,
+                local_date: date,
+                time,
+                title: trimmedTitle,
+                description: (description ?? '').trim(),
+                status: 'pending',
+                created_at: now,
+                updated_at: now,
+                deleted_at: null,
+            };
+            await db.insertTripItem(created);
+            row = created;
+        } catch (error) {
+            set({ error: `行程项创建失败：${toMessage(error)}` });
+            return null;
+        }
+        // 防御式收窄（杜绝 try/catch 控制流歧义）：此处置信非空
+        if (!row) return null;
+        // 通知调度（best-effort，fire-and-forget：内部全兜底，不阻塞也不进 error 通道）
+        void scheduleTripItemNotification(row);
+        set({ error: null, revision: get().revision + 1 });
+        return row;
+    },
+
+    async updateTripItemStatus(id, status) {
+        // 合法值校验（TripItemStatus 约束在应用层，见 schema 注）：非法值整体拒绝
+        if (status !== 'pending' && status !== 'done' && status !== 'failed') {
+            set({ error: `行程项状态不合法：${String(status)}` });
+            return false;
+        }
+        try {
+            const item = await db.getTripItem(id);
+            if (!item) {
+                set({ error: '行程项不存在或已删除' });
+                return false;
+            }
+            const trip = await db.getTrip(item.trip_id);
             if (!trip) {
                 set({ error: '行程不存在或已删除' });
                 return false;
             }
             if (isTripLocked(trip)) {
-                set({ error: '行程已结束，内容锁定，不能修改背景' });
+                set({ error: '行程已结束，内容锁定' });
                 return false;
             }
-            // 摘指针 → 行软删 → 文件尽力清理（对齐 removeTripMedia 分工；
-            // 源图在系统相册，清的只是行程内副本，无需二次确认）。
-            // 指针摘除后的清理段自带兜底：清除已生效，失败只聚合上浮、不拦 revision bump
-            const oldMediaId = await db.getTripDayBackgroundMediaId(tripId, date);
-            if (!oldMediaId) return true; // 幂等：本来就没有背景
-            await db.removeTripDayBackground(tripId, date);
-            let cleanupError: string | null = null;
-            try {
-                const oldRow = await db.getTripMedia(oldMediaId);
-                if (oldRow) {
-                    await db.softDeleteTripMedia(oldRow.id, Date.now());
-                    const failures = await removeFilesBestEffort([oldRow.file_key]);
-                    if (failures.length > 0) {
-                        cleanupError = `背景已清除，但图片文件清理失败：${failures[0].message}`;
-                    }
-                }
-            } catch (cleanupCaught) {
-                cleanupError = `背景已清除，但旧图清理失败：${toMessage(cleanupCaught)}`;
+            // 幂等：状态未变直接成功（不 bump revision，无谓重载）
+            if (item.status === status) return true;
+            // 时间闸（产品口径）：行程项时刻（local_date + time）还没到时拒绝标记
+            // done/failed——「计划」语义下完成只能发生在时刻之后；回退 pending
+            // 不受闸约束（误标后随时可撤回）
+            if (status !== 'pending' && tripItemDueAt(item.local_date, item.time) > Date.now()) {
+                set({ error: '时间还没到，还不能标记完成' });
+                return false;
             }
-            set({ error: cleanupError, revision: get().revision + 1 });
-            return true;
+            await db.updateTripItemStatus(id, status);
+            // 通知随状态收口（best-effort fire-and-forget）：回退 pending = 重排
+            // （按原时刻重新调度）；终态 = 取消。item 原值即重排所需全部字段
+            if (status === 'pending') void scheduleTripItemNotification(item);
+            else void cancelTripItemNotification(id);
         } catch (error) {
-            set({ error: `背景清除失败：${toMessage(error)}` });
+            set({ error: `行程项状态更新失败：${toMessage(error)}` });
             return false;
+        }
+        set({ error: null, revision: get().revision + 1 });
+        return true;
+    },
+
+    async deleteTripItem(id) {
+        try {
+            const item = await db.getTripItem(id);
+            if (!item) {
+                set({ error: '行程项不存在或已删除' });
+                return false;
+            }
+            const trip = await db.getTrip(item.trip_id);
+            if (!trip) {
+                set({ error: '行程不存在或已删除' });
+                return false;
+            }
+            if (isTripLocked(trip)) {
+                set({ error: '行程已结束，内容锁定，不能删除行程项' });
+                return false;
+            }
+            await db.softDeleteTripItem(id, Date.now());
+            // 摘 item_id 媒体关联（媒体行保留——记录留档，挂靠关系随项消失）
+            await db.detachTripMediaByItemId(id);
+        } catch (error) {
+            set({ error: `行程项删除失败：${toMessage(error)}` });
+            return false;
+        }
+        // 通知取消（best-effort：行已软删，提醒不应再响；失败仅告警不回滚）
+        void cancelTripItemNotification(id);
+        set({ error: null, revision: get().revision + 1 });
+        return true;
+    },
+
+    async attachTripItemMedia(tripItemId, kind, uri, width, height, durationMs = null) {
+        try {
+            // 归属预检：行程项存在（媒体没有落点则拒绝）；行程锁定闸（#7）与
+            // 落盘/落库管线全部在 attachTripMedia 内完成（itemId 落 item_id 列）
+            const item = await db.getTripItem(tripItemId);
+            if (!item) {
+                set({ error: '行程项不存在或已删除' });
+                return null;
+            }
+            return await get().attachTripMedia(item.trip_id, kind, uri, width, height, durationMs, undefined, tripItemId);
+        } catch (error) {
+            set({ error: `媒体上传失败：${toMessage(error)}` });
+            return null;
         }
     },
 
@@ -1010,8 +1340,12 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             return [];
         }
         const trimmed = keyword.trim();
-        // 空 keyword 且无范围 → 不做无界全量兜底（调用方语义错误应显式给范围）
-        if (!trimmed && !range?.from && !range?.to) return [];
+        // 空 keyword 且无范围 = 全量浏览（2026-11-19 用户指令「搜索默认全部的
+        // 不管什么状态」）：全量行程（含 finished——历史在搜索可见）
+        if (!trimmed && !range?.from && !range?.to) {
+            const [rows, stats] = await Promise.all([db.listTrips(), db.tripStats()]);
+            return toTripCards(rows, stats);
+        }
         try {
             const [rows, stats] = await Promise.all([
                 db.searchTrips(trimmed, { from: range?.from, to: range?.to }),
@@ -1031,13 +1365,94 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             return [];
         }
         const trimmed = keyword.trim();
-        if (!trimmed && !range?.from && !range?.to) return [];
+        // 空 keyword 且无范围 = 全量浏览（日记 + 笔记两类、含已收笔——历史在
+        // 搜索可见；2026-11-19 用户指令）
+        if (!trimmed && !range?.from && !range?.to) {
+            return db.listAllJournals();
+        }
         try {
             return await db.searchJournals(trimmed, { from: range?.from, to: range?.to });
         } catch (error) {
             set({ error: `笔记搜索失败：${toMessage(error)}` });
             return [];
         }
+    },
+
+    // ─── 独立笔记（v8）────────────────────────────────────────────────────────
+    // 刷新口径与 events 相同：笔记不进 loadAll 的 store 状态（trips/metrics 与
+    // 笔记无关），mutation 成功只 bump revision——列表由屏层按 useDataRevision
+    // 局部重载。正文保存/插图/录音/删除/标题复用既有 mutation（见接口注释），
+    // 这里只补「创建」与「元信息更新」两个无对应入口的动作。
+
+    async createNote(input) {
+        // 校验先行（超长整体拒绝不走截断，对齐事件标题口径）；标题/描述均选填，
+        // trim 后空串合法（未命名笔记 / 无描述，展示层兜底）
+        const title = input.title.trim();
+        if (title.length > JOURNAL_TITLE_MAX) {
+            set({ error: `笔记标题最多 ${JOURNAL_TITLE_MAX} 个字` });
+            return null;
+        }
+        const description = input.description.trim();
+        if (description.length > NOTE_DESCRIPTION_MAX) {
+            set({ error: `笔记描述最多 ${NOTE_DESCRIPTION_MAX} 个字` });
+            return null;
+        }
+        // 行构造（含 id 生成）在 db.createNote 内：随机源异常原样上抛，这里的
+        // try 保证失败走 error 通道而非 unhandled rejection（对齐 createTrip
+        // 的注释口径——调用方 void 调用无人接）
+        let row: JournalRow | null = null;
+        try {
+            row = await db.createNote({ title, description });
+        } catch (error) {
+            set({ error: `笔记创建失败：${toMessage(error)}` });
+            return null;
+        }
+        set({ error: null, revision: get().revision + 1 });
+        return row;
+    },
+
+    async updateNoteMeta(id, patch) {
+        try {
+            const note = await db.getJournal(id);
+            if (!note) {
+                set({ error: '笔记不存在或已删除' });
+                return false;
+            }
+            // kind 预检：本入口是笔记专用（标题单独编辑走 updateJournalTitle，
+            // 日记无 description 语义）——防误把日记 id 传进来写 description
+            if (note.kind !== 'note') {
+                set({ error: '目标不是独立笔记' });
+                return false;
+            }
+            // title：null = 清除；字符串经 normalizeJournalTitle（空串归一为 null
+            // = 未命名，超长钳制——对齐 updateJournalTitle 的既有口径）
+            const title =
+                patch.title === undefined
+                    ? undefined
+                    : patch.title === null
+                      ? null
+                      : normalizeJournalTitle(patch.title);
+            // description：trim + 上限校验（超长整体拒绝，与创建同口径）；空串合法
+            // （列 NOT NULL DEFAULT ''，未填落 ''，不做 null 化）
+            let description: string | undefined;
+            if (patch.description !== undefined) {
+                const trimmed = patch.description.trim();
+                if (trimmed.length > NOTE_DESCRIPTION_MAX) {
+                    set({ error: `笔记描述最多 ${NOTE_DESCRIPTION_MAX} 个字` });
+                    return false;
+                }
+                description = trimmed;
+            }
+            await db.updateNoteMeta(id, {
+                ...(title !== undefined ? { title } : {}),
+                ...(description !== undefined ? { description } : {}),
+            });
+        } catch (error) {
+            set({ error: `笔记保存失败：${toMessage(error)}` });
+            return false;
+        }
+        set({ error: null, revision: get().revision + 1 });
+        return true;
     },
 
     // ─── events（v6：事件实体，类似工单）─────────────────────────────────────
@@ -1363,8 +1778,12 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
     async searchEvents(keyword, filter) {
         const trimmed = keyword.trim();
         const status = filter?.status;
-        // 空 keyword 且无 status = 无界全量，拒绝（全量列表语义走 db.listEvents）
-        if (!trimmed && !status) return [];
+        // 空 keyword 且无 status = 全量浏览（2026-11-19 用户指令「不管什么状态
+        // 默认全有」：done/failed 也在搜索可见）
+        if (!trimmed && !status) {
+            const rows = await db.listEvents({});
+            return rows.map(decorateEvent);
+        }
         try {
             const rows = await db.searchEvents(trimmed, status ? { status } : {});
             return rows.map(decorateEvent);
@@ -1378,7 +1797,8 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         return get().ensureJournal(null, todayLocal());
     },
 
-    /** 取或建某归属日的日记（日常 null / 行程内某天）；open 状态才可写。 */
+    /** 取或建某归属日的日记（日常 null / 行程内某天）；open 状态才可写。
+     *  独立笔记（v8）不经此路径——显式新建走 createNote，笔记无归属日语义。 */
     async ensureJournal(tripId: string | null, date: string) {
         try {
             const existing = await db.getJournalByDate(tripId, date);
@@ -1389,6 +1809,8 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 trip_id: tripId,
                 local_date: date,
                 title: null, // 新页默认未命名（v4 标题可空）
+                kind: 'daily', // 日记实体（v8）：ensureJournal 只建日记，笔记走 createNote
+                description: '', // 日记无描述语义（v8 列默认值，显式落 ''）
                 blocks: serializeBlocks([newParagraphBlock()]),
                 status: 'open',
                 word_count: 0,

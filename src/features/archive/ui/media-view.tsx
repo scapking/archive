@@ -1,6 +1,8 @@
-import { useEffect, useRef } from 'react';
-import { ActivityIndicator, Image, Keyboard, Platform, Text, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Image, Keyboard, Platform, Pressable, Text, View } from 'react-native';
+import type { GestureResponderEvent } from 'react-native';
 import { VideoView, useVideoPlayer } from 'expo-video';
+import { LinearGradient } from 'expo-linear-gradient';
 import { BouncyPressable, LucideImage, LucidePlay, LucideVideo } from '@/core/icons';
 import { AudioLinesIcon } from './editor-icons';
 import { AudioBlock } from './audio-player';
@@ -77,6 +79,173 @@ const MEDIA_ALIGN_SELF: Record<MediaAlign, 'flex-start' | 'center' | 'flex-end'>
     center: 'center',
     right: 'flex-end',
 };
+
+/** web 分流标记：视频控制层 web 专属（native 保持 VideoView 原生控件不动）。 */
+const WEB = Platform.OS === 'web';
+
+/**
+ * web 端 timeUpdate 事件间隔（秒）。expo-video web 的 timeUpdateEventInterval
+ * 默认 0（VideoPlayer.web.js `_timeUpdateEventInterval = 0`，interval 永不启动
+ * → timeUpdate 永不上抛，与 native 默认 0.5s 不同）——控制层进度条的唯一驱动
+ * 源，必须在 player 创建时显式开档。native 不进此分支，保持上游默认。
+ */
+const WEB_TIME_UPDATE_INTERVAL = 0.5;
+
+/** 秒 → m:ss / h:mm:ss（控制层时间文本；数字定宽由 tabular-nums 承担）。 */
+function formatVideoClock(seconds: number): string {
+    const total = Math.max(0, Math.floor(seconds));
+    const pad = (value: number) => String(value).padStart(2, '0');
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const secondsInMinute = total % 60;
+    return hours > 0
+        ? `${hours}:${pad(minutes)}:${pad(secondsInMinute)}`
+        : `${minutes}:${pad(secondsInMinute)}`;
+}
+
+/**
+ * web 端视频控制层（MediaVideo 内联卡底部渐变条，native 不渲染）。
+ *
+ * 取径（读 expo-video web 实现的结论）：web VideoView 渲染 `<video
+ * controls={nativeControls ?? true}>`——nativeControls 映射为浏览器原生控件
+ * 属性；内联封面态为保住 #2b 手势链（pointerEvents="none" 包装 + 外层卡面
+ * Pressability）显式关了它，浏览器控件条也接管不了 RN 的手势协商。故 web 在
+ * 内联卡上自绘极简控制：播放/暂停钮 + 自绘进度条 + tabular-nums 时间文本。
+ *
+ * 进度条不引 slider 依赖：轨道 View onLayout 实测宽度，responder 链
+ * （Grant/Move 逐拍换算 locationX → 比率 seek，Release/Terminate 收口），
+ * 点击与拖动共用同一条链；seek 落在 MediaVideo 的 handleWebScrub
+ * （player.currentTime = 比率 × 时长）。
+ *
+ * 命中边界：本层渲染在 pointerEvents="none" 的 VideoView 包装之外（兄弟层），
+ * 容器自身 onStartShouldSetResponder 认领触摸——落在条内空白（渐变衬/时间
+ * 文本）的按压不会漏进外层卡面的全屏手势；播放钮/轨道是更深的候选，各自
+ * 正常认领。
+ */
+function WebVideoControlBar({
+    playing,
+    time,
+    duration,
+    scrubRatio,
+    onScrub,
+    onScrubEnd,
+    onTogglePlay,
+}: {
+    playing: boolean;
+    time: number;
+    duration: number;
+    /** 拖动中的缩放点比率（null = 非拖动态，跟随 player 汇报的位置）。 */
+    scrubRatio: number | null;
+    onScrub: (ratio: number) => void;
+    onScrubEnd: () => void;
+    onTogglePlay: () => void;
+}) {
+    const trackWidth = useRef(0);
+    const seekable = duration > 0;
+    // 拖动态缩放点优先：拖动 seek 到下一次 timeUpdate 之间有间隙，thumb 不能回跳
+    const ratio = scrubRatio ?? (seekable ? Math.min(1, Math.max(0, time / duration)) : 0);
+    const seekFromEvent = (event: GestureResponderEvent) => {
+        if (!seekable || trackWidth.current <= 0) return;
+        onScrub(event.nativeEvent.locationX / trackWidth.current);
+    };
+    return (
+        <View
+            // 条内空白认领触摸（见命中边界注）：不吃行为，只阻断外层全屏手势
+            onStartShouldSetResponder={() => true}
+            style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }}
+        >
+            <LinearGradient
+                colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.62)']}
+                style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 10,
+                    paddingHorizontal: 12,
+                    paddingTop: 24,
+                    paddingBottom: 6,
+                }}
+            >
+                <Pressable
+                    onPress={onTogglePlay}
+                    // 视觉 30px 钮 + 5 双向外扩凑近 44 目标；与轨道间距 gap 10
+                    // ≥ 2×hitSlop（相邻命中区不重叠，core/icons BouncyPressable 头注口径）
+                    hitSlop={5}
+                    accessibilityLabel={playing ? '暂停' : '播放'}
+                    style={{ width: 30, height: 30, alignItems: 'center', justifyContent: 'center' }}
+                >
+                    {playing ? (
+                        // 暂停字形自绘双竖条（core/icons 无 Pause 导出，所有权边界内不新增依赖）
+                        <View style={{ flexDirection: 'row', gap: 3 }}>
+                            <View style={{ width: 3, height: 14, borderRadius: 1.5, backgroundColor: '#FFFFFF' }} />
+                            <View style={{ width: 3, height: 14, borderRadius: 1.5, backgroundColor: '#FFFFFF' }} />
+                        </View>
+                    ) : (
+                        <LucidePlay size={16} color="#FFFFFF" strokeWidth={2.2} />
+                    )}
+                </Pressable>
+                <View
+                    onLayout={(event) => {
+                        trackWidth.current = event.nativeEvent.layout.width;
+                    }}
+                    onStartShouldSetResponder={() => seekable}
+                    onMoveShouldSetResponder={() => seekable}
+                    onResponderGrant={seekFromEvent}
+                    onResponderMove={seekFromEvent}
+                    onResponderRelease={onScrubEnd}
+                    onResponderTerminate={onScrubEnd}
+                    style={{ flex: 1, height: 28, justifyContent: 'center' }}
+                >
+                    <View
+                        style={{
+                            height: 3,
+                            borderRadius: 1.5,
+                            backgroundColor: 'rgba(255,255,255,0.32)',
+                            overflow: 'hidden',
+                        }}
+                    >
+                        <View
+                            style={{
+                                width: `${ratio * 100}%`,
+                                height: '100%',
+                                backgroundColor: '#FFFFFF',
+                            }}
+                        />
+                    </View>
+                    <View
+                        pointerEvents="none"
+                        style={{
+                            position: 'absolute',
+                            left: `${ratio * 100}%`,
+                            top: 0,
+                            bottom: 0,
+                            marginLeft: -5,
+                            justifyContent: 'center',
+                        }}
+                    >
+                        <View
+                            style={{
+                                width: 10,
+                                height: 10,
+                                borderRadius: 5,
+                                backgroundColor: '#FFFFFF',
+                            }}
+                        />
+                    </View>
+                </View>
+                <Text
+                    numberOfLines={1}
+                    style={{
+                        color: 'rgba(255,255,255,0.85)',
+                        fontSize: 11,
+                        fontVariant: ['tabular-nums'],
+                    }}
+                >
+                    {formatVideoClock(time)} / {formatVideoClock(duration)}
+                </Text>
+            </LinearGradient>
+        </View>
+    );
+}
 
 /* ------------------------------------------------------------------ */
 /* 视频缩略图（deck 露边层真封面，2026-11-08）                           */
@@ -269,6 +438,15 @@ export function MediaImage({
  * 列，逐卡生成首帧图（VideoThumbnail）要在列表虚拟化里背异步 IO + 缓存生命
  * 周期，且丢掉 paused 首帧这一既有视觉语言。全屏查看器的 VideoView 不包
  * none（native controls 需要接收触摸）。
+ *
+ * web 控制层（2026-11-19，仅 web 分支，native 行为零变化）：expo-video web 的
+ * VideoView nativeControls 映射为 HTML5 `<video controls>` 属性（见
+ * WebVideoControlBar 注），内联封面态为保 #2b 手势链显式关闭——web 端内联卡
+ * 底部追加自绘控制层（播放/暂停 + 进度条 + 时间文本），支持不进全屏直接内联
+ * 播放；全屏链路照旧（点击卡面仍进 /viewer，内联播放中先暂停防双层同响）。
+ * 进度驱动 = timeUpdate 监听 + web 端显式开档 timeUpdateEventInterval（web
+ * 默认 0 永不上抛）；钮态以 playingChange 事件流为准（web player.playing 在
+ * replaceAsync 换源时被无条件置 true，是脏值）。
  */
 export function MediaVideo({
     media,
@@ -290,7 +468,55 @@ export function MediaVideo({
     const player = useVideoPlayer(uri, (p) => {
         p.loop = false;
         p.muted = false;
+        // web 端 timeUpdate 默认间隔 0（永不上抛，见 WEB_TIME_UPDATE_INTERVAL 注）
+        // ——控制层进度条的唯一驱动源，显式开档；native 保持上游默认 0.5s 不动
+        if (WEB) p.timeUpdateEventInterval = WEB_TIME_UPDATE_INTERVAL;
     });
+    // ---- web 控制层状态（native 不进以下 effect/渲染分支，行为零变化）----
+    // 钮态以 playingChange 事件为准而非 player.playing：web 端 replaceAsync 换源
+    // 时无条件置 player.playing = true（VideoPlayer.web.js replace()，play() 被
+    // 自动播放策略拒绝也照置）——player.playing 在 web 是脏值，事件流才是真态
+    const [playing, setPlaying] = useState(false);
+    const [progress, setProgress] = useState({ time: 0, duration: 0 });
+    const [scrubRatio, setScrubRatio] = useState<number | null>(null);
+    // 拖动态标记（timeUpdate 监听读 ref 免重挂订阅；state 只服务渲染）
+    const scrubbingRef = useRef(false);
+    useEffect(() => {
+        if (!WEB) return;
+        const subscriptions = [
+            player.addListener('playingChange', (event) => setPlaying(event.isPlaying)),
+            // 播放自然收尾（ended）兜底：个别浏览器 ended 前不发 pause，钮态别卡「播放中」
+            player.addListener('playToEnd', () => setPlaying(false)),
+            // web 端换源时 expo 的 replace() 无条件 video.play()（VideoPlayer.web.js
+            // replace）：无手势上下文被自动播放策略拒绝、有历史交互时静默成功出声
+            // ——后者破坏「封面态 = paused 首帧」的 native 对齐语义（画布里视频
+            // 突然出声）。sourceChange（onloadstart）时显式 pause，内联播放只由
+            // 控制层按钮发起
+            player.addListener('sourceChange', () => player.pause()),
+            player.addListener('statusChange', (event) => {
+                // 元数据就绪即取时长（未按播放也先显示总时长）；NaN/0 守卫
+                if (event.status !== 'readyToPlay') return;
+                const duration = player.duration;
+                if (Number.isFinite(duration) && duration > 0) {
+                    setProgress((prev) => (prev.duration === duration ? prev : { ...prev, duration }));
+                }
+            }),
+            player.addListener('timeUpdate', (event) => {
+                // 拖动态不覆盖缩放点（thumb 位置由 scrubRatio 表达）
+                if (scrubbingRef.current) return;
+                const duration = player.duration;
+                const nextDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
+                setProgress((prev) =>
+                    prev.time === event.currentTime && prev.duration === nextDuration
+                        ? prev
+                        : { time: event.currentTime, duration: nextDuration },
+                );
+            }),
+        ];
+        return () => {
+            for (const subscription of subscriptions) subscription.remove();
+        };
+    }, [player]);
     // 卡片比例随媒体元数据自适应（#7，v10 与 MediaImage 同一自适应画幅）：
     // maxWidth 先钳宽 + aspectRatio 派生高（公式见 MediaImage 注）——横版满
     // 列宽零信箱条；竖版高触 420 上限后宽度收窄居中，cover 在同比例盒内 =
@@ -322,12 +548,38 @@ export function MediaVideo({
     const openViewer = () => {
         // 键盘态开全屏：先收键盘（同 MediaImage，#17/#18 修复项）
         Keyboard.dismiss();
+        // web 内联播放进行中先暂停内联 player：全屏 viewer 自建独立 player 从头
+        // 播（portal 覆盖层不卸载本卡），不停内联会双层同响
+        if (WEB) player.pause();
         requestViewer({
             kind: 'video',
             fileKey: media.file_key,
             width: media.width,
             height: media.height,
         });
+    };
+    // 控制层播放/暂停：以事件流真态取反（web player.playing 是脏值，见上注）。
+    // play() 在 SDK 58 声明为 void（web 内部 video.play() 的 promise 由 expo 自管，
+    // 被自动播放策略拒绝时表现为视频保持暂停，钮态由 playingChange 事件纠正）
+    const toggleWebPlayback = () => {
+        if (playing) {
+            player.pause();
+        } else {
+            player.play();
+        }
+    };
+    // 进度条点击/拖动 seek：逐拍换算比率 → player.currentTime（与原生控件
+    // seek 同通道），拖动点同步进 scrubRatio 供 thumb 跟手
+    const handleWebScrub = (ratio: number) => {
+        if (progress.duration <= 0) return;
+        const clamped = Math.min(Math.max(ratio, 0), 1);
+        scrubbingRef.current = true;
+        setScrubRatio(clamped);
+        player.currentTime = clamped * progress.duration;
+    };
+    const handleWebScrubEnd = () => {
+        scrubbingRef.current = false;
+        setScrubRatio(null);
     };
     const gestures = useBlockActionGestures({
         enabled: ready,
@@ -379,12 +631,29 @@ export function MediaVideo({
                             />
                         </View>
                         {/* 中央播放钮口径：黑透圆底 + 白播放三角（不参与命中，
-                            整块按压统一进全屏） */}
-                        <View className="pointer-events-none absolute inset-0 items-center justify-center">
-                            <View className="h-12 w-12 items-center justify-center rounded-full bg-black/40">
-                                <LucidePlay size={20} color="#FFFFFF" strokeWidth={2.2} />
+                            整块按压统一进全屏）。web 内联播放进行中隐藏——控制层
+                            已表意，播放中仍盖三角是误导；native 恒显（原行为不动） */}
+                        {!(WEB && playing) && (
+                            <View className="pointer-events-none absolute inset-0 items-center justify-center">
+                                <View className="h-12 w-12 items-center justify-center rounded-full bg-black/40">
+                                    <LucidePlay size={20} color="#FFFFFF" strokeWidth={2.2} />
+                                </View>
                             </View>
-                        </View>
+                        )}
+                        {/* web 专属控制层（native 保持原生控件）：底部渐变条 =
+                            播放/暂停钮 + 自绘进度条 + tabular-nums 时间文本，
+                            命中边界见 WebVideoControlBar 注 */}
+                        {WEB ? (
+                            <WebVideoControlBar
+                                playing={playing}
+                                time={progress.time}
+                                duration={progress.duration}
+                                scrubRatio={scrubRatio}
+                                onScrub={handleWebScrub}
+                                onScrubEnd={handleWebScrubEnd}
+                                onTogglePlay={toggleWebPlayback}
+                            />
+                        ) : null}
                     </>
                 ) : status === 'missing' ? (
                     <MediaStatusHint
@@ -428,7 +697,17 @@ export function MediaBlock({
  * 真实行以 DB 为准——两处屏文件不再各写一份 previewVideoRow。
  * 点击 → 全屏查看（与本轮媒体块口径一致，宿主屏零改动）。
  */
-export function TripCoverVideo({ fileKey, height = 200 }: { fileKey: string; height?: number }) {
+export function TripCoverVideo({
+    fileKey,
+    height = 200,
+    onCoverAction,
+}: {
+    fileKey: string;
+    height?: number;
+    /** 长按封面 → 封面管理动作（行程详情「更换/移除封面视频」入口，2026-11-19）；
+     *  不传 = 长按无动作（表单预览场景）。 */
+    onCoverAction?: () => void;
+}) {
     const media: JournalMediaRow = {
         id: 'trip-cover',
         journal_id: 'trip-cover',
@@ -439,7 +718,7 @@ export function TripCoverVideo({ fileKey, height = 200 }: { fileKey: string; hei
         created_at: 0,
         deleted_at: null,
     };
-    return <MediaVideo media={media} height={height} />;
+    return <MediaVideo media={media} height={height} onBlockAction={onCoverAction} />;
 }
 
 /**

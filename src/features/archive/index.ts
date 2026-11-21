@@ -5,6 +5,15 @@
 export { ArchiveScreen } from './archive-screen';
 export { MeScreen } from './me-screen';
 export { SearchScreen } from './search-screen';
+// 搜索结果屏（2026-11-19 搜索拆分：app/search-results/[spec] 路由壳消费；
+// SearchSpec 随屏出口供路由层解析规格）
+export { SearchResultsScreen, type SearchSpec } from './search-results-screen';
+// 设置页（新1：外观/安全/备份与恢复收口；app/settings.tsx 路由壳消费）
+export { SettingsScreen } from './settings-screen';
+// 独立笔记（v8）：新建表单 + 笔记与行程堆叠库（app/note/new.tsx、
+// app/library.tsx 路由壳消费；编辑器复用 JournalEditScreen，不设独立屏）
+export { NoteFormScreen } from './note-form-screen';
+export { LibraryScreen } from './library-screen';
 export { JournalEditScreen } from './journal-edit-screen';
 export { TripFormScreen } from './trip-form-screen';
 export { TripDetailScreen } from './trip-detail-screen';

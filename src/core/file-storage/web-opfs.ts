@@ -15,7 +15,13 @@ let rootPromise: Promise<FileSystemDirectoryHandle> | null = null;
 
 function opfsRoot(): Promise<FileSystemDirectoryHandle> {
     if (!rootPromise) {
-        rootPromise = navigator.storage.getDirectory();
+        rootPromise = navigator.storage.getDirectory().catch((error) => {
+            // 失败不缓存：rejection 一旦缓存，本会话所有文件操作都会跟着永久
+            // 失败直到刷新（私有模式/存储瞬时异常下的重试通道就此断绝）——
+            // 置回 null 让下一次调用重新尝试
+            rootPromise = null;
+            throw error;
+        });
     }
     return rootPromise;
 }

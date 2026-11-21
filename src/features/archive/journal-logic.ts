@@ -166,6 +166,14 @@ export function normalizeJournalTitle(title: string): string | null {
     return trimmed.slice(0, JOURNAL_TITLE_MAX);
 }
 
+/**
+ * 独立笔记（v8，journals.kind = 'note'）描述长度上限：定位类似行程 description
+ * 的摘要行（正文细节在 blocks）。创建与更新均「超长整体拒绝不走截断」（对齐
+ * 事件标题的校验口径——表单里用户明确输入的独立字段，静默截断会造成「以为存
+ * 上了」的错觉；UI maxLength 与此同源，这里是绕过 UI 直写的第二道闸）。
+ */
+export const NOTE_DESCRIPTION_MAX = 500;
+
 /** 是否可继续写：只有 open 状态的日记可编辑（手动完成 / 24:00 自动收笔后只读）。 */
 export function isEditable(status: JournalStatus): boolean {
     return status === 'open';
@@ -230,44 +238,8 @@ export function mediaCount(blocks: JournalBlock[]): number {
     return blocks.filter((block) => block.t === 'media').length;
 }
 
-// ─── 图片数量上限与媒体插入落点（v8，编辑器插入流纯函数）─────────────────────
-
-/**
- * 单篇日记的图片数量上限（微信九图口径）：限制的是**日记图片总量**
- * （blocks 中引用的图片媒体数，含堆叠组内的每一张——限制在数据层不在
- * 展示层，堆叠展示本身不设限）。9 = 主流 IM 相册单选上限的用户心智档，
- * 商业版可调常量放开。与屏层 MAX_MEDIA（全媒体总量防误触爆量）并存：
- * 图片路径两道闸都过，视频/音频仍只受 MAX_MEDIA 约束。
- */
-export const JOURNAL_IMAGE_LIMIT = 9;
-
-/**
- * 图片插入配额校验：现有图片数 + 本次待插张数超过上限 → 拒绝。
- * 判定语义 = 「插完 ≤ 9 张放行」：恰好插满 9 张允许，第 10 张起拒绝。
- *
- * @param imageCount 现有图片媒体数（屏层经 mediaById 判 kind 后传入，见
- *   countImageBlocks——本模块禁运行时 db 依赖，kind 判定注入）。
- * @param incoming 本次待插张数（拍照/单选取 1；未来相册多选传批量数）。
- */
-export function canInsertImages(imageCount: number, incoming: number): boolean {
-    return imageCount + incoming <= JOURNAL_IMAGE_LIMIT;
-}
-
-/**
- * 统计 blocks 引用的图片媒体数（配额校验与首页 meta 口径的单一实现）：
- * isImage 由调用方注入（mediaById.get(id)?.kind === 'image'，pending 占位
- * id 查不到行 → false，天然不计入）。
- */
-export function countImageBlocks(
-    blocks: JournalBlock[],
-    isImage: (mediaId: string) => boolean,
-): number {
-    let count = 0;
-    for (const block of blocks) {
-        if (block.t === 'media' && isImage(block.mediaId)) count += 1;
-    }
-    return count;
-}
+// ─── 媒体插入落点（编辑器插入流纯函数；媒体数量上限已按用户指令全域移除，
+// 2026-11-20：屏层不再设插入配额，本模块不再提供任何数量闸纯函数）──────────────
 
 /**
  * pending 占位插入落点（插入流第一步，v9 语义回正，用户裁决推翻 v8）：

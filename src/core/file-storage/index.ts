@@ -219,21 +219,33 @@ async function webRelocateFromUri(
     const hash = sha256.create();
     const writable = await opfsBackend.openWritable(key);
     let written = 0;
+    // reader 放 try 外声明、try 内赋值：失败收口要 cancel 源流（blob: 源的流锁
+    // 跟随 reader 存续，不 cancel 会在页面存续期一直占着源文件引用）
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     try {
-        const reader = body.getReader();
+        reader = body.getReader();
         let pending: Uint8Array[] = [];
         let pendingLength = 0;
         const flush = async (): Promise<void> => {
             if (pendingLength === 0) return;
-            const block = concatChunks(pending, pendingLength);
+            // 单块直写免拷贝：blob: 源的常规分块（≤数百 KB）常单拍一两个 chunk，
+            // 整块 concat 纯属字节拷贝；多 chunk 才合并成块粒度整块
+            const block = pending.length === 1 ? pending[0] : concatChunks(pending, pendingLength);
             pending = [];
             pendingLength = 0;
-            await writable.write(block);
-            written += block.byteLength;
-            hash.update(block);
-            options?.onProgress?.({ bytesWritten: written, totalBytes });
-            // 让出主线程：块间把控制权交还浏览器（输入/渲染不被大文件写入饿死）
-            await yieldToMainThread();
+            // 浏览器单次 write 视窗防御：源可能吐出远大于块粒度的单个 chunk
+            // （data: URI 源整包解码、个别浏览器对 blob: 的分块策略），按 2MB
+            // 切片写入——单次 write 的内存拷贝与 sha256 吞吐都有界，「2MB 块
+            // write」契约不依赖源的分块行为
+            for (let offset = 0; offset < block.byteLength; offset += WEB_STREAM_CHUNK_BYTES) {
+                const slice = block.subarray(offset, offset + WEB_STREAM_CHUNK_BYTES);
+                await writable.write(slice);
+                written += slice.byteLength;
+                hash.update(slice);
+                options?.onProgress?.({ bytesWritten: written, totalBytes });
+                // 让出主线程：块间把控制权交还浏览器（输入/渲染不被大文件写入饿死）
+                await yieldToMainThread();
+            }
         };
         for (;;) {
             const { done, value } = await reader.read();
@@ -246,10 +258,14 @@ async function webRelocateFromUri(
         await flush();
         await writable.close();
     } catch (error) {
-        // 写入段失败：abort 释放 OPFS 句柄锁（漏了会锁死该 key 到页面刷新），
-        // 并尽力摘除半成品文件（半文件无 checksum 无引用，留着只会被 GC 误认
-        // 在途——直接删干净）
-        await writable.abort();
+        // 写入段失败收口（顺序即资源链）：①cancel 源流——停止 inflow 并释放
+        // 流锁；②abort 释放 OPFS 句柄锁（漏了会锁死该 key 到页面刷新）——
+        // **必须吞掉 abort 自身的失败**：流已 error/closed 的 abort 按
+        // WritableStream 规约 reject（storedError/TypeError），不吞会顶掉原始
+        // 错误（H11 上下文丢失）且跳过 ③；③尽力摘除半成品文件（半文件无
+        // checksum 无引用，留着只会被 GC 误认在途——直接删干净）
+        await reader?.cancel().catch(() => undefined);
+        await writable.abort().catch(() => undefined);
         await opfsBackend.remove(key).catch(() => undefined);
         throw error;
     }
@@ -506,9 +522,16 @@ export const fileStorage = {
         await deleteMeta(key);
     },
 
-    /** 递归列出；prefix 为空时列出全部。结果按 key 字典序，checksum 来自元数据表。 */
+    /** 递归列出；prefix 为空时列出全部。结果按 key 字典序，checksum 来自元数据表。
+     *  prefix 允许带末尾斜杠（'journal-media/' 的目录语义很自然）——校验前剥掉
+     *  末尾斜杠再走完整 key 校验（段内容仍受 STORAGE_KEY_PATTERN 约束，'..' 与
+     *  绝对路径照旧拒绝）。2026-11-19 修复：修前带斜杠前缀直接被 validateKey
+     *  拒绝（key 必须 a/b/c），应用的启动 GC 与全量备份 list 四个媒体前缀
+     *  全部命中此坑（GC 静默失败已久，勿回退）。 */
     async list(prefix?: string): Promise<StoredFileInfo[]> {
-        if (prefix !== undefined) validateKey(prefix, 'list');
+        if (prefix !== undefined) {
+            validateKey(prefix.endsWith('/') ? prefix.slice(0, -1) : prefix, 'list');
+        }
         if (WEB) {
             const keys = await opfsBackend.list(prefix);
             const metas = await listMeta();

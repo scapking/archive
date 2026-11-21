@@ -1,6 +1,14 @@
 import { memo, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, BackHandler, Pressable, ScrollView, Text, View } from 'react-native';
-import { BouncyPressable, LucideMapPin } from '@/core/icons';
+import {
+    ActivityIndicator,
+    Animated,
+    BackHandler,
+    Pressable,
+    ScrollView,
+    Text,
+    View,
+} from 'react-native';
+import { LucideMapPin } from '@/core/icons';
 import { location } from '@/core/location';
 import { CloseButton } from './close-button';
 import { FieldInput } from './field-input';
@@ -49,11 +57,12 @@ import {
  *
  * - **字段 × 行为矩阵（全部即时落库）**：
  *   名称 = FieldInput，blur 保存（无变更跳过；空串/超长 store 拒绝 → 卡内
- *   errorText 就地可重试）；状态 = open/done/failed 三分段，点按即存（任意态
- *   互切——标记失败 / 从失败重新打开 / 失败转完成同一交互）；GPS = 坐标只读
- *   行 + 「重新定位」（权限/服务预检 → 8s 超时兜底，新建表单同口径）/「清除」
- *   点按即存；处理人 = blur 保存（空串 = 清除）；对象 = 类型分段 + 值输入，
- *   类型点按即存整对（原子对归一在 store）、值 blur 保存整对；手机号 / 邮箱 =
+ *   errorText 就地可重试）；状态 = open/done/failed 三分段（CardSegmented，
+ *   设置页 CompactSegmented 同视觉语言），点按即存（任意态互切——标记失败 /
+ *   从失败重新打开 / 失败转完成同一交互）；GPS = 坐标只读行 + 「重新定位」
+ *  （权限/服务预检 → 8s 超时兜底，新建表单同口径，主行动钮）/「清除」（次级
+ *   钮）点按即存；处理人 = blur 保存（空串 = 清除）；对象 = FieldInput 自由
+ *   文本，blur 保存整对（空 = 清除，原子对归一在 store）；手机号 / 邮箱 =
  *   v7 可选联系方式，blur 保存（空串 = 清除；email 键盘 + autoCapitalize none，
  *   值内空白由 store 剥除）——两字段随 onSavePhone/onSaveEmail **接线才渲染**
  *  （详情屏已接线；列表页长按入口接线前不出死编辑面）；描述 = multiline
@@ -67,17 +76,133 @@ import {
  *   Android 返回键）。
  * - event 行类型 = Omit<EventRow, 'deleted_at'>：详情屏传 db.getEvent 的
  *   EventRow、列表屏传 decorateEvent 的装饰行（Event）均满足，两入口共用。
- * - **滚动性能口径**：本组件经 memo 包裹——宿主屏（revision 驱动的整屏
- *   re-render 风暴）不得拖着卡重渲，前提是调用方回调引用稳定（useCallback
- *   直传，禁止内联箭头）；ScrollView keyboardDismissMode="on-drag"（拖动即
- *   收键盘，解除输入焦点态后 ScrollView 对 FieldInput 容器 responder 的
- *   capture 竞速恢复确定性——「滑到输入框拖不动」的根治位）+
+ * - **滚动顺滑口径（2026-11-19 改版）**：本组件经 memo 包裹——宿主屏
+ *   （revision 驱动的整屏 re-render 风暴）不得拖着卡重渲，前提是调用方回调
+ *   引用稳定（useCallback 直传，禁止内联箭头）；ScrollView 三件套：
+ *   keyboardDismissMode="interactive"——旧 on-drag 在拖动起步瞬间整块收键盘，
+ *   焦点态解除 + 键盘窗口突变叠加成「拖动即顿挫」；interactive 让 iOS 键盘
+ *   随手指跟手滑收（无突变），Android 不支持该档落回 none（滚动全程不收
+ *   键盘，零 resize 抖动）——焦点/拖拽竞速由 FieldInput 容器 responder 的
+ *   「收 terminate 不回 release」语义兜住（field-input.tsx 兜底聚焦注），
+ *   旧 on-drag 承担的确定性职责已在其收口；
+ *   scrollEventThrottle={16}（滚动事件采样与帧同步）+
  *   keyboardShouldPersistTaps="handled"（点按钮不收键盘）。
  */
 
 /** 定位超时上限（ms）：设置卡「重新定位」的单次 getCurrentPosition 等待上限
  *  （新建表单同款兜底口径，超时按失败降级）。 */
 const LOCATE_TIMEOUT_MS = 8000;
+
+/** 状态分段选项（open/done/failed；词表取 event-logic EVENT_STATUS_LABELS
+ *  单一事实源，渲染顺序即工单状态的既定展示序）。 */
+const STATUS_OPTIONS: Array<{ key: EventStatus; label: string }> = [
+    { key: 'open', label: EVENT_STATUS_LABELS.open },
+    { key: 'done', label: EVENT_STATUS_LABELS.done },
+    { key: 'failed', label: EVENT_STATUS_LABELS.failed },
+];
+
+/**
+ * 卡内紧凑分段（settings-screen 私有 CompactSegmented 的同语言镜像实现）：
+ * 该组件为 settings-screen 文件私有且未导出，跨屏 import 违反所有权纪律——
+ * 本卡按其实现逐项镜像同一视觉语言：轨道 bg-ink-border p-1 rounded-control
+ * （overflow-hidden）、选中滑块 bg-ink-base rounded-thumb 弹簧滑动、选中
+ * medium/text 档 + 未选中 muted 档。与原型的两处口径差异（本卡场景定制）：
+ * - 行高 h-9（原型页内行 h-8）：卡内分段独占整行、上下留白宽裕，36dp 视觉盒
+ *   + 纵向 hitSlop 4 = 44 命中（同原型命中核算）；
+ * - 分段整行铺开（flex-1 摊平）：设置卡分段是「字段值三选一」主体控件（非
+ *   行尾紧凑档），占满字段行宽与 FieldInput 行对齐。
+ * 几何一律内联 style：Animated 系组件的 className 在 web 被 css-interop
+ * 静默丢弃（仓库铁律注释，settings-screen CompactSegmented 同注）。
+ */
+function CardSegmented<T extends string>({
+    options,
+    value,
+    onChange,
+    labelPrefix,
+}: {
+    options: Array<{ key: T; label: string }>;
+    value: T;
+    onChange: (key: T) => void;
+    labelPrefix: string;
+}) {
+    const [segWidths, setSegWidths] = useState<number[]>([]);
+    const placedRef = useRef(false);
+    const sliderX = useRef(new Animated.Value(0)).current;
+    const activeIndex = Math.max(0, options.findIndex((option) => option.key === value));
+    // 逐段实测（段间零间隙，实测段宽和恒等于轨道内容区宽）
+    const measured = segWidths.length === options.length && segWidths.every((width) => width > 0);
+    const segW = measured ? segWidths[activeIndex] : 0;
+    useEffect(() => {
+        if (!measured) return;
+        // 目标偏移 = 前缀和（effect 内直算）：依赖收敛为 segWidths 数组引用——
+        // 本卡草稿态每键重渲，若依赖每渲染重建的派生数组会把 spring 每键重启
+        // （segWidths 引用只在实测宽度真变化时更新，onLayout 同值返回 prev）
+        let acc = 0;
+        for (let index = 0; index < activeIndex; index++) acc += segWidths[index] ?? 0;
+        const target = acc;
+        if (!placedRef.current) {
+            placedRef.current = true;
+            sliderX.setValue(target);
+            return;
+        }
+        const spring = Animated.spring(sliderX, { toValue: target, friction: 9, useNativeDriver: true });
+        spring.start();
+        return () => spring.stop();
+        // activeIndex 选中变更即重瞄准
+    }, [activeIndex, measured, segWidths, sliderX]);
+    return (
+        <View className="flex-row overflow-hidden rounded-control bg-ink-border p-1 dark:bg-inkd-border">
+            {/* 滑块：纯视觉层先渲染（段落文字浮其上），几何内联 style（web 可靠性
+                见组件注），涂装在内层普通 View；实测未就绪时宽 0 不可见 */}
+            <Animated.View
+                pointerEvents="none"
+                style={{
+                    position: 'absolute',
+                    top: 4,
+                    bottom: 4,
+                    left: 4,
+                    width: segW,
+                    transform: [{ translateX: sliderX }],
+                }}
+            >
+                <View className="h-full w-full rounded-thumb bg-ink-base dark:bg-inkd-base" />
+            </Animated.View>
+            {options.map((option, index) => {
+                const active = value === option.key;
+                return (
+                    <Pressable
+                        key={option.key}
+                        onPress={() => onChange(option.key)}
+                        hitSlop={{ top: 4, bottom: 4, left: 0, right: 0 }}
+                        className="h-9 flex-1 items-center justify-center px-4"
+                        onLayout={(event) =>
+                            setSegWidths((prev) => {
+                                const width = event.nativeEvent.layout.width;
+                                if (prev[index] === width) return prev;
+                                const next = [...prev];
+                                next[index] = width;
+                                return next;
+                            })
+                        }
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: active }}
+                        accessibilityLabel={`${labelPrefix}：${option.label}`}
+                    >
+                        <Text
+                            className={`text-[12px] ${
+                                active
+                                    ? 'font-medium text-ink-text dark:text-inkd-text'
+                                    : 'text-ink-muted dark:text-inkd-muted'
+                            }`}
+                        >
+                            {option.label}
+                        </Text>
+                    </Pressable>
+                );
+            })}
+        </View>
+    );
+}
 
 function EventSettingsCardBase({
     event,
@@ -257,7 +382,7 @@ function EventSettingsCardBase({
                 onPress={onClose}
                 accessibilityLabel="关闭事件设置"
             >
-                <Pressable className="w-full max-w-xs rounded-card bg-ink-base p-5 dark:bg-inkd-base">
+                <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base">
                     {/* 卡头（关闭语言统一 #8）：题 + 右上关闭钮 */}
                     <View className="flex-row items-center justify-between">
                         <Text className="text-[15px] font-semibold text-ink-text dark:text-inkd-text">
@@ -265,15 +390,15 @@ function EventSettingsCardBase({
                         </Text>
                         <CloseButton onPress={onClose} />
                     </View>
-                    {/* 滚动口径：keyboardDismissMode="on-drag"（拖动即收键盘——
-                        解除输入焦点态后，ScrollView 对 FieldInput 容器 responder
-                        的 capture 竞速恢复确定性，「滑到输入框拖不动」根治位）+
+                    {/* 滚动顺滑口径（头注「滚动顺滑口径」段）：interactive 跟手
+                        滑收（Android 落回 none 零拖动突变）+ 16 帧同步采样 +
                         keyboardShouldPersistTaps="handled"（点按钮不收键盘） */}
                     <ScrollView
                         className="mt-4"
                         style={{ maxHeight: 440 }}
                         nestedScrollEnabled
-                        keyboardDismissMode="on-drag"
+                        scrollEventThrottle={16}
+                        keyboardDismissMode="interactive"
                         keyboardShouldPersistTaps="handled"
                     >
                         {/* 主步：字段 × 即时落库（删除入口已移除——事件不可删除，
@@ -296,43 +421,19 @@ function EventSettingsCardBase({
 
                             {/* 状态（open/done/failed 三分段，点按即存）：标记失败
                                 与标记完成同一交互解剖（任意态互切 = 从失败可重新
-                                打开/标记完成）；轨道语言与列表页筛选分段同构；
-                                横向 hitSlop 归 0（gap-1 间距），纵向 4 补足 44 */}
+                                打开/标记完成）；CardSegmented = 设置页
+                                CompactSegmented 同视觉语言（轨道/滑块/行高/命中
+                                口径见组件注），点按后滑块弹簧平移（即时反馈） */}
                             <View>
                                 <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                     状态
                                 </Text>
-                                <View className="flex-row gap-1 rounded-control bg-ink-surface p-1 dark:bg-inkd-surface">
-                                    {(['open', 'done', 'failed'] as const).map((option) => {
-                                        const active = statusDraft === option;
-                                        const label = EVENT_STATUS_LABELS[option];
-                                        return (
-                                            <Pressable
-                                                key={option}
-                                                onPress={() => void saveStatusDraft(option)}
-                                                hitSlop={{ top: 4, bottom: 4, left: 0, right: 0 }}
-                                                className={`h-9 flex-1 items-center justify-center rounded-thumb active:bg-ink-raised dark:active:bg-inkd-raised ${
-                                                    active
-                                                        ? 'bg-ink-raised dark:bg-inkd-raised'
-                                                        : 'bg-ink-surface dark:bg-inkd-surface'
-                                                }`}
-                                                accessibilityRole="button"
-                                                accessibilityState={{ selected: active }}
-                                                accessibilityLabel={`状态：${label}`}
-                                            >
-                                                <Text
-                                                    className={`text-[12px] ${
-                                                        active
-                                                            ? 'font-medium text-ink-text dark:text-inkd-text'
-                                                            : 'text-ink-muted dark:text-inkd-muted'
-                                                    }`}
-                                                >
-                                                    {label}
-                                                </Text>
-                                            </Pressable>
-                                        );
-                                    })}
-                                </View>
+                                <CardSegmented
+                                    options={STATUS_OPTIONS}
+                                    value={statusDraft}
+                                    onChange={(key) => void saveStatusDraft(key)}
+                                    labelPrefix="状态"
+                                />
                             </View>
 
                             {/* GPS（坐标只读 + 重定位/清除，点按即存） */}
@@ -364,44 +465,50 @@ function EventSettingsCardBase({
                                         </Text>
                                     )}
                                 </View>
+                                {/* 动作行（保存类按钮统一 h-12 rounded-control 表单
+                                    动作口径，新建事件页动作行同语言同解剖）：重新
+                                    定位 = 主行动（近黑 primaryBtn + onPrimaryBtn
+                                    文字/图标）；清除 = 次级（surface 底 active 提亮
+                                    一档）——双主钮会互相抵消层级，破坏性一侧按次级
+                                    钮收敛；flex-1 等分 + 在途 opacity 传导 */}
                                 <View className="mt-2 flex-row gap-2">
-                                    <BouncyPressable
+                                    <Pressable
                                         onPress={() => void relocate()}
                                         disabled={relocating}
-                                        scaleTo={0.97}
-                                        hitSlop={4}
+                                        className={`h-12 flex-1 flex-row items-center justify-center gap-1.5 rounded-control active:opacity-90 ${
+                                            relocating ? 'opacity-40' : ''
+                                        }`}
+                                        style={{ backgroundColor: palette.primaryBtn }}
+                                        accessibilityRole="button"
+                                        accessibilityLabel="重新定位"
                                     >
-                                        <View
-                                            className="h-9 flex-row items-center justify-center gap-1.5 rounded-control bg-ink-surface px-3.5 dark:bg-inkd-surface"
-                                            accessibilityRole="button"
-                                            accessibilityLabel="重新定位"
+                                        {relocating ? (
+                                            <ActivityIndicator size="small" color={palette.onPrimaryBtn} />
+                                        ) : (
+                                            <LucideMapPin
+                                                size={14}
+                                                strokeWidth={1.9}
+                                                color={palette.onPrimaryBtn}
+                                            />
+                                        )}
+                                        <Text
+                                            className="text-[15px] font-semibold"
+                                            style={{ color: palette.onPrimaryBtn }}
                                         >
-                                            {relocating ? (
-                                                <ActivityIndicator size="small" color={palette.secondary} />
-                                            ) : (
-                                                <LucideMapPin size={14} strokeWidth={1.9} color={palette.secondary} />
-                                            )}
-                                            <Text className="text-[13px] font-medium text-ink-text dark:text-inkd-text">
-                                                {relocating ? '定位中…' : '重新定位'}
-                                            </Text>
-                                        </View>
-                                    </BouncyPressable>
+                                            {relocating ? '定位中…' : '重新定位'}
+                                        </Text>
+                                    </Pressable>
                                     {hasGps ? (
-                                        <BouncyPressable
+                                        <Pressable
                                             onPress={() => void onSaveGps(null)}
-                                            scaleTo={0.97}
-                                            hitSlop={4}
+                                            className="h-12 flex-1 items-center justify-center rounded-control bg-ink-surface active:bg-ink-raised dark:bg-inkd-surface dark:active:bg-inkd-raised"
+                                            accessibilityRole="button"
+                                            accessibilityLabel="清除定位"
                                         >
-                                            <View
-                                                className="h-9 items-center justify-center rounded-control bg-ink-surface px-3.5 dark:bg-inkd-surface"
-                                                accessibilityRole="button"
-                                                accessibilityLabel="清除定位"
-                                            >
-                                                <Text className="text-[13px] font-medium text-ink-text dark:text-inkd-text">
-                                                    清除
-                                                </Text>
-                                            </View>
-                                        </BouncyPressable>
+                                            <Text className="text-[15px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                                清除
+                                            </Text>
+                                        </Pressable>
                                     ) : null}
                                 </View>
                             </View>

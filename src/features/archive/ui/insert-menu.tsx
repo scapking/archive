@@ -19,8 +19,8 @@ import { usePalette } from './theme';
  * + 号插入选择器（罗盘）：条件渲染遮罩（禁 RN Modal——Fabric 触摸失效坑）。
  * 行卡片（#8/#10 视觉对标大厂快捷面板）：相册图片 / 相册视频 / 录音 /
  * 拍照 / 拍视频 / 添加输入框 / 完成收笔（journal 全行；事件编辑器经 `actions`
- * 过滤复用本组件——行序同源，仅裁「完成收笔」），icon + 标题 +
- * 副标双行。
+ * 过滤复用本组件——行序同源，仅裁「完成收笔」），icon + 标题单行
+ * （2026-11-19 用户指令「全部从简」：行副标描述全线退役，标题自释）。
  * 行序（2026-11 调整）：相册两行（图库选取）前移到录音之前——插媒体里
  * 「从图库选」是最高频路径，取材行（相册）前置、采集行（录音/拍摄）次之，
  * 输入与收笔仍压轴；纯顺序调整，onAction 词表与行为不变。
@@ -35,10 +35,10 @@ import { usePalette } from './theme';
  * - 完成收笔收进选择器（二选一决策：masthead 保纯上下文展示，动作型入口
  *   统一收敛到 + 罗盘一处；副标常驻警示「收笔后不可再修改」，选中后还有
  *   一步卡内确认，双重防误触——产品决策 #7）；
- * - 行卡片无边框规范（#13）：border 零、bg-ink-surface 接近色底、
- *   rounded-control；按压反馈由 BouncyPressable 承担，不再用 View 的
- *   active: 伪类（css-interop 会把 View 升级成 Pressable——首帧后升级会
- *   remount 视图，触摸中途被杀，正是「点了没反应」的一类来源）；
+ * - 单容器行组（2026-11-19 用户指令）：一个 rounded-card surface 容器包裹
+ *   全部行，行间零线条，行内 Pressable 直挂 active: 高亮（Pressable 本体挂
+ *   active: 类无 css-interop remount 风险，View 才有——首帧后升级会 remount
+ *   视图，触摸中途被杀，正是「点了没反应」的一类来源）；
  * - 打开即收起键盘（blur），Android 返回键关闭。
  *
  * 关闭语言统一（#8 打磨轮）：底部「取消」文字行退役，关闭入口统一为
@@ -117,19 +117,19 @@ export function InsertMenu({
      *  行序：相册取材两行 → 采集三行（录音/拍照/拍视频）→ 添加输入框 → 完成收笔。
      *  actions 过滤（事件屏复用）：既定行序内筛除未列入的行（过滤不重排——
      *  journal 行序 = 事件行序的同源保证）。 */
-    const allRows: Array<{ action: InsertAction; icon: React.ReactNode; title: string; hint: string }> = [
-        { action: 'library-image', icon: <LucideImage size={20} strokeWidth={1.9} />, title: '相册图片', hint: '从图库选取，可多选' },
-        { action: 'library-video', icon: <ImagePlayIcon size={20} strokeWidth={1.9} />, title: '相册视频', hint: '从图库选取，可多选' },
+    const allRows: Array<{ action: InsertAction; icon: React.ReactNode; title: string }> = [
+        { action: 'library-image', icon: <LucideImage size={20} strokeWidth={1.9} />, title: '相册图片' },
+        { action: 'library-video', icon: <ImagePlayIcon size={20} strokeWidth={1.9} />, title: '相册视频' },
         ...(isRecordingSupported()
-            ? [{ action: 'record' as const, icon: <LucideMic size={20} strokeWidth={1.9} />, title: '录音', hint: '声纹即时记录' }]
+            ? [{ action: 'record' as const, icon: <LucideMic size={20} strokeWidth={1.9} />, title: '录音' }]
             : []),
-        { action: 'photo', icon: <LucideCamera size={20} strokeWidth={1.9} />, title: '拍照', hint: '现场快照，直接进日记' },
+        { action: 'photo', icon: <LucideCamera size={20} strokeWidth={1.9} />, title: '拍照' },
         ...(isVideoCaptureSupported()
-            ? [{ action: 'video' as const, icon: <LucideVideo size={20} strokeWidth={1.9} />, title: '拍视频', hint: '时长不限' }]
+            ? [{ action: 'video' as const, icon: <LucideVideo size={20} strokeWidth={1.9} />, title: '拍摄视频' }]
             : []),
         // 「+」语言一致（添加语义同 FAB 罗盘本钮）；排在媒体行之后、完成收笔之前（#11）
-        { action: 'append-text', icon: <LucidePlus size={20} strokeWidth={1.9} />, title: '添加输入框', hint: '末尾另起一段继续写' },
-        { action: 'complete', icon: <LucideCheck size={20} strokeWidth={1.9} />, title: '完成收笔', hint: '收笔后不可再修改' },
+        { action: 'append-text', icon: <LucidePlus size={20} strokeWidth={1.9} />, title: '添加文本' },
+        { action: 'complete', icon: <LucideCheck size={20} strokeWidth={1.9} />, title: '完成收笔' },
     ];
     const rows = actions ? allRows.filter((row) => actions.includes(row.action)) : allRows;
 
@@ -150,7 +150,7 @@ export function InsertMenu({
                 onPress={onClose}
             >
                 {/* 卡片本体：无边框规范（#13）——border 零，base 底 + 圆角卡 */}
-                <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-5 dark:bg-inkd-base">
+                <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base">
                     {confirming ? (
                         <>
                             {/* 卡头：标题 + 右上关闭（关闭语言统一：X = 关闭整个选择器，
@@ -171,10 +171,10 @@ export function InsertMenu({
                                     <View
                                         className="h-11 items-center justify-center rounded-control bg-ink-surface dark:bg-inkd-surface"
                                         accessibilityRole="button"
-                                        accessibilityLabel="再写一会儿"
+                                        accessibilityLabel="暂不收笔"
                                     >
                                         <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
-                                            再写一会儿
+                                            暂不收笔
                                         </Text>
                                     </View>
                                 </BouncyPressable>
@@ -210,104 +210,75 @@ export function InsertMenu({
                                 </Text>
                                 <CloseButton onPress={onClose} />
                             </View>
-                            <View className="mt-4 gap-2.5">
+                            {/* 单容器行组（2026-11-19 用户指令「一个卡片容器包裹，
+                                内部没有横线区分」——chooser / Me 内容卡同语言）：
+                                rounded-card surface 包裹 + overflow-hidden 裁行高亮
+                                进圆角；行 h-12（48 ≥44，hitSlop 0）贴靠零线条，
+                                按压 = 行级 active:bg 高亮（Pressable 直挂无 remount
+                                风险），裸图标 + 题单行 */}
+                            <View className="mt-3 overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface">
                                 {/* 全局录制会话状态行（跨页面后台录制 + 归属铁律的可视化）：
-                                    「● 录音中 0:32 · 继续」——点按重开全局覆盖层（任意页面
-                                    可恢复）；停止产物归发起笔记（ownerJournalId），与当前
-                                    编辑的笔记零耦合。行高 ~64 ≥44，不传 hitSlop（0） */}
+                                    「● 录音中 0:32 · 继续」——点按重开全局覆盖层；行高
+                                    两行信息 py-3 ≥44，不传 hitSlop（0） */}
                                 {activeCapture ? (
-                                    <BouncyPressable onPress={activeCapture.onResume} scaleTo={0.97}>
+                                    <Pressable
+                                        onPress={activeCapture.onResume}
+                                        className="flex-row items-center gap-3 px-4 py-3 active:bg-ink-raised dark:active:bg-inkd-raised"
+                                        accessibilityRole="button"
+                                        accessibilityLabel={`${activeCapture.title}，点按回到录制界面`}
+                                    >
+                                        {/* 录制红点标识（negative 色，与 chip/录制态一致） */}
                                         <View
-                                            className="flex-row items-center gap-3 rounded-control bg-ink-surface p-3 dark:bg-inkd-surface"
-                                            accessibilityRole="button"
-                                            accessibilityLabel={`${activeCapture.title}，点按回到录制界面`}
+                                            pointerEvents="none"
+                                            className="h-8 w-8 items-center justify-center rounded-control"
+                                            style={{ backgroundColor: `${palette.negative}24` }}
                                         >
-                                            {/* 录制红点标识（negative 色，与 chip/录制态一致）：
-                                                容器 40×40 rounded-control，与 MenuRow 图标容器同几何 */}
                                             <View
-                                                pointerEvents="none"
-                                                className="h-10 w-10 items-center justify-center rounded-control"
-                                                style={{ backgroundColor: `${palette.negative}24` }}
-                                            >
-                                                <View
-                                                    className="h-2.5 w-2.5 rounded-full"
-                                                    style={{ backgroundColor: palette.negative }}
-                                                />
-                                            </View>
-                                            <View className="flex-1">
-                                                <Text
-                                                    className="text-[15px] font-medium text-ink-text dark:text-inkd-text"
-                                                    style={{ fontVariant: ['tabular-nums'] }}
-                                                >
-                                                    {activeCapture.title}
-                                                </Text>
-                                                <Text
-                                                    numberOfLines={1}
-                                                    className="text-[12px] text-ink-muted dark:text-inkd-muted"
-                                                >
-                                                    {activeCapture.hint}
-                                                </Text>
-                                            </View>
+                                                className="h-2.5 w-2.5 rounded-full"
+                                                style={{ backgroundColor: palette.negative }}
+                                            />
+                                        </View>
+                                        <View className="min-w-0 flex-1">
                                             <Text
-                                                className="shrink-0 text-[13px] font-medium"
-                                                style={{ color: palette.secondary }}
+                                                className="text-[15px] font-medium text-ink-text dark:text-inkd-text"
+                                                style={{ fontVariant: ['tabular-nums'] }}
                                             >
-                                                继续
+                                                {activeCapture.title}
+                                            </Text>
+                                            <Text
+                                                numberOfLines={1}
+                                                className="text-[12px] text-ink-muted dark:text-inkd-muted"
+                                            >
+                                                {activeCapture.hint}
                                             </Text>
                                         </View>
-                                    </BouncyPressable>
+                                        <Text
+                                            className="shrink-0 text-[13px] font-medium"
+                                            style={{ color: palette.secondary }}
+                                        >
+                                            继续
+                                        </Text>
+                                    </Pressable>
                                 ) : null}
-                                {/* 各行完整视觉盒（icon 容器 40 + p-3 → 行高 ~64 ≥44）：不传
-                                    hitSlop（0），命中盒 == 视觉盒；行距 gap-2.5(10px) 为不可点
-                                    间隙（archive chooser 同口径） */}
                                 {rows.map((row) => (
-                                    <BouncyPressable key={row.action} onPress={() => run(row.action)} scaleTo={0.97}>
-                                        <MenuRow
-                                            icon={row.icon}
-                                            title={row.title}
-                                            hint={row.hint}
-                                            tint={palette.secondary}
-                                        />
-                                    </BouncyPressable>
+                                    <Pressable
+                                        key={row.action}
+                                        onPress={() => run(row.action)}
+                                        className="h-12 flex-row items-center gap-3 px-4 active:bg-ink-raised dark:active:bg-inkd-raised"
+                                        accessibilityRole="button"
+                                        accessibilityLabel={row.title}
+                                    >
+                                        <View pointerEvents="none">{tintIcon(row.icon, palette.secondary)}</View>
+                                        <Text className="flex-1 text-[15px] font-medium text-ink-text dark:text-inkd-text">
+                                            {row.title}
+                                        </Text>
+                                    </Pressable>
                                 ))}
                             </View>
                         </>
                     )}
                 </Pressable>
             </Pressable>
-        </View>
-    );
-}
-
-/** 选择器行卡片（#8/#10：icon + 标题 + 副标；无边框规范 #13——border 零、
-    bg-ink-surface 接近色底、rounded-control）。图标容器统一 40×40
-    rounded-control + raised 触感底（#8 打磨轮口径：三卡行语言与
-    archive chooser 一致，替代旧的「线性裸排」），图标 tint secondary。 */
-function MenuRow({
-    icon,
-    title,
-    hint,
-    tint,
-}: {
-    icon: React.ReactNode;
-    title: string;
-    hint: string;
-    tint: string;
-}) {
-    return (
-        <View className="flex-row items-center gap-3 rounded-control bg-ink-surface p-3 dark:bg-inkd-surface">
-            {/* 图标容器：raised 触感底 + rounded-control（半径体系控件档），
-                与行卡 surface 底形成一级亮度差（taste-skill：表面靠色调分级，不靠线） */}
-            <View
-                pointerEvents="none"
-                className="h-10 w-10 items-center justify-center rounded-control bg-ink-raised dark:bg-inkd-raised"
-            >
-                {tintIcon(icon, tint)}
-            </View>
-            <View className="flex-1">
-                <Text className="text-[15px] font-medium text-ink-text dark:text-inkd-text">{title}</Text>
-                <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">{hint}</Text>
-            </View>
         </View>
     );
 }

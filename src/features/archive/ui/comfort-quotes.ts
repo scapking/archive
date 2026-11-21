@@ -9,6 +9,12 @@
  * - 温暖克制不油腻、对齐日记产品语境（「今天也辛苦了」这类），说教/鸡汤/
  *   网络梗不上桌；emoji 0 处（上限 2，留白更符合 ink 极简口径）；
  * - 全部为原创短句，不摘抄成品文案。
+ *
+ * 语气池（2026-11-19 用户指令「安慰话多样性：调侃/嘲讽/戏耍/愚人/彩蛋」）：
+ * 随机按权重取池——warm 70%（原有的温暖克制主声部）/ tease 12%（善意调侃，
+ * 自嘲向）/ playful 10%（纸页拟人小戏耍）/ roast 5%（毒舌但爱自己）/
+ * easter 3%（稀有彩蛋）。嘲讽纪律：只嘲「写日记这件事本身」，永远落到
+ * 「还是写吧」的温柔收口，绝不嘲人。
  */
 export const COMFORT_QUOTES: string[] = [
     '今天也辛苦了',
@@ -95,14 +101,79 @@ export const COMFORT_QUOTES: string[] = [
     '晚安，好梦',
 ];
 
+/** 善意调侃池（自嘲向：嘲「拖着不写」这件事，不嘲人）。 */
+export const TEASE_QUOTES: string[] = [
+    '又拖到这个时候写',
+    '三分钟热度选手',
+    '灵感在逃，人先到',
+    '收藏夹在吃灰哦',
+    '再不写天就亮了',
+    '别装了，你就是想写',
+    '待办堆成小山了吧',
+    'flag 立了又倒了',
+    '字数还没外卖单多',
+    '赶在 24 点前交作业',
+];
+
+/** 戏耍池（纸页拟人的小戏弄）。 */
+export const PLAYFUL_QUOTES: string[] = [
+    '嘿，被抓到写日记了',
+    '偷看日记的是小猫',
+    '这页装作没看见你',
+    '笔说它终于轮到了',
+    '纸页已阅，不准赖账',
+    '月亮在偷看哦',
+    '本子说要对你好点',
+    '墨水比你先困了',
+];
+
+/** 毒舌池（嘲讽但落到「还是写吧」的温柔收口）。 */
+export const ROAST_QUOTES: string[] = [
+    '字丑心意诚就行',
+    '写吧，反正没人看',
+    '大白话也是话',
+    '文采不让，诚意管够',
+    '今日槽点已收集',
+    '烂日记也是日记',
+    '凑合写写也挺真',
+];
+
+/** 彩蛋池（稀有：愚人彩蛋与小惊喜）。 */
+export const EASTER_QUOTES: string[] = [
+    '彩蛋：你真可爱',
+    '这条悄悄话只给你',
+    '打开一百次也不腻',
+    '骗到你了吧，四月见',
+    '这里藏着一句晚安',
+];
+
+/** 加权池表：warm 70 / tease 12 / playful 10 / roast 5 / easter 3（百分比取整）。 */
+const WEIGHTED_POOLS: ReadonlyArray<{ weight: number; quotes: string[] }> = [
+    { weight: 70, quotes: COMFORT_QUOTES },
+    { weight: 12, quotes: TEASE_QUOTES },
+    { weight: 10, quotes: PLAYFUL_QUOTES },
+    { weight: 5, quotes: ROAST_QUOTES },
+    { weight: 3, quotes: EASTER_QUOTES },
+];
+const TOTAL_WEIGHT = WEIGHTED_POOLS.reduce((sum, pool) => sum + pool.weight, 0);
+
 /** 兜底句（语料意外为空时占位，正常永不触达）。 */
 const FALLBACK_QUOTE = '今天也辛苦了';
 
 /**
  * 随机取一句（调用方在挂载时 useMemo 一次：重渲染不换句，重进页面才换）。
- * 随机源 Math.random：纯展示语料，无种子回放需求。
+ * 随机源 Math.random：纯展示语料，无种子回放需求。加权两段抽样：先按池
+ * 权重选语气，再在池内均匀取句——温暖仍是主声部，调侃/戏耍/彩蛋是偶尔
+ * 跳出来的一下。
  */
 export function pickComfortQuote(): string {
-    const quote = COMFORT_QUOTES[Math.floor(Math.random() * COMFORT_QUOTES.length)];
-    return quote ?? FALLBACK_QUOTE;
+    let roll = Math.random() * TOTAL_WEIGHT;
+    for (const pool of WEIGHTED_POOLS) {
+        roll -= pool.weight;
+        if (roll < 0) {
+            const quote = pool.quotes[Math.floor(Math.random() * pool.quotes.length)];
+            return quote ?? FALLBACK_QUOTE;
+        }
+    }
+    return FALLBACK_QUOTE;
 }

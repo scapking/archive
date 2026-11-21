@@ -10,6 +10,12 @@ import { SCHEMA_MIGRATIONS as CACHE_STORE_SCHEMA } from '@/core/cache-store';
 import { MigrationError, toMigrationError } from './errors';
 import { createZip, readZip } from './zip';
 
+// zip 原语出口：createZip/readZip 是业务无关的通用 zip 读写（store 模式，条目名
+// 白名单防 zip-slip + CRC32 校验），除本能力的包导出/导入外，也供业务域组合
+// 自定义备份包（archive 全量备份 = manifest.json + files/<mediaKey>，消费面在
+// features 层——经目录入口 import，无深路径）。
+export { createZip, readZip, type ZipEntry } from './zip';
+
 /** web 分流标记（与 file-storage 同一判定模式）：不用能力嗅探，native 不误入 web 分支。 */
 const WEB = Platform.OS === 'web';
 

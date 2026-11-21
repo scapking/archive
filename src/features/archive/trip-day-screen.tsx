@@ -1,0 +1,793 @@
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+    BackHandler,
+    Image,
+    Keyboard,
+    Pressable,
+    Text,
+    View,
+} from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { imagePicker } from '@/core/image-picker';
+import {
+    LucideCheck,
+    LucideClock,
+    LucideClose,
+    LucideImage,
+    LucideTrash,
+    LucideVideo,
+} from '@/core/icons';
+import { haptics } from '@/core/haptics';
+import * as db from './db';
+// 屏层数据编排（行程项 mutation 与错误/revision 通道）+ 时刻/时间格式纯函数
+// （tripItemDueAt / isValidTripItemTime：通知时间闸与 deck 排序的单一事实源，
+// 屏层禁止另写时刻组合）。
+import {
+    isValidTripItemTime,
+    tripItemDueAt,
+    useArchiveRevision,
+    useArchiveStore,
+} from './store';
+import {
+    formatDateParts,
+    isTripLocked,
+    isValidLocalDate,
+    todayLocal,
+    tripDisplayTitle,
+} from './trip-logic';
+// 深路径注记：FieldInput 未入 ui/index.ts 出口（该文件不在本组改动权限内），
+// 域内深取；ui/index.ts 出口扩充时收口（同 editor-icons / close-button 先例）。
+import { FieldInput } from './ui/field-input';
+import { safeBack } from './ui';
+import {
+    ActionMenuCard,
+    CardDeck,
+    CloseButton,
+    ComposeFab,
+    EmptyState,
+    LoadingView,
+    PrimaryButton,
+    useFileUrlState,
+    usePalette,
+    type DeckItem,
+} from './ui';
+// 深路径注记：DeadEndView（死路页共享视图）宿主在 journal-edit-screen——
+// 消费屏域内深取（trip-detail-screen 同款先例），journal-edit 不反向依赖
+// 本屏，无 require 环。
+import { DeadEndView } from './journal-edit-screen';
+
+/**
+ * 行程表页（v9，/trip/[id]/day/[date]）：某一天的全部行程项 = 左右堆叠 deck，
+ * **排序即优先级**——
+ *
+ * - deck 前卡 = 「当前应进行的项」：时间已到且 pending 的最早一项（全部未到
+ *   时间则取最早 pending），已完成/失败项排到队尾；标记完成/失败后该项落到
+ *   队尾，前卡自动前进到下一项（deck 以卡序签名重挂收口，见 deckEpoch）；
+ * - 卡面：eyebrow = `${time} · 状态文案`（当前进行中 accent 色）；标题 15
+ *   semibold；描述（留言/备注）；有关联图片时显示首图封面（useFileUrlState
+ *   三态，缺文件降级不渲染）。当前进行中的卡面用 accent 淡底（accent-bg，
+ *   色彩只上数据纪律——蓝只上「当前」这一数据态，不上 chrome）；
+ * - 长按前卡 → 操作卡（ActionMenuCard）：标记完成 / 标记失败 / 添加图片 /
+ *   添加视频 / 删除此行程（时间闸在 store 层兜底；锁定行程 isTripLocked 时
+ *   长按与 FAB 入口全部关断，整页只读）；
+ * - `+` FAB → 创建行程项表单卡（同屏 scrim + 居中卡，同 ActionMenuCard 语言）：
+ *   时间（HH:mm，取简实现：单数字小时轻量归一 + 正则校验）+ 标题 + 描述
+ *   （选填）→ store.createTripItem（成功后自动调度本地通知，权限被拒静默降级）；
+ * - **应用内闹钟**（页内 useEffect 定时检查）：前台期间某 pending 项的时刻
+ *   （local_date + time）到达时弹确认卡——标题「行程时间到」+ 正文（时间 +
+ *   标题 + 描述）+「知道了」；确认后本次不再弹（dismissedAlarmIds 会话集），
+ *   下一项到点再弹。任何覆盖层展开期间闹钟顺延（scrim 互斥，关闭后下一拍
+ *   继续检查）；
+ * - 数据面：行程项不进 store.loadAll 状态，mutation 成功 bump revision，本屏
+ *   按 useArchiveRevision 局部重载（对齐事件/笔记的刷新口径）；媒体挂
+ *   trip_media 既有链路（item_id 关联），上传复用 attachTripMedia 管线。
+ */
+
+/** 状态文案词表（eyebrow 用；pending/done/failed → 展示文案）。 */
+const TRIP_ITEM_STATUS_LABEL: Record<db.TripItemStatus, string> = {
+    pending: '待进行',
+    done: '已完成',
+    failed: '已失败',
+};
+
+/** deck 卡高（与首页 deck 同档 430；行程项卡体量适中，不放长卡）。 */
+const DECK_HEIGHT = 430;
+
+/** 应用内闹钟的检查节拍（ms）：到点检测粒度，15s 对「分钟级」的行程时刻足够。 */
+const ALARM_TICK_MS = 15_000;
+
+/** 行程项时刻 → epoch ms（本地时区；store 同源纯函数的轻量包装，读法统一）。 */
+function itemDueAt(item: db.TripItemRow): number {
+    return tripItemDueAt(item.local_date, item.time);
+}
+
+/**
+ * deck 排序（排序即优先级）：时间已到且 pending 的最早一项在前 → 未到时间的
+ * pending（最早在前）→ 已完成/失败项收尾（最早在前）。稳定键 = time（同行程
+ * 同日内无跨日，local_date 恒等不参与比较）。
+ */
+function orderTripItems(items: db.TripItemRow[], now: number): db.TripItemRow[] {
+    const pending = items.filter((item) => item.status === 'pending');
+    const arrived = pending.filter((item) => itemDueAt(item) <= now).sort(byTime);
+    const future = pending.filter((item) => itemDueAt(item) > now).sort(byTime);
+    const settled = items.filter((item) => item.status !== 'pending').sort(byTime);
+    return [...arrived, ...future, ...settled];
+}
+
+function byTime(a: db.TripItemRow, b: db.TripItemRow): number {
+    if (a.time !== b.time) return a.time < b.time ? -1 : 1;
+    return a.created_at < b.created_at ? -1 : 1;
+}
+
+/**
+ * 行程项卡面（deck item.node）：deck 统一绘制 surface 圆角壳，本卡面只负责
+ * 内容填充；当前进行中的卡面铺 accent 淡底（bg-ink-accent-bg）盖住壳底色。
+ */
+const TripItemCardFace = memo(function TripItemCardFace({
+    item,
+    isCurrent,
+    cover,
+}: {
+    item: db.TripItemRow;
+    /** 前卡（当前应进行的项）：eyebrow accent + 卡面 accent 淡底。 */
+    isCurrent: boolean;
+    /** 首图封面媒体行（无关联图片为 null，不渲染封面）。 */
+    cover: db.TripMediaRow | null;
+}) {
+    const coverState = useFileUrlState(cover?.file_key ?? null);
+    const palette = usePalette();
+
+    // 渐变底三态（2026-11-19 用户指令「颜色渐变色」）：
+    // - 当前进行中 = 冷蓝 accent 渐变（README 唯一强调色 #2563EB→#3B82F6）+
+    //   白字家族（渐变上白字是唯一可读解，ink 文字 token 在蓝底上全部失效）；
+    // - 待进行 = surface→raised 弱渐变（ token 字，克制不抢当前项）；
+    // - 已完成 = surface→border 弱渐变（muted 字）；已失败 eyebrow 走 negative。
+    // LinearGradient 内联 style（Animated/第三方组件 className web 静默丢弃坑）。
+    const isDone = item.status === 'done';
+    const isFailed = item.status === 'failed';
+    // 当前项 = 深蓝坠入墨夜（与 ink 墨色系同族的沉稳渐变，替换被否掉的
+    // 默认蓝），白字在深底上对比充足
+    const gradientColors: [string, string] = isCurrent
+        ? ['#1E40AF', '#111827']
+        : isDone
+          ? [palette.surface, palette.border]
+          : [palette.surface, palette.raised];
+    const faceTone = isCurrent ? 'accent' : 'token';
+    const eyebrowTone = isCurrent
+        ? 'text-white/80'
+        : isDone
+          ? 'text-ink-muted dark:text-inkd-muted'
+          : isFailed
+            ? 'text-ink-negative dark:text-inkd-negative'
+            : 'text-ink-secondary dark:text-inkd-secondary';
+    const titleTone = isCurrent ? 'text-white' : 'text-ink-text dark:text-inkd-text';
+    const bodyTone = isCurrent ? 'text-white/85' : 'text-ink-secondary dark:text-inkd-secondary';
+    const metaTone = isCurrent ? 'text-white/75' : 'text-ink-muted dark:text-inkd-muted';
+
+    const content = (
+        <>
+            <Text
+                className={`text-[12px] font-medium ${eyebrowTone}`}
+                style={{ fontVariant: ['tabular-nums'] }}
+            >
+                {`${item.time} · ${TRIP_ITEM_STATUS_LABEL[item.status]}`}
+            </Text>
+            <Text numberOfLines={2} className={`mt-2 text-[15px] font-semibold ${titleTone}`}>
+                {item.title}
+            </Text>
+            {item.description ? (
+                <Text numberOfLines={3} className={`mt-1.5 text-[13px] leading-5 ${bodyTone}`}>
+                    {item.description}
+                </Text>
+            ) : null}
+            {cover != null && coverState.status === 'ready' && coverState.uri ? (
+                // 首图封面（useFileUrlState 三态：loading/missing 不渲染，降级为纯卡面）
+                <Image
+                    source={{ uri: coverState.uri }}
+                    className="mt-3 h-36 w-full rounded-thumb"
+                    resizeMode="cover"
+                />
+            ) : null}
+        </>
+    );
+
+    return (
+        <LinearGradient
+            colors={gradientColors}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={{ flex: 1, paddingHorizontal: 24, paddingTop: 20, paddingBottom: 12 }}
+        >
+            {content}
+        </LinearGradient>
+    );
+});
+
+/**
+ * 创建行程项表单卡（scrim + 居中卡，ActionMenuCard/RenameCard 同语言，禁 RN
+ * Modal 条件渲染）：时间（HH:mm）+ 标题 + 描述（选填）。本地校验先行（时间
+ * 正则 + 标题非空），store 校验失败（error 通道）同样就地展示可重试。
+ */
+function TripItemFormCard({
+    onSubmit,
+    onClose,
+    errorText,
+}: {
+    /** 提交通道（store.createTripItem）：resolve false = 失败（卡片保持打开）。 */
+    onSubmit(input: { time: string; title: string; description: string }): Promise<boolean>;
+    onClose(): void;
+    /** store.error 就地文案（失败后展示，避免陈旧错误串场）。 */
+    errorText: string | null;
+}) {
+    const palette = usePalette();
+    const [time, setTime] = useState('');
+    const [title, setTitle] = useState('');
+    const [description, setDescription] = useState('');
+    const [localError, setLocalError] = useState<string | null>(null);
+    const [saveFailed, setSaveFailed] = useState(false);
+    const submittingRef = useRef(false);
+
+    // 打开即收键盘准备输入；Android 返回键关闭（替代 Modal onRequestClose 语义）
+    useEffect(() => {
+        Keyboard.dismiss();
+    }, []);
+    useEffect(() => {
+        const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+            onClose();
+            return true;
+        });
+        return () => sub.remove();
+    }, [onClose]);
+
+    /**
+     * 时间取轻归一：容忍单位数小时（'9:30' → '09:30'）与首尾空白；其余
+     * （'0930'、'9点半' 等）不做魔法解析——store 层正则是权威闸。
+     */
+    const normalizeTime = (raw: string): string => {
+        const trimmed = raw.trim();
+        const padded = trimmed.match(/^(\d):(\d{2})$/);
+        return padded ? `0${padded[1]}:${padded[2]}` : trimmed;
+    };
+
+    const submit = async () => {
+        if (submittingRef.current) return;
+        const normalizedTime = normalizeTime(time);
+        const trimmedTitle = title.trim();
+        if (!isValidTripItemTime(normalizedTime)) {
+            setLocalError('时间用 24 小时制 HH:mm，如 09:30');
+            return;
+        }
+        if (trimmedTitle.length === 0) {
+            setLocalError('给行程项起个名字');
+            return;
+        }
+        setLocalError(null);
+        setSaveFailed(false);
+        submittingRef.current = true;
+        try {
+            const ok = await onSubmit({
+                time: normalizedTime,
+                title: trimmedTitle,
+                description: description.trim(),
+            });
+            if (!ok) setSaveFailed(true);
+            else onClose();
+        } catch {
+            // store 正常路径不 throw（防御环境异常，同 RenameCard 口径）
+            setSaveFailed(true);
+        } finally {
+            submittingRef.current = false;
+        }
+    };
+
+    return (
+        <View className="absolute inset-0 z-50">
+            <Pressable
+                className="flex-1 items-center justify-center bg-ink-scrim px-10 dark:bg-inkd-scrim"
+                onPress={onClose}
+                accessibilityLabel="关闭添加行程项"
+            >
+                {/* 卡体拦截冒泡：点卡不关（同 ActionMenuCard 卡体结构） */}
+                <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base">
+                    <View className="flex-row items-center justify-between">
+                        <Text className="text-[15px] font-semibold text-ink-text dark:text-inkd-text">
+                            添加行程项
+                        </Text>
+                        {/* 44 视觉盒：左邻题文字非按压体，右缘贴卡内边距，无重叠核算项 */}
+                        <CloseButton onPress={onClose} />
+                    </View>
+                    {/* 三个域：小标签 + FieldInput（容器承载视觉、输入透明，仓库
+                        统一输入口径）；tone=surface 在 base 卡上成输入井，焦点
+                        raised 加深一档（同 RenameCard 语言） */}
+                    <Text className="mt-3 text-[12px] text-ink-muted dark:text-inkd-muted">时间</Text>
+                    <FieldInput
+                        tone="surface"
+                        autoFocus
+                        value={time}
+                        onChangeText={(text) => setTime(text)}
+                        placeholder="HH:mm"
+                        maxLength={5}
+                        returnKeyType="next"
+                        containerClassName="mt-1.5"
+                        accessibilityLabel="行程项时间"
+                    />
+                    <Text className="mt-3 text-[12px] text-ink-muted dark:text-inkd-muted">标题</Text>
+                    <FieldInput
+                        tone="surface"
+                        value={title}
+                        onChangeText={(text) => setTitle(text)}
+                        placeholder="这段时间做什么？"
+                        maxLength={40}
+                        returnKeyType="next"
+                        containerClassName="mt-1.5"
+                        accessibilityLabel="行程项标题"
+                    />
+                    <Text className="mt-3 text-[12px] text-ink-muted dark:text-inkd-muted">
+                        描述（选填）
+                    </Text>
+                    <FieldInput
+                        tone="surface"
+                        value={description}
+                        onChangeText={(text) => setDescription(text)}
+                        placeholder="留言或备注"
+                        multiline
+                        containerClassName="mt-1.5"
+                        accessibilityLabel="行程项描述"
+                    />
+                    {localError || (saveFailed && errorText) ? (
+                        <Text className="mt-2 text-[12px] text-ink-negative dark:text-inkd-negative">
+                            {localError ?? errorText}
+                        </Text>
+                    ) : null}
+                    <View className="mt-4">
+                        <PrimaryButton label="添加" onPress={() => void submit()} />
+                    </View>
+                </Pressable>
+            </Pressable>
+        </View>
+    );
+}
+
+/**
+ * 应用内闹钟确认卡（scrim + 居中卡，ActionMenuCard 语言）：某 pending 行程项
+ * 时刻到达时的前台提醒——标题「行程时间到」+ 正文（时间 + 标题 + 描述）+
+ * 「知道了」。scrim 点按与 Android 返回键同走确认出口（点按即「本次不再弹」，
+ * 不留「关了还弹」的歧义路径）。
+ */
+function TripItemAlarmCard({
+    item,
+    onAcknowledge,
+}: {
+    item: db.TripItemRow;
+    onAcknowledge(): void;
+}) {
+    // Android 返回键 = 确认关闭（替代 Modal onRequestClose 语义，同各覆盖层）
+    useEffect(() => {
+        const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+            onAcknowledge();
+            return true;
+        });
+        return () => sub.remove();
+    }, [onAcknowledge]);
+
+    return (
+        <View className="absolute inset-0 z-50">
+            <Pressable
+                className="flex-1 items-center justify-center bg-ink-scrim px-10 dark:bg-inkd-scrim"
+                onPress={onAcknowledge}
+                accessibilityLabel="确认行程提醒"
+            >
+                {/* 卡体拦截冒泡：点卡不关（同 ActionMenuCard 卡体结构） */}
+                <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base">
+                    <Text className="text-[15px] font-semibold text-ink-text dark:text-inkd-text">
+                        行程时间到
+                    </Text>
+                    <View className="mt-3 rounded-control bg-ink-surface p-3 dark:bg-inkd-surface">
+                        <Text
+                            className="text-[14px] text-ink-text dark:text-inkd-text"
+                            style={{ fontVariant: ['tabular-nums'] }}
+                        >
+                            {`${item.time} ${item.title}`}
+                        </Text>
+                        {item.description ? (
+                            <Text className="mt-1.5 text-[13px] leading-5 text-ink-secondary dark:text-inkd-secondary">
+                                {item.description}
+                            </Text>
+                        ) : null}
+                    </View>
+                    <View className="mt-4">
+                        <PrimaryButton label="知道了" onPress={onAcknowledge} />
+                    </View>
+                </Pressable>
+            </Pressable>
+        </View>
+    );
+}
+
+export function TripDayScreen({ tripId, date }: { tripId: string; date: string }) {
+    const insets = useSafeAreaInsets();
+    const palette = usePalette();
+    const revision = useArchiveRevision();
+    const storeError = useArchiveStore((s) => s.error);
+    const createTripItem = useArchiveStore((s) => s.createTripItem);
+    const updateTripItemStatus = useArchiveStore((s) => s.updateTripItemStatus);
+    const deleteTripItem = useArchiveStore((s) => s.deleteTripItem);
+    const attachTripItemMedia = useArchiveStore((s) => s.attachTripItemMedia);
+
+    const [loading, setLoading] = useState(true);
+    const [missing, setMissing] = useState(false);
+    const [trip, setTrip] = useState<db.TripRow | null>(null);
+    const [locked, setLocked] = useState(false);
+    const [items, setItems] = useState<db.TripItemRow[]>([]);
+    /** 行程项 → 关联媒体（trip_media.item_id 分组；仅图片作封面候选）。 */
+    const [mediaByItem, setMediaByItem] = useState<Map<string, db.TripMediaRow[]>>(new Map());
+    /** 到点检查时钟（前台节拍 + 排序的「已到时间」判据）。 */
+    const [now, setNow] = useState(() => Date.now());
+    /** 创建表单卡（+ FAB 入口；锁定态无 FAB）。 */
+    const [createOpen, setCreateOpen] = useState(false);
+    /** 长按操作卡目标（行程项；锁定态长按入口关断）。 */
+    const [actionItem, setActionItem] = useState<db.TripItemRow | null>(null);
+    /** 应用内闹钟目标（到点未确认的最早一项；确认后本次不再弹）。 */
+    const [alarmItem, setAlarmItem] = useState<db.TripItemRow | null>(null);
+    /** 本次会话已确认的闹钟（「本次不再弹，下一项到点再弹」的会话集）。 */
+    const dismissedAlarmIds = useRef<Set<string>>(new Set());
+    /** 媒体选图/选视频流程守卫（picker 异步窗口防重入，同 trip-detail 口径）。 */
+    const [busy, setBusy] = useState(false);
+
+    // 本屏数据重载：trip + 该天行程项 + 行程媒体（item_id 分组）。revision 漂移
+    // （本屏 mutation 或其他屏的数据变化）自动重载；行程项不进 store.loadAll。
+    const reload = useCallback(async () => {
+        if (typeof tripId !== 'string' || tripId.length === 0 || !isValidLocalDate(date)) {
+            setMissing(true);
+            setLoading(false);
+            return;
+        }
+        try {
+            const row = await db.getTrip(tripId);
+            if (!row) {
+                setMissing(true);
+                return;
+            }
+            const [itemRows, mediaRows] = await Promise.all([
+                db.listTripItemsByDay(tripId, date),
+                db.listTripMediaByTrip(tripId),
+            ]);
+            const grouped = new Map<string, db.TripMediaRow[]>();
+            for (const media of mediaRows) {
+                if (media.item_id == null) continue;
+                const bucket = grouped.get(media.item_id);
+                if (bucket) bucket.push(media);
+                else grouped.set(media.item_id, [media]);
+            }
+            setItems(itemRows);
+            setMediaByItem(grouped);
+            setTrip(row);
+            setLocked(isTripLocked(row, todayLocal()));
+            setMissing(false);
+        } catch {
+            // db 抛错：走「行程不存在」降级态（可重试语义，对齐 trip-detail 口径）
+            setMissing(true);
+        } finally {
+            setLoading(false);
+        }
+    }, [tripId, date]);
+
+    useEffect(() => {
+        void reload();
+    }, [reload, revision]);
+
+    // 前台时钟：应用内闹钟到点检查 + deck 排序的「已到时间」判据（15s 节拍，
+    // 分钟级时刻足够；卸载即收口）
+    useEffect(() => {
+        const timer = setInterval(() => setNow(Date.now()), ALARM_TICK_MS);
+        return () => clearInterval(timer);
+    }, []);
+
+    // deck 排序（排序即优先级，见 orderTripItems）；前卡 = items[0]
+    const orderedItems = useMemo(() => orderTripItems(items, now), [items, now]);
+
+    // deck 重挂纪元：卡序签名变化（标记完成/失败前进、到点排序迁移、增删项）
+    // 时整组重挂 → deck 前卡恒为 items[0]（当前应进行的项），不被内部翻卡指针
+    // 带偏；纯数据重载（如媒体上传）签名不变，翻卡位置得以保留。
+    const orderKey = useMemo(() => orderedItems.map((item) => item.id).join('|'), [orderedItems]);
+    const orderKeyRef = useRef(orderKey);
+    const [deckEpoch, setDeckEpoch] = useState(0);
+    useEffect(() => {
+        if (orderKeyRef.current !== orderKey) {
+            orderKeyRef.current = orderKey;
+            setDeckEpoch((epoch) => epoch + 1);
+        }
+    }, [orderKey]);
+
+    // 应用内闹钟：某 pending 项时刻到达（≤ now）且未被本会话确认时，取最早一项
+    // 弹确认卡。任何覆盖层（表单/操作卡/已有闹钟）展开期间顺延，关掉后下一拍
+    // 继续；锁定行程整页只读，不再弹闹钟（终态行程无「该动手了」的语义）。
+    useEffect(() => {
+        if (locked || alarmItem || createOpen || actionItem) return;
+        const due = orderedItems.find(
+            (item) =>
+                item.status === 'pending' &&
+                !dismissedAlarmIds.current.has(item.id) &&
+                itemDueAt(item) <= now,
+        );
+        if (due) {
+            haptics.impact('medium');
+            setAlarmItem(due);
+        }
+    }, [now, orderedItems, alarmItem, createOpen, actionItem, locked]);
+
+    /** 闹钟确认出口（按钮/scrim/Android 返回统一收口）：本次不再弹。 */
+    const acknowledgeAlarm = useCallback(() => {
+        const current = alarmItem;
+        setAlarmItem(null);
+        if (current) dismissedAlarmIds.current.add(current.id);
+    }, [alarmItem]);
+
+    const coverFor = useCallback(
+        (itemId: string): db.TripMediaRow | null =>
+            (mediaByItem.get(itemId) ?? []).find((media) => media.kind === 'image') ?? null,
+        [mediaByItem],
+    );
+
+    // deck items（node = TripItemCardFace；onPress 不挂——点背卡 = deck 内建
+    // 提前到前位，前卡点按无动作；长按 = 操作卡入口，锁定态关断）
+    const deckItems: DeckItem[] = useMemo(
+        () =>
+            orderedItems.map((item, index) => ({
+                key: item.id,
+                // 当前项（前卡）页码走白字（渐变底），其余 muted（素面）
+                pageLabelTone: index === 0 ? ('light' as const) : ('muted' as const),
+                node: (
+                    <TripItemCardFace
+                        item={item}
+                        isCurrent={index === 0}
+                        cover={coverFor(item.id)}
+                    />
+                ),
+                onLongPress: locked
+                    ? undefined
+                    : () => {
+                          haptics.impact('medium');
+                          setActionItem(item);
+                      },
+                accessibilityLabel: `${item.time} ${item.title}，${TRIP_ITEM_STATUS_LABEL[item.status]}`,
+            })),
+        [orderedItems, locked, coverFor],
+    );
+
+    /** 创建表单提交通道：store 校验失败 resolve false（表单就地展示可重试）。 */
+    const runCreateTripItem = useCallback(
+        async (input: { time: string; title: string; description: string }): Promise<boolean> => {
+            const row = await createTripItem({
+                tripId,
+                date,
+                time: input.time,
+                title: input.title,
+                description: input.description,
+            });
+            return row != null;
+        },
+        [createTripItem, tripId, date],
+    );
+
+    /** 标记完成/失败（长按操作卡）：时间闸在 store 层兜底（未到点 error 通道）。 */
+    const runSetStatus = useCallback(
+        async (itemId: string, status: 'done' | 'failed') => {
+            setActionItem(null);
+            await updateTripItemStatus(itemId, status);
+        },
+        [updateTripItemStatus],
+    );
+
+    /** 删除行程项（长按操作卡）：软删 + 摘媒体关联 + 取消通知（store 编排）。 */
+    const runDelete = useCallback(
+        async (itemId: string) => {
+            setActionItem(null);
+            await deleteTripItem(itemId);
+        },
+        [deleteTripItem],
+    );
+
+    /** 添加图片/视频（长按操作卡 → 相册选图/选视频 → attachTripItemMedia 管线）。 */
+    const runAttachMedia = useCallback(
+        async (item: db.TripItemRow, kind: 'image' | 'video') => {
+            setActionItem(null);
+            if (busy) {
+                useArchiveStore.setState({ error: '上一个操作还在保存，稍等一下。' });
+                return;
+            }
+            setBusy(true);
+            try {
+                const permission = await imagePicker.getMediaLibraryPermissionAsync();
+                if (!permission.granted) {
+                    const requested = await imagePicker.requestMediaLibraryPermissionAsync();
+                    if (!requested.granted) {
+                        useArchiveStore.setState({ error: '没有相册权限，去系统设置里开一下。' });
+                        return;
+                    }
+                }
+                const result = await imagePicker.launchImageLibraryAsync({
+                    mediaTypes: kind === 'video' ? ['videos'] : ['images'],
+                    quality: 1,
+                    exif: false,
+                });
+                if (result.canceled || result.assets.length === 0) return;
+                const asset = result.assets[0];
+                await attachTripItemMedia(
+                    item.id,
+                    kind,
+                    asset.uri,
+                    asset.width ?? null,
+                    asset.height ?? null,
+                );
+            } catch (caught) {
+                useArchiveStore.setState({
+                    error: `媒体上传失败：${caught instanceof Error ? caught.message : String(caught)}`,
+                });
+            } finally {
+                setBusy(false);
+            }
+        },
+        [attachTripItemMedia, busy],
+    );
+
+    if (loading) return <LoadingView />;
+
+    if (missing || !trip || !isValidLocalDate(date)) {
+        return (
+            // 外层 insets.top 口径与 trip-detail 死路页逐 dp 对齐
+            <View className="flex-1 bg-ink-base dark:bg-inkd-base" style={{ paddingTop: insets.top }}>
+                <View className="px-6 pb-3 pt-2">
+                    <View className="h-11 flex-row items-center">
+                        <CloseButton icon="back" onPress={safeBack} />
+                        <Text className="ml-2.5 text-[20px] font-semibold text-ink-text dark:text-inkd-text">
+                            行程
+                        </Text>
+                    </View>
+                </View>
+                <View className="flex-1 pt-8">
+                    <DeadEndView
+                        icon={<LucideClock size={40} color={palette.muted} strokeWidth={1.5} />}
+                        title="找不到这一天的行程表"
+                        hint="行程可能已被删除，或日期链接不完整。回到行程详情看看其他日子。"
+                        actionLabel="返回"
+                        onAction={safeBack}
+                    />
+                </View>
+            </View>
+        );
+    }
+
+    const { monthDay, weekday } = formatDateParts(date);
+
+    return (
+        <View className="flex-1 bg-ink-base dark:bg-inkd-base">
+            <View style={{ paddingTop: insets.top }} className="flex-1">
+                {/* 屏头（几何同 ScreenHeader / trip-detail 内联屏头：px-6 pb-3 pt-2
+                    + h-11 行 + CloseButton 44 圆形触感底盒）：日期大标题（M月D日
+                    周X）+ 所属行程名小字副行 */}
+                <View className="px-6 pb-3 pt-2">
+                    <View className="h-11 flex-row items-center">
+                        <CloseButton icon="back" onPress={safeBack} />
+                        <Text
+                            numberOfLines={1}
+                            className="ml-2.5 min-w-0 flex-1 text-[20px] font-semibold text-ink-text dark:text-inkd-text"
+                        >
+                            {`${monthDay} ${weekday}`}
+                        </Text>
+                    </View>
+                    <Text
+                        numberOfLines={1}
+                        className="mt-1 text-[13px] text-ink-secondary dark:text-inkd-secondary"
+                    >
+                        {tripDisplayTitle(trip.title)}
+                    </Text>
+                    {locked ? (
+                        // #7 锁定轻提示（对齐 trip-detail）：只读浏览的显式声明
+                        <Text className="mt-1 text-[12px] text-ink-muted dark:text-inkd-muted">
+                            行程已完成，内容锁定
+                        </Text>
+                    ) : null}
+                </View>
+                {/* store.error 通道（时间闸拒绝/上传失败等）统一在此可见 */}
+                {storeError ? (
+                    <Text className="mb-2 px-6 text-[12px] text-ink-negative dark:text-inkd-negative">
+                        {storeError}
+                    </Text>
+                ) : null}
+                {/* 行程表 deck（key = 卡序签名纪元：排序迁移时整组重挂，前卡恒为
+                    当前应进行的项，见 deckEpoch 注） */}
+                <View className="mx-auto w-full max-w-[560px] flex-1 px-6">
+                    <CardDeck
+                        key={deckEpoch}
+                        items={deckItems}
+                        height={DECK_HEIGHT}
+                        emptyState={
+                            <EmptyState
+                                icon={<LucideClock size={40} color={palette.muted} strokeWidth={1.5} />}
+                                title="这一天还没有安排"
+                                hint={locked ? '行程已结束，内容只读' : '点 + 添加'}
+                            />
+                        }
+                    />
+                </View>
+                {!locked ? (
+                    <ComposeFab
+                        onPress={() => {
+                            haptics.impact('light');
+                            setCreateOpen(true);
+                        }}
+                        accessibilityLabel="添加行程项"
+                    />
+                ) : null}
+            </View>
+            {/* 覆盖层（条件渲染，禁 Modal，互斥可达：scrim 盖屏时其他入口不可触） */}
+            {createOpen ? (
+                <TripItemFormCard
+                    onSubmit={runCreateTripItem}
+                    onClose={() => setCreateOpen(false)}
+                    errorText={storeError}
+                />
+            ) : null}
+            {actionItem ? (
+                <ActionMenuCard
+                    title="行程项"
+                    rows={[
+                        {
+                            key: 'done',
+                            icon: <LucideCheck size={18} strokeWidth={1.9} />,
+                            title: '标记完成',
+                        },
+                        {
+                            key: 'failed',
+                            icon: <LucideClose size={18} strokeWidth={1.9} />,
+                            title: '标记失败',
+                        },
+                        {
+                            key: 'image',
+                            icon: <LucideImage size={18} strokeWidth={1.9} />,
+                            title: '添加图片',
+                        },
+                        {
+                            key: 'video',
+                            icon: <LucideVideo size={18} strokeWidth={1.9} />,
+                            title: '添加视频',
+                        },
+                        {
+                            key: 'delete',
+                            icon: <LucideTrash size={18} strokeWidth={1.9} />,
+                            title: '删除此行程',
+                            danger: true,
+                        },
+                    ]}
+                    onAction={(key) => {
+                        if (!actionItem) return;
+                        if (key === 'done') {
+                            void runSetStatus(actionItem.id, 'done');
+                            return;
+                        }
+                        if (key === 'failed') {
+                            void runSetStatus(actionItem.id, 'failed');
+                            return;
+                        }
+                        if (key === 'image') {
+                            void runAttachMedia(actionItem, 'image');
+                            return;
+                        }
+                        if (key === 'video') {
+                            void runAttachMedia(actionItem, 'video');
+                            return;
+                        }
+                        void runDelete(actionItem.id);
+                    }}
+                    onClose={() => setActionItem(null)}
+                />
+            ) : null}
+            {alarmItem ? (
+                // 闹钟卡盖在其余覆盖层之上渲染（条件互斥 + 后绘优先，双保险）
+                <TripItemAlarmCard item={alarmItem} onAcknowledge={acknowledgeAlarm} />
+            ) : null}
+        </View>
+    );
+}

@@ -31,6 +31,30 @@
  *   联系方式字段（工单语义：能直接拨/能直接发），可被搜索（db.searchEvents
  *   六通道 LIKE）。
  *
+ * v8 追加（独立笔记实体）：
+ * - journals 复用为两类实体的容器，kind 列区分：'daily' = 一天一篇的日记
+ *   （原语义：同日唯一、24:00 自动收笔，status 可 open/closed；含行程内日记），
+ *   'note' = 独立笔记（用户显式新建、同日任意多篇、不受同日唯一/收笔约束，
+ *   status 恒 'open'，local_date 仅记录创建日供展示/排序）。复用建表而非单独
+ *   建表的原因：journal_media 引用、块编辑器、保存链路、搜索、删除级联全部
+ *   原样复用，单独建表 = 整套媒体/块管线重复实现；
+ * - journals.description：独立笔记的短描述（选填，类似行程 description；
+ *   NOT NULL DEFAULT ''，daily 行恒为 ''）；
+ * - 同日唯一索引收窄到 kind = 'daily'（v3 的全量唯一会拦住同日第二篇笔记，
+ *   迁移细节见 migrations.ts v8）。两列均 ALTER 追加，JOURNALS_DDL 常量保持
+ *   v2 建表形状不动（v7 教训：全新装先跑旧 DDL 再跑 v8 ALTER，DDL 提前带
+ *   新列会 duplicate column 崩迁移链）。
+ *
+ * v9 追加（行程项，行程表页）：
+ * - trip_items：行程某天的逐条安排（时间 + 标题 + 留言/备注 + 状态）。状态
+ *   pending/done/failed 约束在应用层（对齐 events.status 风格，DDL 不加 CHECK）；
+ * - trip_media.item_id：行程项的图片/视频挂 trip_media 既有链路（上传/软删/
+ *   级联/文件清理/GC 全量复用），item_id 关联到行程项（可空——日卡背景与
+ *   封面等无主媒体保持 NULL）。TRIP_MEDIA_DDL 保持 v4 建表形状不动（v7/v8
+ *   教训：全新装先跑旧 DDL 再跑 v9 ALTER，DDL 提前带新列会 duplicate column
+ *   崩迁移链）；
+ * - v9 同步建 idx_trip_items_trip_date（行程表页按 (trip_id, local_date) 取天）。
+ *
  * 约定不变：UUID 主键；日期归属用本地日期字符串 `YYYY-MM-DD`；
  * created_at/updated_at 为 epoch ms；删除一律软删除。
  */
@@ -51,8 +75,22 @@ export const PENDING_MEDIA_ID = '__pending__';
  */
 export const TRIP_OPEN_ENDED = 'open';
 
-/** 日记状态：open = 可继续写；closed = 已收笔（手动完成或跨日自动）。 */
+/** 日记状态：open = 可继续写；closed = 已收笔（手动完成或跨日自动）。
+ *  独立笔记（v8）不受收笔语义约束，status 恒 'open'。 */
 export type JournalStatus = 'open' | 'closed';
+
+/**
+ * journals 行的实体种类（v8）：journals 表同时承载「日记」与「独立笔记」两类
+ * 容器（媒体/块/保存/搜索/删除管线全量复用，复用理由见文件头 v8 段）：
+ * - daily：一天一篇的日记（原语义，含行程内日记）——受同日唯一索引约束、
+ *   参与本地时区 24:00 自动收笔；
+ * - note：独立笔记——用户显式新建（像建行程一样走表单，不随日期自动建页），
+ *   同日任意多篇，不参与收笔语义；local_date 仅记录创建日（展示/排序用，
+ *   无「归属日」约束）。
+ * 「一天一篇」「24:00 自动收笔」等 daily 专属判定一律带 kind 过滤（db 层各
+ * daily 路径已逐一收口），禁止散落字面量比较。
+ */
+export type JournalKind = 'daily' | 'note';
 
 /**
  * 日记内容块：文本段或行内媒体（mediaId → journal_media）。
@@ -91,10 +129,15 @@ export interface TripRow {
 
 export interface JournalRow {
     id: string;
-    trip_id: string | null; // null = 日常日记
-    local_date: string; // YYYY-MM-DD
+    trip_id: string | null; // null = 日常日记 / 独立笔记（note 恒 null，不从属行程）
+    local_date: string; // YYYY-MM-DD（note = 创建日，仅展示/排序用）
     /** 笔记标题（v4，DEV.md #6）：可空，null = 未命名（列表回退到日期/预览）。 */
     title: string | null;
+    /** 实体种类（v8）：语义见 JournalKind；存量行经 v8 ALTER 默认全部 'daily'。 */
+    kind: JournalKind;
+    /** 独立笔记短描述（v8，选填，类似行程 description）：NOT NULL DEFAULT ''，
+     *  daily 行恒为 ''（日记无描述语义）；空串与 null title 同由展示层兜底。 */
+    description: string;
     blocks: string; // JSON: JournalBlock[]
     status: JournalStatus;
     word_count: number; // 冗余指标（me 页曲线），保存时同步
@@ -145,9 +188,11 @@ export const TRIPS_DDL = `CREATE TABLE IF NOT EXISTS trips (
     deleted_at INTEGER
 )`;
 
-// 同日唯一约束不在建表 DDL 内（表达式索引建不进 CREATE TABLE），由迁移 v3 保证：
-// idx_journals_trip_date_unique ON journals(COALESCE(trip_id, ''), local_date)
-// WHERE deleted_at IS NULL——NULL trip_id 归一、软删行不占名额（详见 migrations.ts v3）。
+// 同日唯一约束不在建表 DDL 内（表达式索引建不进 CREATE TABLE），由迁移保证：
+// v3 建 idx_journals_trip_date_unique ON journals(COALESCE(trip_id, ''), local_date)
+// WHERE deleted_at IS NULL——NULL trip_id 归一、软删行不占名额；v8 收窄为
+// WHERE deleted_at IS NULL AND kind = 'daily'（「一天一篇」是日记语义，独立笔记
+// 同日任意多篇；只放宽约束，存量数据天然满足，无需清史）。详见 migrations.ts v3/v8。
 export const JOURNALS_DDL = `CREATE TABLE IF NOT EXISTS journals (
     id TEXT PRIMARY KEY NOT NULL,
     trip_id TEXT,
@@ -180,6 +225,10 @@ export type TripMediaKind = JournalMediaKind;
  * （不经过日记块模型），列与 journal_media 对齐并补 duration_ms（音视频时长，
  * 日记侧该元数据在块 JSON 内，行程侧无块模型故落列）。
  * deleted_at 对齐「删除一律软删除」域约定（规范清单未列，属域内既有纪律的延续）。
+ * item_id（v9 ALTER 追加）：非空 = 该媒体挂在某个行程项（trip_items）名下——
+ * 复用行程媒体整条上传/软删/级联/文件清理链路，仅以一列表达归属；NULL =
+ * 无主媒体（日卡背景图等既有形态不变）。TRIP_MEDIA_DDL 保持 v4 建表形状不动
+ * （v7/v8 同款先例，见文件头 v9 段）。
  */
 export interface TripMediaRow {
     id: string;
@@ -189,6 +238,8 @@ export interface TripMediaRow {
     width: number | null;
     height: number | null;
     duration_ms: number | null;
+    /** 所属行程项（v9，可空）：删除行程项时摘关联、媒体行保留（见 db 端 detach）。 */
+    item_id: string | null;
     created_at: number;
     deleted_at: number | null;
 }
@@ -347,5 +398,50 @@ export const EVENT_MEDIA_DDL = `CREATE TABLE IF NOT EXISTS event_media (
     height INTEGER,
     duration_ms INTEGER,
     created_at INTEGER NOT NULL,
+    deleted_at INTEGER
+)`;
+
+// ─── trip_items（v9：行程项，行程表页）──────────────────────────────────────
+
+/**
+ * 行程项状态：pending = 待进行；done = 已完成；failed = 已失败（语义对齐
+ * events 的 open/done/failed 三态）。约束在应用层（DDL 不加 CHECK，对齐
+ * journals.status / events.status 风格）；判断一律走 store 层校验，禁止散落
+ * 字面量比较之外的白名单判断（合法值集合收口在 store）。
+ */
+export type TripItemStatus = 'pending' | 'done' | 'failed';
+
+/**
+ * 行程项行（v9）：行程某天的一条安排。字段语义：
+ * - local_date：归属日（YYYY-MM-DD，与 journals / day_plans 同口径）；
+ * - time：'HH:mm'（24 小时制，格式约束在应用层，store 写入口校验）——
+ *   与 local_date 组成完整触发时刻（本地时区，通知调度与时间闸共用）；
+ * - title：必填非空（store 写入口校验，同 createEvent 标题口径）；
+ * - description：留言/备注（NOT NULL DEFAULT ''，未填落空串，展示层无需兜底）；
+ * - status：见 TripItemStatus。
+ */
+export interface TripItemRow {
+    id: string;
+    trip_id: string;
+    local_date: string; // YYYY-MM-DD
+    time: string; // 'HH:mm'
+    title: string;
+    description: string; // 留言/备注，NOT NULL DEFAULT ''
+    status: TripItemStatus;
+    created_at: number;
+    updated_at: number;
+    deleted_at: number | null;
+}
+
+export const TRIP_ITEMS_DDL = `CREATE TABLE IF NOT EXISTS trip_items (
+    id TEXT PRIMARY KEY NOT NULL,
+    trip_id TEXT NOT NULL,
+    local_date TEXT NOT NULL,
+    time TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
     deleted_at INTEGER
 )`;

@@ -1,14 +1,28 @@
 import { openDatabase } from '@/core/database';
+// v8 createNote 的行 id 生成走 core 随机源（web 非安全上下文有 getRandomValues 兜底，
+// 异常原样上抛由 store 层转 error 通道）
+import { crypto } from '@/core/crypto';
 import { ARCHIVE_MIGRATIONS } from './migrations';
 // PENDING_MEDIA_ID 本模块消毒逻辑自用（下方同时 re-export 供域内其他层取用）
 import { PENDING_MEDIA_ID } from './schema';
+// v8 独立笔记：初始正文复用日记块模型纯函数、local_date 的「当天」口径复用
+// trip-logic。db（SQL 层）→ 纯函数模块是向下依赖；由此形成的模块环（唯一环边
+// 是 trip-logic → './db' 取 TRIP_OPEN_ENDED 常量的 v5 遗留引用）上所有跨模块取值
+// 都在函数体内（调用期求值），各模块体只做常量/函数定义、无顶层跨模块求值，
+// Metro/Babel 的模块环解析下运行时安全——纪律：勿在环上任何模块体里取跨模块值。
+import { newParagraphBlock, serializeBlocks } from '../journal-logic';
+import { todayLocal } from '../trip-logic';
 import type {
     DayPlanRow,
     EventMediaRow,
     EventRow,
     EventStatus,
+    JournalKind,
     JournalMediaRow,
     JournalRow,
+    TripDayMetaRow,
+    TripItemRow,
+    TripItemStatus,
     TripMediaRow,
     TripRow,
 } from './schema';
@@ -21,11 +35,14 @@ export type {
     EventStatus,
     EventSubjectKind,
     JournalBlock,
+    JournalKind,
     JournalMediaKind,
     JournalMediaRow,
     JournalRow,
     JournalStatus,
     TripDayMetaRow,
+    TripItemRow,
+    TripItemStatus,
     TripMediaKind,
     TripMediaRow,
     TripRow,
@@ -133,6 +150,10 @@ export async function softDeleteTripCascade(
         );
         // 逐日计划（行程删则骨架计划一并失效，避免 tripStats 留孤儿分组）
         await db.run('UPDATE day_plans SET deleted_at = ?, updated_at = ? WHERE trip_id = ? AND deleted_at IS NULL', [at, at, id]);
+        // 行程项（v9）：行程删则逐条安排一并失效（对齐 day_plans 的级联口径）；
+        // 关联媒体（trip_media.item_id）已在上面 trip_media 段随行程软删，媒体行
+        // 的 item_id 无需摘除——行已软删，关联不可见
+        await db.run('UPDATE trip_items SET deleted_at = ?, updated_at = ? WHERE trip_id = ? AND deleted_at IS NULL', [at, at, id]);
         // 逐日指针（v5 trip_day_meta）：指针行无内容可回收，随行程硬删（域约定例外，
         // 见 schema.ts 注释）；其指向的媒体行已在上面走常规软删
         await db.run('DELETE FROM trip_day_meta WHERE trip_id = ?', [id]);
@@ -197,12 +218,16 @@ export async function tripStats(): Promise<Map<string, TripStats>> {
     return map;
 }
 
-// ─── journals（连续日记容器）────────────────────────────────────────────────
+// ─── journals（v8 起为日记 + 独立笔记双实体容器，kind 列区分；本段 daily 专属
+// ─── 取径已逐一过滤，按 id/关键词的共用出口不筛 kind）──────────────────────────
 
 export async function getJournalByDate(tripId: string | null, localDate: string): Promise<JournalRow | null> {
     const db = await getDb();
+    // v8 kind 过滤（daily 取页路径专属）：独立笔记的 trip_id 同样为 NULL、local_date
+    // 同样可能落在今天——不筛 kind 的话打开 /write 的 LIMIT 1 可能命中当天新建的
+    // 笔记行，日记页被张冠李戴（笔记无「一天一篇」语义，不经本入口，走 createNote）。
     const row = await db.getFirst<JournalRow>(
-        'SELECT * FROM journals WHERE deleted_at IS NULL AND trip_id IS ? AND local_date = ? LIMIT 1',
+        "SELECT * FROM journals WHERE deleted_at IS NULL AND kind = 'daily' AND trip_id IS ? AND local_date = ? LIMIT 1",
         [tripId, localDate],
     );
     // 载入消毒（上传中断恢复）：PENDING 占位块正常只存在于编辑器内存，落库即脏数据
@@ -216,9 +241,9 @@ export async function getJournalByDate(tripId: string | null, localDate: string)
 export async function insertJournalIfAbsent(row: Omit<JournalRow, 'deleted_at'>): Promise<boolean> {
     const db = await getDb();
     const result = await db.run(
-        `INSERT OR IGNORE INTO journals (id, trip_id, local_date, title, blocks, status, word_count, created_at, updated_at, completed_at, deleted_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-        [row.id, row.trip_id, row.local_date, row.title, row.blocks, row.status, row.word_count, row.created_at, row.updated_at, row.completed_at],
+        `INSERT OR IGNORE INTO journals (id, trip_id, local_date, title, kind, description, blocks, status, word_count, created_at, updated_at, completed_at, deleted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        [row.id, row.trip_id, row.local_date, row.title, row.kind, row.description, row.blocks, row.status, row.word_count, row.created_at, row.updated_at, row.completed_at],
     );
     return result.changes > 0;
 }
@@ -239,6 +264,14 @@ export async function updateJournalTitle(id: string, title: string | null): Prom
     await db.run('UPDATE journals SET title = ?, updated_at = ? WHERE id = ?', [title, Date.now(), id]);
 }
 
+/**
+ * 手动收笔（日记专属语义，v8 起带 kind 过滤）：收笔/重开是「一天一篇」日记的
+ * 状态机，独立笔记 status 恒 'open'、永不该被打成 closed 只读。kind 过滤后
+ * 对笔记的误调用 UPDATE 命中 0 行静默不生效——笔记保持 open 是正确状态，
+ * 优于无过滤时把笔记误收笔（不可逆地破坏只读语义的预期）。
+ */
+/** 完成日记/笔记（2026-11-19 产品变更：笔记也可「完成」——closed 后离开
+    首页 deck 与笔记堆，仅在搜索可见）。 */
 export async function completeJournal(id: string): Promise<void> {
     const db = await getDb();
     await db.run("UPDATE journals SET status = 'closed', completed_at = ?, updated_at = ? WHERE id = ?", [
@@ -248,10 +281,10 @@ export async function completeJournal(id: string): Promise<void> {
     ]);
 }
 
-/** 重开收笔页（仅当天可重开，判定在 journal-logic.canReopen）。 */
+/** 重开收笔页（仅当天可重开，判定在 journal-logic.canReopen；日记专属，见 completeJournal）。 */
 export async function reopenJournal(id: string): Promise<void> {
     const db = await getDb();
-    await db.run("UPDATE journals SET status = 'open', completed_at = NULL, updated_at = ? WHERE id = ?", [
+    await db.run("UPDATE journals SET status = 'open', completed_at = NULL, updated_at = ? WHERE id = ? AND kind = 'daily'", [
         Date.now(),
         id,
     ]);
@@ -264,11 +297,15 @@ export async function getJournal(id: string): Promise<JournalRow | null> {
     return row ? { ...row, blocks: sanitizeBlocksJson(row.blocks) } : null;
 }
 
-/** 本地时区 24:00 自动收笔：所有 open 且日期早于今天的日记收口。 */
+/**
+ * 本地时区 24:00 自动收笔：所有 open 且日期早于今天的**日记**（kind = 'daily'）收口。
+ * v8 关键正确性点：独立笔记的 local_date 只是创建日、status 恒 'open'——不筛 kind
+ * 会把昨天建的笔记也「收笔」成只读，违背笔记不受收笔语义约束的产品定义。
+ */
 export async function closeStaleOpenJournals(today: string): Promise<number> {
     const db = await getDb();
     const result = await db.run(
-        "UPDATE journals SET status = 'closed', completed_at = COALESCE(completed_at, ?), updated_at = ? WHERE status = 'open' AND local_date < ?",
+        "UPDATE journals SET status = 'closed', completed_at = COALESCE(completed_at, ?), updated_at = ? WHERE status = 'open' AND local_date < ? AND kind = 'daily'",
         [Date.now(), Date.now(), today],
     );
     return result.changes;
@@ -283,13 +320,339 @@ export async function listJournalsByTrip(tripId: string): Promise<JournalRow[]> 
     );
 }
 
-/** 日常日记（无行程）最近列表。 */
+/** 日常日记（无行程）最近列表（v8 起带 kind 过滤：笔记 trip_id 同为 NULL，
+ *  不筛会混入日常日记时间线——笔记列表走 listNotes，两条列表互不混入）。 */
 export async function listDailyJournals(limit = 60): Promise<JournalRow[]> {
     const db = await getDb();
     return db.getAll<JournalRow>(
-        'SELECT * FROM journals WHERE deleted_at IS NULL AND trip_id IS NULL ORDER BY local_date DESC LIMIT ?',
+        "SELECT * FROM journals WHERE deleted_at IS NULL AND kind = 'daily' AND trip_id IS NULL ORDER BY local_date DESC LIMIT ?",
         [limit],
     );
+}
+
+// ─── 独立笔记（v8：journals.kind = 'note'，复用日记容器与媒体/块管线）───────
+// 复用面：getJournal / updateJournalBlocks / updateJournalTitle（笔记 status 恒
+// 'open'，isEditable 闸天然放行）/ softDeleteJournalCascade / mediaByJournalIds /
+// searchJournals（按 id/关键词查询不筛 kind——笔记可被搜索，期望行为）均对
+// note 行同样适用，无需按 kind 复制一套出口。
+
+/**
+ * 新建独立笔记（store.createNote 编排）：kind 'note'，trip_id 恒 null（笔记不从属
+ * 行程），local_date = 创建当天（todayLocal，仅展示/排序用——笔记无「归属日」
+ * 语义，不受同日唯一索引与 24:00 自动收笔约束）。title/description 由调用方
+ * 校验后传入，此处 trim 后直落（title 可为空串 = 未命名，展示层兜底）。
+ * 正文初始化为单个空文本段（复用日记块模型，编辑器至少留一个可落笔段）。
+ *
+ * 分工说明：id 在本函数内生成（签名只收 title/description；core/crypto 的
+ * randomUUID 自带 web 非安全上下文兜底，异常原样上抛由 store 层 try 转 error
+ * 通道——与 createTrip/createEvent 的 error 口径一致）；blocks 初始化复用
+ * journal-logic 纯函数（依赖方向见文件头 import 注）。直接 INSERT 不带
+ * OR IGNORE：笔记被同日唯一索引排除（部分索引只圈 daily），无冲突可撞。
+ */
+export async function createNote(input: { title: string; description: string }): Promise<JournalRow> {
+    const db = await getDb();
+    const now = Date.now();
+    const row: JournalRow = {
+        id: crypto.randomUUID(),
+        kind: 'note',
+        trip_id: null,
+        local_date: todayLocal(),
+        title: input.title.trim(),
+        description: input.description.trim(),
+        blocks: serializeBlocks([newParagraphBlock()]),
+        status: 'open',
+        word_count: 0,
+        created_at: now,
+        updated_at: now,
+        completed_at: null,
+        deleted_at: null,
+    };
+    await db.run(
+        `INSERT INTO journals (id, trip_id, local_date, title, kind, description, blocks, status, word_count, created_at, updated_at, completed_at, deleted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        [
+            row.id,
+            row.trip_id,
+            row.local_date,
+            row.title,
+            row.kind,
+            row.description,
+            row.blocks,
+            row.status,
+            row.word_count,
+            row.created_at,
+            row.updated_at,
+            row.completed_at,
+        ],
+    );
+    return row;
+}
+
+/** 独立笔记列表（updated_at DESC = 最近活动在前，对齐 listEvents 排序口径）。 */
+export async function listNotes(limit = 200): Promise<JournalRow[]> {
+    const db = await getDb();
+    return db.getAll<JournalRow>(
+        "SELECT * FROM journals WHERE deleted_at IS NULL AND kind = 'note' ORDER BY updated_at DESC LIMIT ?",
+        [limit],
+    );
+}
+
+/** 独立笔记总数（Me 指标卡用；不分 open/closed——「笔记数量」是库存口径）。 */
+export async function noteCount(): Promise<number> {
+    const db = await getDb();
+    const row = await db.getFirst<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM journals WHERE kind = 'note' AND deleted_at IS NULL",
+    );
+    return row?.n ?? 0;
+}
+
+/**
+ * 独立笔记元信息更新（store.updateNoteMeta 编排）：title null = 清除为未命名
+ * （对齐 updateJournalTitle 的可空语义）；任一写入都 bump updated_at。
+ * 「目标必须是笔记」的 kind 校验由 store 层预检（db 认列值、业务校验在 store，
+ * 分层同 updateJournalTitle 的 isEditable 预检）。
+ */
+export async function updateNoteMeta(
+    id: string,
+    patch: { title?: string | null; description?: string },
+): Promise<void> {
+    const db = await getDb();
+    const fields: string[] = [];
+    const params: (string | number | null)[] = [];
+    if (patch.title !== undefined) {
+        fields.push('title = ?');
+        params.push(patch.title);
+    }
+    if (patch.description !== undefined) {
+        fields.push('description = ?');
+        params.push(patch.description);
+    }
+    if (fields.length === 0) return;
+    fields.push('updated_at = ?');
+    params.push(Date.now(), id);
+    await db.run(`UPDATE journals SET ${fields.join(', ')} WHERE id = ?`, params);
+}
+
+// ─── 导出全量读取（M3 数据导出专用）──────────────────────────────────────────
+// 与列表查询的唯一差异：无 LIMIT、无归属过滤——导出是全量备份语义，一次读齐
+// 全部未删除行（软删行不进导出，与「删除不留孤儿引用」的域约定一致）。
+// 块 JSON 不做载入消毒：导出的是库存原样字节（消费方为备份/迁移工具，不是渲染层）。
+
+/** 全量日记（导出）：行程内 + 日常两类，本地日期升序（导出文档自然时序）。 */
+export async function listAllJournals(): Promise<JournalRow[]> {
+    const db = await getDb();
+    return db.getAll<JournalRow>(
+        'SELECT * FROM journals WHERE deleted_at IS NULL ORDER BY local_date ASC, created_at ASC',
+    );
+}
+
+/** 全量逐日计划（导出）。 */
+export async function listAllDayPlansForExport(): Promise<DayPlanRow[]> {
+    const db = await getDb();
+    return db.getAll<DayPlanRow>(
+        'SELECT * FROM day_plans WHERE deleted_at IS NULL ORDER BY trip_id ASC, local_date ASC, sort_order ASC',
+    );
+}
+
+/** 全量日记媒体行（导出；二进制不内嵌，file_key 是落盘位置的引用）。 */
+export async function listAllJournalMediaForExport(): Promise<JournalMediaRow[]> {
+    const db = await getDb();
+    return db.getAll<JournalMediaRow>(
+        'SELECT * FROM journal_media WHERE deleted_at IS NULL ORDER BY journal_id ASC, created_at ASC',
+    );
+}
+
+/** 全量行程媒体行（导出）。 */
+export async function listAllTripMediaForExport(): Promise<TripMediaRow[]> {
+    const db = await getDb();
+    return db.getAll<TripMediaRow>(
+        'SELECT * FROM trip_media WHERE deleted_at IS NULL ORDER BY trip_id ASC, created_at ASC',
+    );
+}
+
+/** 全量日卡背景指针（导出）。 */
+export async function listAllTripDayMetaForExport(): Promise<TripDayMetaRow[]> {
+    const db = await getDb();
+    return db.getAll<TripDayMetaRow>(
+        'SELECT * FROM trip_day_meta ORDER BY trip_id ASC, local_date ASC',
+    );
+}
+
+/** 全量事件（导出）。 */
+export async function listAllEventsForExport(): Promise<EventRow[]> {
+    const db = await getDb();
+    return db.getAll<EventRow>(
+        'SELECT * FROM events WHERE deleted_at IS NULL ORDER BY created_at ASC',
+    );
+}
+
+/** 全量行程项（导出）。 */
+export async function listAllTripItemsForExport(): Promise<TripItemRow[]> {
+    const db = await getDb();
+    return db.getAll<TripItemRow>(
+        'SELECT * FROM trip_items WHERE deleted_at IS NULL ORDER BY trip_id ASC, local_date ASC, time ASC',
+    );
+}
+
+/** 全量事件媒体行（导出）。 */
+export async function listAllEventMediaForExport(): Promise<EventMediaRow[]> {
+    const db = await getDb();
+    return db.getAll<EventMediaRow>(
+        'SELECT * FROM event_media WHERE deleted_at IS NULL ORDER BY event_id ASC, created_at ASC',
+    );
+}
+
+// ─── 备份恢复写入（M3 导入专用）──────────────────────────────────────────────
+
+/** 备份包恢复行集（与导出 payload 同构；行内 deleted_at 恒 null，不参与写入）。 */
+export interface BackupRestorePayload {
+    trips: TripRow[];
+    journals: JournalRow[];
+    journalMedia: JournalMediaRow[];
+    dayPlans: DayPlanRow[];
+    tripMedia: TripMediaRow[];
+    tripDayMeta: TripDayMetaRow[];
+    tripItems: TripItemRow[];
+    events: EventRow[];
+    eventMedia: EventMediaRow[];
+}
+
+export interface BackupRestoreCounts {
+    trips: number;
+    journals: number;
+    journalMedia: number;
+    dayPlans: number;
+    tripMedia: number;
+    tripDayMeta: number;
+    tripItems: number;
+    events: number;
+    eventMedia: number;
+}
+
+/**
+ * 备份恢复（导入）：全部行在**一个事务**内 INSERT OR IGNORE 落库（UUID 主键
+ * 冲突 / journals 同日唯一索引冲突 / trip_day_meta 主键冲突一律跳过）。
+ *
+ * **合并语义（existing wins）**：已存在的行原样保留、包内新行补齐——导入后
+ * 与既有数据无缝共存（「无缝继续使用」口径）；不提供「包覆盖本机」的破坏性
+ * 语义（备份导入是恢复增强，不是清库重置）。事务失败整体回滚，无半恢复态。
+ * 行级最小校验：缺 id 的行直接跳过（防御手改包的坏行拖垮整个事务）。
+ */
+export async function restoreBackupData(payload: BackupRestorePayload): Promise<BackupRestoreCounts> {
+    const db = await getDb();
+    const counts: BackupRestoreCounts = {
+        trips: 0,
+        journals: 0,
+        journalMedia: 0,
+        dayPlans: 0,
+        tripMedia: 0,
+        tripDayMeta: 0,
+        tripItems: 0,
+        events: 0,
+        eventMedia: 0,
+    };
+    await db.withTransaction(async () => {
+        for (const row of payload.trips) {
+            if (!row.id) continue;
+            const result = await db.run(
+                `INSERT OR IGNORE INTO trips (id, title, start_date, end_date, note, description, icon, video_key, cover_key, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [row.id, row.title, row.start_date, row.end_date, row.note, row.description, row.icon, row.video_key, row.cover_key, row.created_at, row.updated_at],
+            );
+            counts.trips += result.changes;
+        }
+        for (const row of payload.journals) {
+            if (!row.id) continue;
+            const result = await db.run(
+                `INSERT OR IGNORE INTO journals (id, trip_id, local_date, title, kind, description, blocks, status, word_count, created_at, updated_at, completed_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    row.id,
+                    row.trip_id,
+                    row.local_date,
+                    row.title,
+                    // v8 前的备份包行里没有 kind/description 字段（JSON 运行时缺位，
+                    // 类型上不可见）——按当时的行语义补默认（v8 前全部是日记）；
+                    // 新包原样保真，笔记恢复后仍是笔记（同日多篇不撞收窄后的唯一索引）
+                    row.kind ?? 'daily',
+                    row.description ?? '',
+                    row.blocks,
+                    row.status,
+                    row.word_count,
+                    row.created_at,
+                    row.updated_at,
+                    row.completed_at,
+                ],
+            );
+            counts.journals += result.changes;
+        }
+        for (const row of payload.journalMedia) {
+            if (!row.id) continue;
+            const result = await db.run(
+                `INSERT OR IGNORE INTO journal_media (id, journal_id, file_key, kind, width, height, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                [row.id, row.journal_id, row.file_key, row.kind, row.width, row.height, row.created_at],
+            );
+            counts.journalMedia += result.changes;
+        }
+        for (const row of payload.dayPlans) {
+            if (!row.id) continue;
+            const result = await db.run(
+                `INSERT OR IGNORE INTO day_plans (id, trip_id, local_date, content, sort_order, done, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                [row.id, row.trip_id, row.local_date, row.content, row.sort_order, row.done, row.created_at, row.updated_at],
+            );
+            counts.dayPlans += result.changes;
+        }
+        for (const row of payload.tripMedia) {
+            if (!row.id) continue;
+            // item_id（v9）：新包原样保真行程项关联；v9 前的包行内无该字段（JSON
+            // 运行时缺位）按 NULL 补默认（无主媒体）
+            const result = await db.run(
+                `INSERT OR IGNORE INTO trip_media (id, trip_id, file_key, kind, width, height, duration_ms, item_id, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [row.id, row.trip_id, row.file_key, row.kind, row.width, row.height, row.duration_ms, row.item_id ?? null, row.created_at],
+            );
+            counts.tripMedia += result.changes;
+        }
+        for (const row of payload.tripDayMeta) {
+            if (!row.trip_id || !row.local_date) continue;
+            const result = await db.run(
+                `INSERT OR IGNORE INTO trip_day_meta (trip_id, local_date, background_media_id, updated_at)
+                 VALUES (?, ?, ?, ?)`,
+                [row.trip_id, row.local_date, row.background_media_id, row.updated_at],
+            );
+            counts.tripDayMeta += result.changes;
+        }
+        for (const row of payload.tripItems) {
+            if (!row.id) continue;
+            const result = await db.run(
+                `INSERT OR IGNORE INTO trip_items (id, trip_id, local_date, time, title, description, status, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [row.id, row.trip_id, row.local_date, row.time, row.title, row.description, row.status, row.created_at, row.updated_at],
+            );
+            counts.tripItems += result.changes;
+        }
+        for (const row of payload.events) {
+            if (!row.id) continue;
+            const result = await db.run(
+                `INSERT OR IGNORE INTO events (id, title, status, description, blocks, gps_lat, gps_lng, gps_accuracy, handled_by, subject_kind, subject_value, phone, email, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [row.id, row.title, row.status, row.description, row.blocks, row.gps_lat, row.gps_lng, row.gps_accuracy, row.handled_by, row.subject_kind, row.subject_value, row.phone, row.email, row.created_at, row.updated_at],
+            );
+            counts.events += result.changes;
+        }
+        for (const row of payload.eventMedia) {
+            if (!row.id) continue;
+            const result = await db.run(
+                `INSERT OR IGNORE INTO event_media (id, event_id, file_key, kind, width, height, duration_ms, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                [row.id, row.event_id, row.file_key, row.kind, row.width, row.height, row.duration_ms, row.created_at],
+            );
+            counts.eventMedia += result.changes;
+        }
+    });
+    return counts;
 }
 
 /** 搜索的时间范围过滤（闭区间，本地日期 YYYY-MM-DD）。 */
@@ -398,17 +761,22 @@ function sanitizeBlocksJson(blocks: string): string {
     }
 }
 
-/** me 页 30 天写作曲线：按日的字数总和。 */
+/** me 页 30 天写作曲线：按日的字数总和（日记口径，v8 起带 kind 过滤——笔记
+ *  字数不计入，me 页指标的「日记」语义保持不变，笔记指标待产品定义后另立）。 */
 export async function wordCountByDate(sinceDate: string): Promise<Map<string, number>> {
     const db = await getDb();
     const rows = await db.getAll<{ local_date: string; total: number }>(
-        'SELECT local_date, SUM(word_count) AS total FROM journals WHERE deleted_at IS NULL AND local_date >= ? GROUP BY local_date',
+        "SELECT local_date, SUM(word_count) AS total FROM journals WHERE deleted_at IS NULL AND kind = 'daily' AND local_date >= ? GROUP BY local_date",
         [sinceDate],
     );
     return new Map(rows.map((row) => [row.local_date, row.total]));
 }
 
-/** 有日记的日期集合（连续记录 streak 计算）。 */
+/**
+ * 有日记的日期集合（search 页日历打点专用，装饰性数据；streak 口径走
+ * activityDates 不走这里）。v8 起不筛 kind：笔记与日记同为可搜索内容
+ * （searchJournals 不筛 kind），打点口径与搜索结果保持一致——当天建了笔记同样点亮。
+ */
 export async function journalDates(limitDays = 400): Promise<Set<string>> {
     const db = await getDb();
     const rows = await db.getAll<{ local_date: string }>(
@@ -418,11 +786,12 @@ export async function journalDates(limitDays = 400): Promise<Set<string>> {
     return new Set(rows.map((row) => row.local_date));
 }
 
-/** 累计字数（me 页 KPI「累计字数」）：全部未软删日记的字数总和（空页 word_count=0 自然贡献 0）。 */
+/** 累计字数（me 页 KPI「累计字数」）：全部未软删日记的字数总和（空页 word_count=0
+ *  自然贡献 0；v8 起带 kind 过滤，笔记字数不计入——口径同 wordCountByDate）。 */
 export async function journalTotalWords(): Promise<number> {
     const db = await getDb();
     const row = await db.getFirst<{ words: number }>(
-        'SELECT COALESCE(SUM(word_count), 0) AS words FROM journals WHERE deleted_at IS NULL',
+        "SELECT COALESCE(SUM(word_count), 0) AS words FROM journals WHERE deleted_at IS NULL AND kind = 'daily'",
     );
     return row?.words ?? 0;
 }
@@ -438,7 +807,8 @@ export async function journalTotalWords(): Promise<number> {
  *    打开日记页时即自动建行（空段落 + word_count 0），旧口径 `WHERE deleted_at
  *    IS NULL` 把「打开但没写」的日子也计入 → journalDays/streak 被打开行为灌水
  *    （每天进一次首页 streak 就 +1）——2026-11 用户反馈「写过的日记天数有逻辑
- *    bug」的本体，此处修掉。
+ *    bug」的本体，此处修掉。v8 起另带 kind = 'daily' 过滤：独立笔记不计入本并集
+ *    （KPI 名目是「写过日记」，笔记指标待产品定义后另立，口径同 wordCountByDate）。
  * ②③ 事件创建日/更新日：updated_at 全部为用户编辑触碰（createEvent /
  *    updateEventBlocks / updateEventMeta，见 store 事件编排），无系统触碰路径；
  *    软删行排除。
@@ -463,6 +833,7 @@ export async function activityDates(): Promise<Set<string>> {
             SELECT j.local_date AS d
               FROM journals j
              WHERE j.deleted_at IS NULL
+               AND j.kind = 'daily'
                AND (j.word_count > 0
                     OR (j.title IS NOT NULL AND j.title <> '')
                     OR j.id IN (SELECT jm.journal_id FROM journal_media jm WHERE jm.deleted_at IS NULL))
@@ -538,8 +909,8 @@ export async function softDeleteJournalMediaByIds(ids: string[], at: number): Pr
 export async function insertTripMedia(row: Omit<TripMediaRow, 'deleted_at'>): Promise<void> {
     const db = await getDb();
     await db.run(
-        'INSERT INTO trip_media (id, trip_id, file_key, kind, width, height, duration_ms, created_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)',
-        [row.id, row.trip_id, row.file_key, row.kind, row.width, row.height, row.duration_ms, row.created_at],
+        'INSERT INTO trip_media (id, trip_id, file_key, kind, width, height, duration_ms, item_id, created_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)',
+        [row.id, row.trip_id, row.file_key, row.kind, row.width, row.height, row.duration_ms, row.item_id, row.created_at],
     );
 }
 
@@ -628,12 +999,6 @@ export async function upsertTripDayBackground(
     );
 }
 
-/** 清除某天背景指针（删行；背景媒体行软删与文件清理由 store 层编排）。 */
-export async function removeTripDayBackground(tripId: string, localDate: string): Promise<void> {
-    const db = await getDb();
-    await db.run('DELETE FROM trip_day_meta WHERE trip_id = ? AND local_date = ?', [tripId, localDate]);
-}
-
 /**
  * 按媒体 id 摘背景指针（removeTripMedia 的兜底联动）：任何路径软删行程媒体后
  * 调用，指针清零让该日卡降级文字卡——防「指针在、媒体行不在」的悬挂引用。
@@ -645,6 +1010,82 @@ export async function detachTripDayBackgroundByMediaId(mediaId: string, at: numb
         'UPDATE trip_day_meta SET background_media_id = NULL, updated_at = ? WHERE background_media_id = ?',
         [at, mediaId],
     );
+}
+
+// ─── trip items（v9：行程项，行程表页）──────────────────────────────────────
+// 备份边界说明：行程项暂不进导出/恢复（BackupRestorePayload 扩充需同步改
+// export.ts 的装配面，该文件不在本轮改动权限内）——恢复 v9 后备份包不携带
+// trip_items 行，导入后行程项为空属已知限制（媒体行的 item_id 关联照常进出，
+// 行程项本体待后续轮补齐备份链路）。
+
+/** 某天的行程项（行程表页数据源）：按 time ASC（排序即优先级，UI 层再按状态重排）。 */
+export async function listTripItemsByDay(tripId: string, date: string): Promise<TripItemRow[]> {
+    const db = await getDb();
+    return db.getAll<TripItemRow>(
+        'SELECT * FROM trip_items WHERE deleted_at IS NULL AND trip_id = ? AND local_date = ? ORDER BY time ASC',
+        [tripId, date],
+    );
+}
+
+/** 某行程全部行程项（删行程前收集通知 identifier 用，对齐 deleteTrip 的先收集后级联口径）。 */
+export async function listTripItemsByTrip(tripId: string): Promise<TripItemRow[]> {
+    const db = await getDb();
+    return db.getAll<TripItemRow>(
+        'SELECT * FROM trip_items WHERE deleted_at IS NULL AND trip_id = ? ORDER BY local_date ASC, time ASC',
+        [tripId],
+    );
+}
+
+export async function getTripItem(id: string): Promise<TripItemRow | null> {
+    const db = await getDb();
+    return db.getFirst<TripItemRow>('SELECT * FROM trip_items WHERE id = ? AND deleted_at IS NULL', [id]);
+}
+
+/**
+ * 插入行程项（store.createTripItem 编排）：id 由调用方生成（对齐 createTrip /
+ * createEvent 口径），title/time/日期合法性校验在 store 层（db 认列值）。
+ */
+export async function insertTripItem(row: Omit<TripItemRow, 'deleted_at'>): Promise<void> {
+    const db = await getDb();
+    await db.run(
+        `INSERT INTO trip_items (id, trip_id, local_date, time, title, description, status, created_at, updated_at, deleted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        [row.id, row.trip_id, row.local_date, row.time, row.title, row.description, row.status, row.created_at, row.updated_at],
+    );
+}
+
+/**
+ * 行程项状态更新（store.updateTripItemStatus 编排）：时间闸（未到点拒标
+ * done/failed）与合法值校验在 store 层，这里只落列值 + updated_at。
+ */
+export async function updateTripItemStatus(id: string, status: TripItemStatus): Promise<void> {
+    const db = await getDb();
+    await db.run('UPDATE trip_items SET status = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL', [
+        status,
+        Date.now(),
+        id,
+    ]);
+}
+
+/**
+ * 单条行程项软删（store.deleteTripItem 编排）：软删域约定（deleted_at +
+ * updated_at 同拍落）。关联媒体的摘除（item_id 置空、媒体行保留）由 store 层
+ * 调用 detachTripMediaByItemId 编排，通知取消亦在 store 层。
+ * @param at 统一的删除时间戳（同一事件一个时间，审计口径一致）
+ */
+export async function softDeleteTripItem(id: string, at: number): Promise<void> {
+    const db = await getDb();
+    await db.run('UPDATE trip_items SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL', [at, at, id]);
+}
+
+/**
+ * 按行程项摘媒体关联（store.deleteTripItem 编排）：只摘 item_id 指向（置 NULL），
+ * 媒体行保留——图片/视频本体仍是行程媒体，删除行程项不连带删媒体（产品口径：
+ * 记录留档，挂靠关系随项消失）。
+ */
+export async function detachTripMediaByItemId(itemId: string): Promise<void> {
+    const db = await getDb();
+    await db.run('UPDATE trip_media SET item_id = NULL WHERE item_id = ? AND deleted_at IS NULL', [itemId]);
 }
 
 // ─── events（v6：事件实体，类似工单）────────────────────────────────────────
@@ -763,6 +1204,27 @@ export async function listEvents(filter: { status?: EventStatus } = {}): Promise
     return db.getAll<EventRow>(
         'SELECT * FROM events WHERE deleted_at IS NULL ORDER BY updated_at DESC',
     );
+}
+
+/**
+ * 事件状态计数（Me 指标卡用）：未删行按 status 一次 GROUP BY 出三档
+ * （open = 进行中 / done = 完成 / failed = 失败），缺档补 0。
+ */
+export async function eventStatusCounts(): Promise<{
+    open: number;
+    done: number;
+    failed: number;
+}> {
+    const db = await getDb();
+    const rows = await db.getAll<{ status: EventStatus; n: number }>(
+        'SELECT status, COUNT(*) AS n FROM events WHERE deleted_at IS NULL GROUP BY status',
+    );
+    const byStatus = new Map(rows.map((row) => [row.status, row.n]));
+    return {
+        open: byStatus.get('open') ?? 0,
+        done: byStatus.get('done') ?? 0,
+        failed: byStatus.get('failed') ?? 0,
+    };
 }
 
 /**
@@ -904,34 +1366,16 @@ export async function listDayPlansByTrip(tripId: string): Promise<DayPlanRow[]> 
     );
 }
 
-export async function insertDayPlan(row: Omit<DayPlanRow, 'deleted_at'>): Promise<void> {
-    const db = await getDb();
-    await db.run(
-        'INSERT INTO day_plans (id, trip_id, local_date, content, sort_order, done, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)',
-        [row.id, row.trip_id, row.local_date, row.content, row.sort_order, row.done, row.created_at, row.updated_at],
-    );
-}
-
 export async function setDayPlanDone(id: string, done: boolean): Promise<void> {
     const db = await getDb();
     await db.run('UPDATE day_plans SET done = ?, updated_at = ? WHERE id = ?', [done ? 1 : 0, Date.now(), id]);
 }
 
-/** 下一个排序号（同行程同日期内追加到末尾）。 */
-export async function nextDayPlanSortOrder(tripId: string, localDate: string): Promise<number> {
-    const db = await getDb();
-    const row = await db.getFirst<{ max_sort: number | null }>(
-        'SELECT MAX(sort_order) AS max_sort FROM day_plans WHERE trip_id = ? AND local_date = ? AND deleted_at IS NULL',
-        [tripId, localDate],
-    );
-    return (row?.max_sort ?? -1) + 1;
-}
-
 /**
  * 单条逐日计划软删（行程详情计划行长按删除入口）：软删域约定（对齐
  * softDeleteTripCascade 的 day_plans 段——deleted_at + updated_at 同拍落，
- * 列结构见 insertDayPlan 的 INSERT 列清单），轻量行级操作**不经 store**，
- * 由屏层（trip-detail-screen）直连调用——同本节 insertDayPlan / setDayPlanDone
+ * 列结构见 migrations 的 day_plans 建表段），轻量行级操作**不经 store**，
+ * 由屏层（trip-detail-screen）直连调用——同本节 setDayPlanDone
  * 的既有取径。删除后的刷新广播由调用方负责（列表重载 +
  * data-revision.notifyDataRevision 中立层广播）。
  * @param at 统一的删除时间戳（同一事件一个时间，审计口径一致）

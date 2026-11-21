@@ -19,6 +19,7 @@ import {
     BouncyPressable,
     createIcon,
     LucideBookOpen,
+    LucideImagePlay,
     LucidePencil,
     LucidePlus,
     LucideTrash,
@@ -50,10 +51,11 @@ import { imagePicker } from '@/core/image-picker';
 import { audio } from '@/core/audio';
 import { fileStorage } from '@/core/file-storage';
 import { mediaLibrary, MediaLibraryError } from '@/core/media-library';
+import { videoThumbnails } from '@/core/video-thumbnails';
+// 视频转 GIF 编排（M3）：抽帧 → 编码 → 存相册，失败 throw 由本屏 catch 上浮
+import { convertVideoToGif } from './video-gif';
 import { useArchiveRevision, useArchiveStore, aggregateSaveProgress, ensureVideoThumbnail } from './store';
 import {
-    canInsertImages,
-    countImageBlocks,
     dissolveStackBlocks,
     insertPendingBlock,
     isEditable,
@@ -68,10 +70,9 @@ import {
     resolvePendingBlock,
     todayEntryDate,
     wordCount,
-    JOURNAL_IMAGE_LIMIT,
     type JournalBlock,
 } from './journal-logic';
-import { formatDateParts } from './trip-logic';
+import { formatDateParts, tripDisplayTitle } from './trip-logic';
 import { getJournal, getTrip, mediaByJournalIds } from './db';
 import type { JournalMediaRow, JournalRow, TripRow } from './db';
 import { safeBack } from './ui';
@@ -92,10 +93,21 @@ import {
     usePalette,
 } from './ui';
 
-/** 每篇日记的媒体上限（防误触爆量；商业版放开为分页）。图片另有更严的
- *  JOURNAL_IMAGE_LIMIT = 9（journal-logic，微信九图口径）——图片路径两道
- *  闸都过，视频/音频仍只受本值约束。 */
-const MAX_MEDIA = 12;
+/**
+ * 笔记模式的 + 选择器行词表（v8）：全行裁「完成收笔」——笔记 status 恒 'open'，
+ * 无收笔/24:00 语义（schema.ts JournalKind 注）。InsertMenu 的 actions 过滤
+ * 机制（事件编辑器同款接线面）收敛在词表一个常量上：过滤不重排，行序仍由
+ * 组件内 allRows 决定；complete 确认步随行退场不可达，runInsert 的 'complete'
+ * 分支成为日常模式专属路径。
+ */
+const NOTE_INSERT_ACTIONS: readonly InsertAction[] = [
+    'library-image',
+    'library-video',
+    'record',
+    'photo',
+    'video',
+    'append-text',
+];
 
 /**
  * 多选模式状态（屏层持有，discriminated union 防两用途互串）：
@@ -161,6 +173,15 @@ const ListChecksIcon = createIcon(
 /**
  * 连续日记编辑器（行程/日常通用）——三种入口：不传参 = 今天日常；
  * tripId+date = 行程某天；journalId = 直达某篇。
+ *
+ * **笔记模式（v8 独立笔记复用本编辑器，单一实现源）**：/note/[id] 路由以
+ * journalId 挂载笔记行，屏内按 journal.kind === 'note' 分流（不设独立 prop
+ * ——行类型即模式事实源，错传日记 id 也天然回落日记行为；journalId 载入路径
+ * 本就跳过 ensureTodayJournal，笔记侧零改动）：笔记 status 恒 'open'、无收笔
+ * 语义——+ 选择器按 NOTE_INSERT_ACTIONS 裁「完成收笔」行、屏头「进行中/已
+ * 收笔」状态位不渲染、录制归属标签无标题时落「未命名笔记」而非「M月D日 日记」
+ * ；重命名（updateJournalTitle 对 open 笔记有效）/正文/媒体/录音按 journalId
+ * 天然可用。日常（daily）路径行为零变化。
  *
  * 沉浸化交互承诺（#1/#6/#7，DEV.md）：
  * - 底部工具坞清空：保存状态与字数上 masthead（轻量 meta 行），底部只留
@@ -405,12 +426,10 @@ export function JournalEditScreen({
         // eslint-disable-next-line react-hooks/exhaustive-deps -- applyBlocks 稳定引用（useCallback []）
     }, []);
 
-    // 在途媒体上传注册表（进程内 Map）：pendingId → { promise, kind }——
-    // 多任务并行、互不影响；完成收笔经 allSettled 等待全部收敛；任务收敛即
-    // 自摘除（见 doAttach）。
-    const pendingUploadsRef = useRef(
-        new Map<string, { promise: Promise<void>; kind: 'image' | 'video' | 'audio' }>(),
-    );
+    // 在途媒体上传注册表（进程内 Map）：pendingId → promise——多任务并行、
+    // 互不影响；完成收笔经 allSettled 等待全部收敛；任务收敛即自摘除（见
+    // doAttach）。（kind 槽已随媒体数量上限移除退役——原仅供图片配额计数）
+    const pendingUploadsRef = useRef(new Map<string, Promise<void>>());
     // 相册选取互斥（系统 picker 单例，防重复拉起）
     const pickingRef = useRef(false);
 
@@ -419,6 +438,10 @@ export function JournalEditScreen({
     selectModeRef.current = selectMode;
 
     const editable = journal ? isEditable(journal.status) : false;
+    // 笔记模式判定（v8）：行 kind 即模式事实源（见文件头笔记模式段）。载入前
+    // 恒 false 无竞态面——+ 菜单由 FAB（editable 门控）打开、屏头分支在
+    // journal 就绪后才渲染，两处消费都发生在判定为真值之后
+    const isNote = journal?.kind === 'note';
     const saving = store((s) => s.savingJournal);
     // 全局录制会话状态投影（+ 菜单状态行「录音中 0:32 · 继续」）：owner 本尊
     // 与非 owner 屏都展示（任意页面可重开），停止产物一律归发起笔记
@@ -512,6 +535,19 @@ export function JournalEditScreen({
                     ? '经分享面板保存'
                     : '存入手机相册';
         return { kind: row.kind, hint };
+    })();
+    /**
+     * 「转成 GIF」行数据（M3，视频块操作卡）：仅就绪视频块 + 抽帧能力可达
+     * （web 无原生抽帧，行不出现）。hint 如实说明 v1 抽帧窗口（前 4 秒、
+     * 每 0.5 秒一帧）——固定窗口是确定性路径（时长探测需要播放器通道），
+     * 文案不夸大成「全片转换」。
+     */
+    const canConvertGif = (() => {
+        if (actionBlock?.t !== 'media' || actionBlock.mediaId === PENDING_MEDIA_ID) return null;
+        const row = mediaById.get(actionBlock.mediaId);
+        if (!row || row.kind !== 'video') return null;
+        if (!videoThumbnails.isSupported()) return null;
+        return { ok: true as const };
     })();
     /** 多选切换（选择顺序保持追加序，合并重排按此顺序落位；指定删除即删除
      *  清单）。指定删除白名单守卫：目标堆叠之外的块不可勾（编辑器侧已用
@@ -611,8 +647,8 @@ export function JournalEditScreen({
      * 任务不受影响。**只插媒体块**：不追加空文本段、不自动聚焦（想写字自己
      * 点 + →「添加输入框」）。落点/回填走 journal-logic 纯函数（v9 语义）：
      * 占位真实文末追加、回填原位替换；失败仅移除占位。
-     * 守卫在入口同步判定：媒体总量（含在途占位）与图片九图配额（已就绪图片
-     * + 在途图片任务计数）。updater 一律纯函数（块 id 在 updater 外预生成）。
+     * 媒体数量上限已按用户指令全域移除（2026-11-20）：插入入口不再设总量/
+     * 九图配额闸。updater 一律纯函数（块 id 在 updater 外预生成）。
      */
     const doAttach = (
         kind: 'image' | 'video' | 'audio',
@@ -623,27 +659,6 @@ export function JournalEditScreen({
     ): void => {
         const row = journalRef.current;
         if (!row || !isEditable(row.status)) return;
-        // 媒体总量守卫：blocks 已含在途 pending 占位（同为 t:'media'，天然计入）
-        if (blocksRef.current.filter((block) => block.t === 'media').length >= MAX_MEDIA) {
-            store.setState({ error: `本篇媒体最多 ${MAX_MEDIA} 个。` });
-            return;
-        }
-        // 图片配额守卫（微信九图口径）：已就绪图片 + 在途图片任务数
-        if (kind === 'image') {
-            let pendingImages = 0;
-            for (const entry of pendingUploadsRef.current.values()) {
-                if (entry.kind === 'image') pendingImages += 1;
-            }
-            const imageCount =
-                countImageBlocks(
-                    blocksRef.current,
-                    (mediaId) => mediaById.get(mediaId)?.kind === 'image',
-                ) + pendingImages;
-            if (!canInsertImages(imageCount, 1)) {
-                store.setState({ error: `图片最多 ${JOURNAL_IMAGE_LIMIT} 张。` });
-                return;
-            }
-        }
         const pendingId = newBlockId();
         applyBlocks((current) => insertPendingBlock(current, pendingId));
         const label = kind === 'video' ? '视频' : kind === 'audio' ? '录音' : '图片';
@@ -678,7 +693,7 @@ export function JournalEditScreen({
                 applyBlocks((current) => resolvePendingBlock(current, pendingId, null));
             }
         })();
-        pendingUploadsRef.current.set(pendingId, { promise: task, kind });
+        pendingUploadsRef.current.set(pendingId, task);
         void task.then(() => {
             pendingUploadsRef.current.delete(pendingId);
         });
@@ -693,12 +708,10 @@ export function JournalEditScreen({
     /**
      * 相册通道（多选，2026-11）：权限 → 批量选图/选视频 → 按选取顺序逐张
      * 插入流（doAttach 同步插 pending 占位即返回，后台异步并行上传）。图片
-     * 与视频通道都开 allowsMultipleSelection，多选上限 = 入口处先算好的剩余
-     * 配额（图片 = 九图配额与全媒体双闸取小；视频 = 全媒体闸），经
-     * selectionLimit 传给系统 picker（到量即不可再选）；部分环境（老版
-     * Android 选择器/web）不严格执行 selectionLimit，返回超出部分在插入侧
-     * 预裁掉并提示已插数量——doAttach 内逐张配额守卫仍是权威兜底（选取
-     * 期间后台拍摄会话可能并发落库，入口快照会过期）。
+     * 与视频通道都开 allowsMultipleSelection，不设 selectionLimit——媒体
+     * 数量上限已按用户指令全域移除（2026-11-20），选取数量不封顶；
+     * orderedSelection（iOS 15+）= 序号角标 + 严格按选取顺序返回，
+     * Android/web 忽略。
      */
     const pick = async (kind: 'image' | 'video') => {
         const row = journalRef.current;
@@ -717,63 +730,20 @@ export function JournalEditScreen({
                     return;
                 }
             }
-            // 剩余配额快照（多选上限）：媒体总量含在途 pending 占位（同为
-            // t:'media' 天然计入）；图片配额 = 已就绪图片 + 在途图片任务数
-            //（微信九图口径，canInsertImages 同一判定）。媒体闸先判（图片
-            // 也受 MAX_MEDIA 约束，两道闸都过才放行）
-            const mediaCount = blocksRef.current.filter((block) => block.t === 'media').length;
-            const mediaSlots = MAX_MEDIA - mediaCount;
-            if (mediaSlots <= 0) {
-                store.setState({ error: `本篇媒体最多 ${MAX_MEDIA} 个。` });
-                return;
-            }
-            let selectionLimit: number;
-            if (kind === 'image') {
-                let pendingImages = 0;
-                for (const entry of pendingUploadsRef.current.values()) {
-                    if (entry.kind === 'image') pendingImages += 1;
-                }
-                const imageCount =
-                    countImageBlocks(
-                        blocksRef.current,
-                        (mediaId) => mediaById.get(mediaId)?.kind === 'image',
-                    ) + pendingImages;
-                const imageSlots = JOURNAL_IMAGE_LIMIT - imageCount;
-                if (imageSlots <= 0) {
-                    store.setState({ error: `图片最多 ${JOURNAL_IMAGE_LIMIT} 张。` });
-                    return;
-                }
-                selectionLimit = Math.min(imageSlots, mediaSlots);
-            } else {
-                selectionLimit = mediaSlots;
-            }
             const result = await imagePicker.launchImageLibraryAsync({
                 mediaTypes: [kind === 'video' ? 'videos' : 'images'],
-                // 多选（图片/视频通道都开）：上限 = 剩余配额；orderedSelection
-                // （iOS 15+）= 序号角标 + 严格按选取顺序返回，Android/web 忽略
+                // 多选（图片/视频通道都开）不设上限；orderedSelection（iOS 15+）
+                // = 序号角标 + 严格按选取顺序返回，Android/web 忽略
                 allowsMultipleSelection: true,
-                selectionLimit,
                 orderedSelection: true,
                 quality: 1,
                 exif: false,
             });
             if (result.canceled || result.assets.length === 0) return;
             // picked 顺序 = 插入顺序：assets 按选取序逐张同步插 pending 占位
-            //（各自独立后台任务并行上传，占位块各挂各的进度）；超出剩余配额
-            // 的尾部裁掉（selectionLimit 不被严格执行的环境兜底），提示已插
-            // 数量而非静默吞掉
-            const allowed = result.assets.slice(0, selectionLimit);
-            for (const asset of allowed) {
+            //（各自独立后台任务并行上传，占位块各挂各的进度）
+            for (const asset of result.assets) {
                 doAttach(kind, asset.uri, asset.width ?? null, asset.height ?? null);
-            }
-            const overflow = result.assets.length - allowed.length;
-            if (overflow > 0) {
-                store.setState({
-                    error:
-                        kind === 'image'
-                            ? `已插入 ${allowed.length} 张，其余 ${overflow} 张超出图片上限（${JOURNAL_IMAGE_LIMIT} 张）。`
-                            : `已插入 ${allowed.length} 个，其余 ${overflow} 个超出媒体上限（${MAX_MEDIA} 个）。`,
-                });
             }
         } catch (caught) {
             store.setState({
@@ -784,11 +754,14 @@ export function JournalEditScreen({
         }
     };
 
-    /** 归属提示名（发起会话时冻结）：有标题用标题，无标题回退「M月D日 日记」。 */
+    /** 归属提示名（发起会话时冻结）：有标题用标题；无标题按实体种类回退——
+     *  日记落「M月D日 日记」，笔记落「未命名笔记」（笔记无「当天一页」语义，
+     *  日期口径不属于它，v8；与卡片列表的「未命名笔记」兜底同文案）。 */
     const captureOwnerLabel = () => {
         const current = journalRef.current;
         const label = current?.title?.trim();
-        return label ? label : `${monthDay} 日记`;
+        if (label) return label;
+        return current?.kind === 'note' ? '未命名笔记' : `${monthDay} 日记`;
     };
 
     /**
@@ -811,9 +784,7 @@ export function JournalEditScreen({
         if (pendingUploadsRef.current.size > 0) {
             setFinishing(true);
             try {
-                await Promise.allSettled(
-                    Array.from(pendingUploadsRef.current.values(), (entry) => entry.promise),
-                );
+                await Promise.allSettled(Array.from(pendingUploadsRef.current.values()));
             } finally {
                 setFinishing(false);
             }
@@ -1098,6 +1069,45 @@ export function JournalEditScreen({
         }
     };
 
+    // 「转成 GIF」在途镜像（ref 守卫防双击双跑，同 savingToPhoneRef 口径）
+    const convertingGifRef = useRef(false);
+    const [convertingGif, setConvertingGif] = useState(false);
+
+    /**
+     * 块操作卡「转成 GIF」（M3 视频转 GIF）：file-storage 本地 URI → 抽帧
+     * （前 4 秒每 0.5 秒一帧，≤360px）→ GIF89a 编码 → media-library.saveAsync
+     * 存相册（web 下载）。反馈口径与「保存到手机」一致：成功关闭卡片即反馈
+     * （文件落相册本身是结果）；失败保持卡片打开可重试 + 红字上浮。in-flight
+     * 期间行转 spinner + 全行禁用（见 BlockActionCard）。
+     */
+    const convertActionBlockToGif = async () => {
+        const block = actionBlock;
+        const row = block && block.t === 'media' ? mediaById.get(block.mediaId) : null;
+        // 行出现条件已门控（canConvertGif），这里双保险
+        if (!row || row.kind !== 'video') return;
+        if (convertingGifRef.current) return;
+        convertingGifRef.current = true;
+        setConvertingGif(true);
+        try {
+            // web blob: URL 引用即用即还（native 为 file:// 直路径，revoke 幂等 no-op）
+            const uri = await fileStorage.url(row.file_key);
+            try {
+                // 成功静默（保存到手机同口径）：GIF 落相册即反馈，不写成功文案进
+                // store.error（负向红字横幅）；失败走 catch 上浮
+                await convertVideoToGif(uri, row.file_key.split('/').pop() ?? 'video');
+                setActionBlockId(null);
+            } finally {
+                fileStorage.revokeUrl(uri);
+            }
+        } catch (caught) {
+            const detail = caught instanceof Error ? caught.message : String(caught);
+            store.setState({ error: `GIF 转换失败：${detail}` });
+        } finally {
+            convertingGifRef.current = false;
+            setConvertingGif(false);
+        }
+    };
+
     // + 菜单状态行数据（全局会话进行中且本屏可编辑时展示）：「● 录音中 0:32 ·
     // 继续」点按重开全局覆盖层（无缝恢复）；副标按 owner 身份分流——归属
     // 铁律可视化：非 owner 屏明示「素材将保存到发起的笔记」
@@ -1207,20 +1217,25 @@ export function JournalEditScreen({
                             </BouncyPressable>
                         ) : null}
                     </View>
-                    {/* 日期行（#3 恢复第六轮前排版）：30 报头阶 + 右侧状态位 */}
+                    {/* 日期行（#3 恢复第六轮前排版）：30 报头阶 + 右侧状态位。
+                        笔记模式状态位整体退场：「进行中/已收笔」是日记的收笔语义
+                        （24:00 自动收笔/手动完成），笔记 status 恒 'open'，渲染它
+                        是误导（v8）；日期（创建日）保留，左缘基线不受影响 */}
                     <View className="flex-row items-baseline justify-between">
                         <Text className="text-[30px] font-semibold tracking-wide text-ink-text dark:text-inkd-text">
                             {monthDay}
                         </Text>
-                        <Text
-                            className={`text-[11px] font-medium ${
-                                editable
-                                    ? 'text-ink-accent dark:text-inkd-accent'
-                                    : 'text-ink-muted dark:text-inkd-muted'
-                            }`}
-                        >
-                            {editable ? '进行中' : '已收笔'}
-                        </Text>
+                        {isNote ? null : (
+                            <Text
+                                className={`text-[11px] font-medium ${
+                                    editable
+                                        ? 'text-ink-accent dark:text-inkd-accent'
+                                        : 'text-ink-muted dark:text-inkd-muted'
+                                }`}
+                            >
+                                {editable ? '进行中' : '已收笔'}
+                            </Text>
+                        )}
                     </View>
                     {/* meta 行（#3）：随机安慰话 + 字数/保存状态（tabular-nums 房规） */}
                     <View className="mt-0.5 flex-row items-baseline justify-between">
@@ -1251,7 +1266,7 @@ export function JournalEditScreen({
                             numberOfLines={1}
                             className="mt-1.5 text-[12px] text-ink-muted dark:text-inkd-muted"
                         >
-                            {trip.icon ?? TRIP_ICON_DEFAULT} {trip.title}
+                            {trip.icon ?? TRIP_ICON_DEFAULT} {tripDisplayTitle(trip.title)}
                         </Text>
                     ) : null}
                 </View>
@@ -1427,6 +1442,8 @@ export function JournalEditScreen({
                     groupId={actionBlock?.t === 'media' ? actionBlock.groupId ?? null : null}
                     saveToPhone={saveToPhone}
                     savingToPhone={savingToPhone}
+                    toGif={canConvertGif}
+                    convertingGif={convertingGif}
                     onMove={moveActionBlock}
                     onDelete={removeActionBlock}
                     onDeleteDeck={removeActionDeck}
@@ -1434,6 +1451,7 @@ export function JournalEditScreen({
                     onMergeStack={openMergeSelect}
                     onDissolveStack={dissolveActionStack}
                     onSaveToPhone={() => void saveActionBlockToPhone()}
+                    onConvertGif={() => void convertActionBlockToGif()}
                     onClose={() => setActionBlockId(null)}
                 />
             ) : null}
@@ -1463,6 +1481,9 @@ export function JournalEditScreen({
             {menuOpen ? (
                 <InsertMenu
                     onClose={() => setMenuOpen(false)}
+                    // 笔记模式裁「完成收笔」行（词表见 NOTE_INSERT_ACTIONS 注）；
+                    // 日常模式传 undefined = 全行，行为零变化
+                    actions={isNote ? NOTE_INSERT_ACTIONS : undefined}
                     activeCapture={activeCapture}
                     onAction={(action) =>
                         void runInsert(action).catch((caught) => {
@@ -1712,6 +1733,8 @@ function BlockActionCard({
     groupId,
     saveToPhone,
     savingToPhone,
+    toGif,
+    convertingGif,
     onMove,
     onDelete,
     onDeleteDeck,
@@ -1719,6 +1742,7 @@ function BlockActionCard({
     onMergeStack,
     onDissolveStack,
     onSaveToPhone,
+    onConvertGif,
     onClose,
 }: {
     /** 当前块下标（单块路径决定上移/下移禁用态；堆叠路径按 deck 组界判定）。 */
@@ -1736,6 +1760,10 @@ function BlockActionCard({
     saveToPhone: { kind: 'image' | 'video' | 'audio'; hint: string } | null;
     /** 保存到手机在途（保存行 spinner + 禁用）。 */
     savingToPhone: boolean;
+    /** 「转成 GIF」行开关（M3，仅就绪视频块 + 抽帧能力可达；null = 不出现）。 */
+    toGif: { ok: true } | null;
+    /** GIF 转换在途（行 spinner + 禁用）。 */
+    convertingGif: boolean;
     onMove(direction: -1 | 1): void;
     onDelete(): void;
     onDeleteDeck(): void;
@@ -1743,6 +1771,7 @@ function BlockActionCard({
     onMergeStack(): void;
     onDissolveStack(): void;
     onSaveToPhone(): void;
+    onConvertGif(): void;
     onClose(): void;
 }) {
     const palette = usePalette();
@@ -1759,14 +1788,13 @@ function BlockActionCard({
     // 组尾块之下无块才能下移）；单块路径按锚块下标（原口径）
     const canUp = deck ? deck.firstIndex > 0 : index > 0;
     const canDown = deck ? deck.lastIndex < total - 1 : index < total - 1;
-    // 整组移动的提示语（堆叠锚块行 hint，标明「全部移动不是单张」的语义落点）
-    const moveHint = deck ? `整组 ${deck.size} 张` : null;
+    // 从简口径（2026-11-19 用户指令）：行副标描述全线退役（hint 槽仅存
+    // spinner 在途反馈，标题自释）
     const rows: Array<{
         key: string;
         icon: React.ReactNode;
         label: string;
-        hint?: string | null;
-        /** hint 槽转 spinner（in-flight 反馈；与 hint 互斥）。 */
+        /** hint 槽转 spinner（in-flight 反馈）。 */
         spinner?: boolean;
         danger?: boolean;
         disabled: boolean;
@@ -1775,16 +1803,14 @@ function BlockActionCard({
         {
             key: 'up',
             icon: <ChevronUpIcon size={18} strokeWidth={1.9} color={palette.secondary} />,
-            label: '上移',
-            hint: moveHint,
+            label: '上移一格',
             disabled: !canUp,
             onPress: () => onMove(-1),
         },
         {
             key: 'down',
             icon: <ChevronDownIcon size={18} strokeWidth={1.9} color={palette.secondary} />,
-            label: '下移',
-            hint: moveHint,
+            label: '下移一格',
             disabled: !canDown,
             onPress: () => onMove(1),
         },
@@ -1794,7 +1820,6 @@ function BlockActionCard({
                       key: 'merge-stack',
                       icon: <LayersIcon size={18} strokeWidth={1.9} color={palette.secondary} />,
                       label: '合并堆叠',
-                      hint: '勾选多张图/视频合成一组',
                       disabled: false,
                       onPress: onMergeStack,
                   },
@@ -1806,7 +1831,6 @@ function BlockActionCard({
                       key: 'dissolve-stack',
                       icon: <UngroupIcon size={18} strokeWidth={1.9} color={palette.secondary} />,
                       label: '解散堆叠',
-                      hint: '移出堆叠，恢复独立排列',
                       disabled: false,
                       onPress: onDissolveStack,
                   },
@@ -1817,12 +1841,23 @@ function BlockActionCard({
                   {
                       key: 'save-to-phone',
                       icon: <DownloadIcon size={18} strokeWidth={1.9} color={palette.secondary} />,
-                      label: '保存到手机',
+                      label: '存到手机',
                       // in-flight：hint 槽转 spinner（保存中可见反馈，行禁用防重复触发）
-                      hint: savingToPhone ? null : saveToPhone.hint,
                       spinner: savingToPhone,
                       disabled: savingToPhone,
                       onPress: onSaveToPhone,
+                  },
+              ]
+            : []),
+        ...(toGif
+            ? [
+                  {
+                      key: 'convert-gif',
+                      icon: <LucideImagePlay size={18} strokeWidth={1.9} color={palette.secondary} />,
+                      label: '转成动图',
+                      spinner: convertingGif,
+                      disabled: convertingGif,
+                      onPress: onConvertGif,
                   },
               ]
             : []),
@@ -1834,7 +1869,6 @@ function BlockActionCard({
                           <ListChecksIcon size={18} strokeWidth={1.9} color={palette.secondary} />
                       ),
                       label: '指定删除',
-                      hint: '勾选堆叠内单张',
                       disabled: false,
                       onPress: onSelectDelete,
                   },
@@ -1843,7 +1877,6 @@ function BlockActionCard({
                       key: 'delete-deck',
                       icon: <LucideTrash size={16} strokeWidth={1.9} color={palette.negative} />,
                       label: '删除整组',
-                      hint: `${deck.size} 张全部删除`,
                       danger: true,
                       disabled: false,
                       onPress: onDeleteDeck,
@@ -1855,8 +1888,8 @@ function BlockActionCard({
             key: 'delete',
             icon: <LucideTrash size={16} strokeWidth={1.9} color={palette.negative} />,
             // 堆叠锚块：本行只删当前显示的前卡成员（整组走「删除整组」、逐张
-            // 勾选走「指定删除」——三条删除路径语义互斥不打架）
-            label: deck ? '删除当前张' : '删除',
+            // 勾选走「指定删除」——三条删除路径语义互斥不打架）；行名统一四字
+            label: deck ? '删除此张' : '删除本块',
             danger: true,
             disabled: false,
             onPress: onDelete,
@@ -1870,7 +1903,7 @@ function BlockActionCard({
                 onPress={onClose}
                 accessibilityLabel="关闭块操作"
             >
-                <Pressable className="w-full max-w-xs rounded-card bg-ink-base p-2 dark:bg-inkd-base">
+                <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base">
                     {/* 卡头（关闭语言统一 #8）：题 + 右上关闭钮；堆叠锚块标明
                         「这一堆」（操作语义 = 整组），单块保持「这一块」 */}
                     <View className="flex-row items-center justify-between pl-4 pr-1.5 pt-0.5">
@@ -1880,48 +1913,38 @@ function BlockActionCard({
                         {/* 44 视觉盒：左邻题文字非按压体，右侧贴卡内边距，无重叠核算项 */}
                         <CloseButton onPress={onClose} />
                     </View>
-                    <View className="gap-0.5">
-                        {/* 行高 44 视觉盒 ≥44：不传 hitSlop（0）；行间 gap-0.5(2px)
-                            为不可点间隙，命中盒无重叠。onPress 恒挂接 + disabled 显式
-                            传导（#3 条件置空显式化）：row.disabled 随移动操作翻转，
-                            条件置空会在翻转瞬间重配置 Pressability 吞首点 */}
+                    {/* 单容器行组（2026-11-19 与 + 菜单统一：rounded-card surface
+                        包裹，行 h-12 贴靠零线条，裸图标 + 题单行，行级 active:bg
+                        高亮）。onPress 恒挂接 + disabled 显式传导（#3 条件置空
+                        显式化）：row.disabled 随移动操作翻转，条件置空会在翻转
+                        瞬间重配置 Pressability 吞首点 */}
+                    <View className="mt-3 overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface">
                         {rows.map((row) => (
-                            <BouncyPressable
+                            <Pressable
                                 key={row.key}
                                 onPress={row.onPress}
                                 disabled={row.disabled}
-                                scaleTo={0.98}
+                                className={`h-12 flex-row items-center gap-3 px-4 active:bg-ink-raised dark:active:bg-inkd-raised ${
+                                    row.disabled ? 'opacity-30' : ''
+                                }`}
+                                accessibilityRole="button"
+                                accessibilityLabel={row.label}
                             >
-                                <View
-                                    className={`h-11 flex-row items-center gap-3 rounded-control bg-ink-surface px-3.5 dark:bg-inkd-surface ${
-                                        row.disabled ? 'opacity-30' : ''
+                                <View pointerEvents="none">{row.icon}</View>
+                                <Text
+                                    className={`flex-1 text-[15px] font-medium ${
+                                        row.danger
+                                            ? 'text-ink-negative dark:text-inkd-negative'
+                                            : 'text-ink-text dark:text-inkd-text'
                                     }`}
-                                    accessibilityRole="button"
-                                    accessibilityLabel={row.label}
                                 >
-                                    <View pointerEvents="none">{row.icon}</View>
-                                    <Text
-                                        className={`text-[15px] font-medium ${
-                                            row.danger
-                                                ? 'text-ink-negative dark:text-inkd-negative'
-                                                : 'text-ink-text dark:text-inkd-text'
-                                        }`}
-                                    >
-                                        {row.label}
-                                    </Text>
-                                    {row.hint ? (
-                                        <Text
-                                            numberOfLines={1}
-                                            className="ml-auto shrink text-[11px] text-ink-muted dark:text-inkd-muted"
-                                        >
-                                            {row.hint}
-                                        </Text>
-                                    ) : row.spinner ? (
-                                        // in-flight 反馈（保存到手机）：hint 槽位原位转 spinner
-                                        <ActivityIndicator size="small" color={palette.secondary} />
-                                    ) : null}
-                                </View>
-                            </BouncyPressable>
+                                    {row.label}
+                                </Text>
+                                {row.spinner ? (
+                                    // in-flight 反馈（保存到手机/转 GIF）：行尾 spinner
+                                    <ActivityIndicator size="small" color={palette.secondary} />
+                                ) : null}
+                            </Pressable>
                         ))}
                     </View>
                 </Pressable>

@@ -21,8 +21,6 @@ import * as db from './db';
 // event-logic.decorateEvent（列表与搜索共用同一装饰口径，避免两处漂移）。
 import {
     decorateEvent,
-    EVENTS_HEADER_TAGLINES,
-    pickEventCopy,
     type Event,
     type EventStatus,
     type EventSubjectKind,
@@ -101,9 +99,9 @@ type EventMetaPatch = Parameters<
 /** 筛选四分段（需求口径：全部 / 进行中 / 已完成 / 已失败；默认进行中不变）。 */
 const FILTER_OPTIONS: Array<{ key: EventStatusFilter; label: string }> = [
     { key: 'all', label: '全部' },
-    { key: 'open', label: '进行中' },
-    { key: 'done', label: '已完成' },
-    { key: 'failed', label: '已失败' },
+    { key: 'open', label: '进行' },
+    { key: 'done', label: '完成' },
+    { key: 'failed', label: '失败' },
 ];
 
 /** 横滑激活阈值（dp）：水平位移先达 ±此值即激活（native 层与 failOffsetY 竞速）。
@@ -136,9 +134,7 @@ export function EventsScreen() {
     const [statusFilter, setStatusFilter] = useState<EventStatusFilter>('open');
     // 检索结果（null = 首载未完成 → LoadingView；[] = 已查无果 → 空态分流）
     const [results, setResults] = useState<Event[] | null>(null);
-    // 页头副标（需求口径：删除固定文案，随机话术池取一条）——useState 初始化器
-    // 每挂载固定一条，render 内直调会每次渲染换文案（副标闪烁）
-    const [tagline] = useState(() => pickEventCopy(EVENTS_HEADER_TAGLINES));
+    // 页头副标已删（2026-11-19 简洁化口径：屏头描述性副标全线退役）
 
     // ─── 检索执行：300ms 防抖 + 序号守卫（search 页同款）────────────────────
     const fetchSeq = useRef(0);
@@ -364,7 +360,7 @@ export function EventsScreen() {
                         {/* 触摸容器（无动画 style）：与内层动画容器分离，手势
                             命中坐标不被动画 transform 偏移 */}
                         <View className="flex-1">
-                            <ScreenHeader title="事件" subtitle={tagline} />
+                            <ScreenHeader title="事件" />
                             {/* 过渡层（仅状态切换时播放，只 transform/opacity）：
                                 切档不跟手——内容容器不随手指位移，拖动期间
                                 chips/屏头/卡框架恒静（用户口径「卡片不动，只有

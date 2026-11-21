@@ -39,10 +39,14 @@ import { runStartupOrphanMediaGc } from '@/features/archive/store';
 // 全局录制会话宿主（跨页面后台录制 + 归属铁律）：同 last-route/store 深路径直连
 // 先例——域 barrel index.ts 不在本次允许改动清单内。
 import { RecordingSessionHost, useRecordingSessionStore } from '@/features/archive/recording-session';
+// App 锁门禁（M3）：锁定覆盖层挂根层级（不卸载 Stack，解锁回原屏），三档配置
+// security.appLockMode（设置页安全卡切换，旧布尔字段兼容读取）。同上方深路径直连先例。
+import { AppLockGate } from '@/features/archive/app-lock';
 // web 端数据库降级提示条（持久库打不开 → 会话内存库兜底时常驻提示，native 恒
 // 渲染 null）：状态与决策收口在 core/database（web-fallback），此处仅挂载注入色板。
 import { WebStorageDegradationBanner } from '@/core/database';
 import { archiveConfig } from '@/config/archive';
+import { preventScreenCaptureAsync } from '@/core/screen-capture';
 
 /**
  * 播种锚点：Expo Go reload / 深链会直达「上次停留的屏」并播种为单屏栈——
@@ -122,6 +126,17 @@ export default function RootLayout() {
         if (!ready) void loadAll();
         applyThemePref(archiveConfig.get()['ui.theme'] as ThemePref);
     }, [ready, loadAll]);
+
+    useEffect(() => {
+        // 防截屏冷启生效（security.preventCapture）：设置页切档已即时生效，这里只把
+        // 持久化档位应用到本次会话——Android FLAG_SECURE 是窗口属性，进程重启必须重设。
+        // 只读一次不订阅：切档即时生效由设置页负责，双订阅会竞态
+        if (!archiveConfig.get()['security.preventCapture']) return;
+        preventScreenCaptureAsync().catch((caught: unknown) => {
+            // 失败只留痕不阻断启动（防截屏是增强层，不能挡住 app 可用）
+            console.warn('[screen-capture] 冷启应用防截屏档失败（本次会话不防截屏）：', caught);
+        });
+    }, []);
 
     useEffect(() => {
         // Android edge-to-edge 冷启自愈（2026-11-09 二轮审计修订生效域注释，
@@ -371,7 +386,7 @@ export default function RootLayout() {
     }
 
     return (
-        <>
+        <AppLockGate>
             {/* 状态栏绑定生效主题（'system' 档由 useEffectiveTheme 已解析为具体档）：
                 深色底用浅色内容，浅色底用深色内容 */}
             <StatusBar style={theme === 'dark' ? 'light' : 'dark'} />
@@ -395,10 +410,26 @@ export default function RootLayout() {
                     <Stack.Screen name="write" options={{ presentation: 'modal' }} />
                     <Stack.Screen name="trip/[id]/write/[date]" options={{ presentation: 'modal' }} />
                     <Stack.Screen name="journal/[id]" options={{ presentation: 'modal' }} />
+                    {/* 独立笔记（v8）：创建表单与编辑器都对齐 write/journal 的 modal
+                        口径——编辑/创建类流程（表单成功后 replace 进编辑器的连续动线） */}
+                    <Stack.Screen name="note/new" options={{ presentation: 'modal' }} />
+                    <Stack.Screen name="note/[id]" options={{ presentation: 'modal' }} />
                     {/* 搜索（DEV.md #5）：card 而非 modal——它是内容型目的地页（日历 + 长结果
                         列表滚动、键盘输入），需要整页高度与系统返回手势；modal 留给编辑/创建类
                         流程（write / journal / trip form），与本 Stack 既有分工一致 */}
                     <Stack.Screen name="search" />
+                    {/* 设置页（新1）：同 search 的内容型目的地页口径（card，整页滚动） */}
+                    <Stack.Screen name="settings" />
+                    {/* 笔记堆 / 行程堆（v8）：同 search 的内容型目的地页口径（card） */}
+                    <Stack.Screen name="notes" />
+                    <Stack.Screen name="trips" />
+                    {/* 搜索结果独立页（spec 路径参数 = 'all' 或编码 JSON 规格） */}
+                    <Stack.Screen name="search-results/[spec]" />
+                    {/* 行程表页（v9）：内容型目的地页，card 口径 */}
+                    <Stack.Screen name="trip/[id]/day/[date]" />
+                    {/* 笔记与行程堆叠库（v8）：Me 页「笔记」入口的内容型目的地页
+                        （横滑翻卡浏览），同 search/settings 的 card 口径——modal 留给
+                        编辑/创建类流程 */}
                     {/* 全屏媒体查看器（transparentModal）：root Stack 级窗口容器，位于 (tabs)
                         之上——tab 屏内任何覆盖层都盖不住 BottomTabView 的 tabBar 条带
                         （screens 容器 overflow:hidden + tabBar 后绘，Android 尤甚），路由化后
@@ -434,7 +465,7 @@ export default function RootLayout() {
                     text: getPalette(theme).negative,
                 }}
             />
-        </>
+        </AppLockGate>
     );
 }
 

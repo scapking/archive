@@ -7,31 +7,36 @@ import {
     BouncyPressable,
     LucideBookOpen,
     LucideCalendar,
+    LucideCheck,
     LucideChevronRight,
     LucideFlag,
+    LucidePencil,
     LucidePlay,
+    LucidePlus,
+    LucideTrash,
 } from '@/core/icons';
+import { haptics } from '@/core/haptics';
 import { useArchiveRevision, useArchiveStore } from './store';
 // 数据版本中立层（屏层消费同 me-screen 直连 notify 的先例反向）：deck 数据的
 // 刷新信号除 store revision 外还有屏层直连 db 广播的中立计数（计划增/勾/删），
 // 两者任一前进都要求 deck 重载（见下方 revision 驱动 loadAll 注）。
 import { useDataRevision } from './data-revision';
-import { getJournalByDate, listTripMediaByTrip } from './db';
+import * as db from './db';
+import type { EventRow, JournalBlock, JournalRow } from './db';
+import { formatDateGroupLabel, isEditable, parseBlocks, previewText } from './journal-logic';
+import { formatEventDateTime } from './event-logic';
 import {
-    formatDateGroupLabel,
-    isEditable,
-    parseBlocks,
-} from './journal-logic';
-import { formatTripSpan, pickDeckTrip, todayLocal } from './trip-logic';
-// useDeckSlotFront 走 ui 域内直连（域内直连模块与 ./db、./trip-logic 同纪律；
-// CloseButton 已收口进 ui/index.ts 出口，不再深取）
-import { useDeckSlotFront } from './ui/deck';
+    formatTripSpan,
+    todayLocal,
+    tripDisplayTitle,
+    tripTodayLabel,
+} from './trip-logic';
 import { requestViewer } from './viewer-request';
 import {
+    ActionMenuCard,
     CardDeck,
     CloseButton,
     ComposeFab,
-    EmptyState,
     LoadingView,
     ProgressBar,
     RenameCard,
@@ -41,56 +46,118 @@ import {
     useFileUrl,
     useJournalMedia,
     usePalette,
+    type ActionMenuRow,
+    type DeckItem,
 } from './ui';
-import type { JournalBlock, JournalRow } from './db';
 
 /**
- * Archive 首页：行程与当前日记两张卡，重叠、左右若隐若现（deck 几何/交互归
- * ui/deck.tsx，本屏只组装卡片内容）。
+ * Archive 首页：**动态多卡堆叠**（2026-11-19 用户指令「有多少都在那个卡片
+ * 显示，不再固定两张」）——日记（今天）/ 行程 / 事件 / 笔记四类实体的活跃项
+ * 全部进同一个图片堆（ui/card-pile 共享组件），左右滑动翻看，点前卡进内容
+ * （卡序 = 用户优先级指令：日记 > 行程 > 事件 > 笔记）。
+ * **卡片 UI 样式 = 原 deck 卡样式原样保留**（2026-11-19 用户澄清「没说改变
+ * 首页的卡片 ui 样式，只是增加多几个卡片」）：日记/行程卡沿用原 JournalCard /
+ * TripCard（封面、状态片、进度条全套），笔记/事件卡按同一卡面语言新增
+ * （eyebrow / 标题 / 描述 / meta 行，见 NoteDeckCard / EventDeckCard）。
  *
- * 卡片结构（DEV.md #3 垂直大重构）：**图上文下**——封面媒体区（行程首图/
- * 日记首图，全出血贴卡顶）在上，文字区四层节奏在下（eyebrow 行[日期/区间，
- * 11 muted tabular] / 标题[15 semibold] / 摘要 prose[引导行 15 text 1 行 +
- * 正文 13 muted 预算行数，媒体以轻量标记并入底 meta 行，不内联打断节奏] /
- * 底 meta + CTA）。理由：
- * 1. taste-skill 法则「一张主导图胜过六张小图」：封面占卡高约半，识别度最高；
- * 2. 露条识别度：后卡露出的 76px 竖条里，图片切片比文字切片更具可辨识度，
- *    「点露条换位」的核心交互因此更可发现；
- * 3. Apple Journal 卡片节奏：图像块 + 文字块两段式，段间靠留白不靠细线。
+ * - **进入口径（完成态不显示，用户指令）**：日记 = 今天不存在或 open（已收笔
+ *   不显示）；笔记 = 全部（无完成态）；行程 = planning + ongoing（finished
+ *   不显示）；事件 = 仅 open（done/failed 不显示）；
+ * - **类型标识（用户指令「卡片要有标识好区分」）**：每张卡 eyebrow 行带类型
+ *   前缀（日记/笔记/行程/事件）——日记与笔记是两个实体（journals.kind 列），
+ *   靠 eyebrow 一眼分辨；
+ * - **长按菜单**（原 useBlockActionGestures 手势保留在前卡内部；堆的
+ *   PanResponder 方向锁只认领水平拖拽，纯点按/长按从不认领，两套手势并存）：
+ *   日记卡 → 日记菜单（重命名/完成收笔/删除）；行程卡 → 行程菜单（按卡所属
+ *   行程）；笔记/事件卡不加菜单；
+ * - 点卡：日记 → /write；笔记 → /note/[id]；行程 → /trip/[id]；事件 →
+ *   /events/[id]。
  *
- * 容量自适应（DEV.md #3）：两卡高度由 deck 槽位几何恒等（top/bottom 0，前卡
- * 即基准），文字摘要区 flex-1 实测可用高度（onLayout）→ 摘要行数按整行取整
- * （floor，宁少勿截半行）；实测值不变不 setState（#15 防重渲）。
- *
- * 全屏预览：deck 封面点击 → requestViewer()（viewer-request 中立层）→ root
- * Stack 的 transparentModal 路由 /viewer 渲染 fullscreen-viewer。屏级 viewer
- * state（#16）随之退役——路由屏是 (tabs) 之上的窗口级容器，tabBar 条带
- * 盖不住的根因（tab 屏 screens 容器 overflow:hidden + tabBar 后绘）在路由层
- * 消除，本屏不再渲染任何全屏层。卡内命中区也由 64px 缩略图升级为整块封面
- * （≥44 口径远超）。
- *
- * 点前卡进内容 / 点后卡（露条）换位的 deck 交互不变；封面点击 = 预览媒体、
- * 文字区点击 = 进入内容（媒体可进全屏是既定口径，两者按区域分工不互斥）。
- * **空态导航（对齐笔记卡口径）**：行程侧空卡（还没有行程）点击 → /trip/new
- * 创建（此前空态点击无动作，是「点了没反应」的反馈根因），有行程 → /trip/[id]；
- * 笔记侧空卡/有内容均 → /write（编辑器自带建页语义，本来就可点）。
- * 笔记卡文字区**长按**（web 桌面双击，与媒体块同口径）→ 重命名设置卡
- * （条件渲染 scrim + 居中卡，同块操作卡范式；已收笔不可改，#7 入口先挡）。
+ * 数据刷新：trip 通道 = store.trips（任一版本前进即重跑 loadAll，既有口径）；
+ * 笔记/事件通道 = db 直读 + revision 重载（同 library 自持界面取径）；
+ * todayJournal = getJournalByDate 既有 effect；行程封面 = 每张行程卡内部
+ * useTripCover（原 deckTrip 单查升级为按卡查询，同值短路防重渲）。
  */
 
-/** 封面区比例与高度上限：窄屏按宽度收敛（16:10），宽屏不无限拉高（封顶 220）。 */
-const COVER_RATIO = 16 / 10;
-const COVER_MAX_HEIGHT = 220;
+/** deck 行程卡数据类型（屏侧组装的 store 装饰行）。 */
+type DeckTrip = ReturnType<typeof useArchiveStore.getState>['trips'][number];
 
-/** 摘要正文行高（与 leading-5 成对）：行数预算按整行取整，宁少勿截半行。
-    日记卡引导行（15px 1 行）是独立固定槽位，不参与行数预算。 */
-const JOURNAL_SUMMARY_LINE_HEIGHT = 20;
-const TRIP_SUMMARY_LINE_HEIGHT = 20;
+/**
+ * 行程菜单行（R2）：关闭行程仅进行中可达（end_date 落今天，明日起进入回忆
+ * ——当天仍进行中）；编辑仅未锁定（finished 只读，#7）；删除行二次确认 =
+ * title 换文案（从简口径：行副标描述全线退役，标题自释）；danger 色机制不变。
+ */
+function tripMenuRows(trip: DeckTrip, confirmDelete: boolean): ActionMenuRow[] {
+    return [
+        ...(trip.status === 'ongoing'
+            ? [{ key: 'close', icon: <LucideCheck size={20} strokeWidth={1.9} />, title: '关闭行程' }]
+            : []),
+        { key: 'new', icon: <LucidePlus size={20} strokeWidth={1.9} />, title: '新建行程' },
+        ...(trip.status !== 'finished'
+            ? [{ key: 'edit', icon: <LucidePencil size={20} strokeWidth={1.9} />, title: '编辑行程' }]
+            : []),
+        {
+            key: 'delete',
+            icon: <LucideTrash size={16} strokeWidth={1.9} />,
+            title: confirmDelete ? '再点一次' : '删除行程',
+            danger: true,
+        },
+    ];
+}
 
-/** 日记正文（第二级）拼接上限：13px 双行在卡内约 40–80 字，140 覆盖全部
-    可视需要并留余量，超出截断（numberOfLines 原生截断兜底，双省略号仅在
-    恰好压线的极端宽度出现）。 */
-const SUMMARY_BODY_MAX = 140;
+/**
+ * 日记菜单行（R3，措辞归位 2026-11-19：这堆卡是**日记**——每天一篇的
+ * /write 页，不是独立笔记，菜单词表全部用「日记」）：重命名/完成收笔仅
+ * open 态；删除行二次确认 = title 换文案。
+ */
+function diaryMenuRows(journal: JournalRow, confirmDelete: boolean): ActionMenuRow[] {
+    const open = isEditable(journal.status);
+    return [
+        ...(open ? [{ key: 'rename', icon: <LucidePencil size={20} strokeWidth={1.9} />, title: '改日记名' }] : []),
+        ...(open ? [{ key: 'complete', icon: <LucideCheck size={20} strokeWidth={1.9} />, title: '完成收笔' }] : []),
+        {
+            key: 'delete',
+            icon: <LucideTrash size={16} strokeWidth={1.9} />,
+            title: confirmDelete ? '再点一次' : '删除日记',
+            danger: true,
+        },
+    ];
+}
+
+/** 行程卡封面（首图优先、无图取首视频，原 deckTrip 单查升级为按卡查询）：
+    同值短路防重渲（#15）；音频不作封面。 */
+function useTripCover(tripId: string | null): { kind: 'image' | 'video'; fileKey: string } | null {
+    const revision = useArchiveRevision();
+    const [cover, setCover] = useState<{ kind: 'image' | 'video'; fileKey: string } | null>(null);
+    useEffect(() => {
+        if (!tripId) {
+            setCover((prev) => (prev === null ? prev : null));
+            return;
+        }
+        let active = true;
+        db.listTripMediaByTrip(tripId)
+            .then((rows) => {
+                if (!active) return;
+                const firstImage = rows.find((row) => row.kind === 'image');
+                const firstVideo = rows.find((row) => row.kind === 'video');
+                const next = firstImage
+                    ? { kind: 'image' as const, fileKey: firstImage.file_key }
+                    : firstVideo
+                        ? { kind: 'video' as const, fileKey: firstVideo.file_key }
+                        : null;
+                setCover((prev) =>
+                    prev?.kind === next?.kind && prev?.fileKey === next?.fileKey ? prev : next,
+                );
+            })
+            .catch(() => {
+                if (active) setCover((prev) => (prev === null ? prev : null));
+            });
+        return () => {
+            active = false;
+        };
+    }, [tripId, revision]);
+    return cover;
+}
 
 export function ArchiveScreen() {
     const router = useRouter();
@@ -102,15 +169,26 @@ export function ArchiveScreen() {
     const loadAll = useArchiveStore((s) => s.loadAll);
     const revision = useArchiveRevision();
     const dataRevision = useDataRevision();
-    const chooserTint = usePalette().secondary;
+    const palette = usePalette();
 
     const [todayJournal, setTodayJournal] = useState<JournalRow | null>(null);
     const [chooserOpen, setChooserOpen] = useState(false);
-    // 行程封面（首图优先、无图取首视频）：deck 数据在屏侧组装，deck 保持纯展示
-    const [tripCover, setTripCover] = useState<{ kind: 'image' | 'video'; fileKey: string } | null>(null);
-    // 重命名设置卡（笔记卡长按入口）：非 null = 正在重命名该篇（设置卡挂屏根，
+    // 重命名设置卡（日记菜单入口）：非 null = 正在重命名该篇（设置卡挂屏根，
     // 条件渲染 scrim + 居中卡，同 chooser / 块操作卡范式）
     const [renamingJournalId, setRenamingJournalId] = useState<string | null>(null);
+    // 行程菜单卡（行程卡长按入口，R2）：tripId 定位目标行程（deck 是多卡堆，
+    // 菜单作用于「长按的那一张」）；confirmDelete = 删除行二次确认态
+    const [tripMenu, setTripMenu] = useState<{ tripId: string; confirmDelete: boolean } | null>(null);
+    // 日记菜单卡（日记卡长按入口，R3）：结构同 tripMenu
+    const [journalMenu, setJournalMenu] = useState<{ confirmDelete: boolean } | null>(null);
+    // 事件菜单卡（事件卡长按入口）：eventId；标记完成/失败即离堆（open 过滤）
+    const [eventMenu, setEventMenu] = useState<string | null>(null);
+    // 笔记菜单卡（笔记卡长按入口）：noteId；重命名复用 RenameCard（updateJournalTitle
+    // 对 open 笔记有效）、删除复用 deleteJournal（级联删媒体）
+    const [noteMenu, setNoteMenu] = useState<{ id: string; confirmDelete: boolean } | null>(null);
+    // 笔记/事件列表（deck 卡数据通道）：null = 首载未完成；revision 驱动重载
+    const [notes, setNotes] = useState<JournalRow[] | null>(null);
+    const [openEvents, setOpenEvents] = useState<EventRow[] | null>(null);
 
     // Android 返回键关弹窗（替代 Modal 的 onRequestClose 语义）
     useEffect(() => {
@@ -127,7 +205,7 @@ export function ArchiveScreen() {
     }, [ready, loadAll]);
     useEffect(() => {
         let active = true;
-        getJournalByDate(null, todayLocal())
+        db.getJournalByDate(null, todayLocal())
             .then((row) => {
                 if (active) setTodayJournal(row);
             })
@@ -146,79 +224,169 @@ export function ArchiveScreen() {
         };
     }, [revision, ready]);
 
-    // 选卡与 store.deck() 同口径（trip-logic.pickDeckTrip：进行中 > 最近的计划中 >
-    // 刚结束）；trips[0] 只按 start_date DESC，存在进行中行程时会显示错对象。
-    // useMemo：trips 引用不变不重算（#15 deck 数据组装防重渲）
-    const deckTrip = useMemo(() => pickDeckTrip(trips), [trips]);
-
-    // 数据版本驱动重载（2026-11-11 反馈四「调整行程天数后首页卡片仍是旧的」根因修复）：
-    // deck 卡的行程数据通道 = store.trips（区间/天数/journalDays/plansTotal 全在其中），
-    // 它只在 loadAll 内重建，而 loadAll 仅被行程 CRUD（create/update/deleteTrip）与
-    // deleteJournal 调用——其余 bump 数据版本的 mutation（saveJournalBlocks/reopenJournal、
-    // 行程详情屏直连 db 的计划增/勾/删等）之后 store.trips 滞留旧值，首页卡片的
-    // 「已写 X/Y 天」「计划完成 X/Y」随之不同步。store 的 revision 本就是它自述的
-    // 「行程详情等自持状态的界面据此重载」信号（store.ts mutation 约定），archive
-    // 首页作为 deck 数据的自持消费面同样按它重载：**任一版本号（store revision /
-    // data-revision 中立计数）前进即重跑 loadAll**，保证 trip 更新后卡片的区间/天数/
-    // 封面全部同步最新（封面复验走下方既有 listTripMediaByTrip + 同值短路，不回退
-    // 不闪烁；todayJournal effect 原样复用）。成本注记：行程 CRUD 的 mutation 自带
-    // 一次 loadAll，同一事件会幂等双载（SQLite ms 级）——换取「任何 mutation 后
-    // deck 恒新」的单一保证，不在 store 层加刷新白名单（store.ts 不在本轮改动
-    // 权限内）。revision/dataRevision = 0 是启动基线，首轮加载仍由上方 !ready
-    // effect 独占，避免挂载即双载。
+    // 数据版本驱动重载（既有口径）：行程数据只在 loadAll 内重建，任何 mutation
+    // bump 版本后 store.trips 滞留旧值——任一版本号前进即重跑 loadAll（成本：
+    // 行程 CRUD 自带 loadAll，幂等双载 SQLite ms 级）。revision = 0 是启动基线。
     useEffect(() => {
         if (revision > 0 || dataRevision > 0) void loadAll();
     }, [revision, dataRevision, loadAll]);
 
-    // 行程封面查询：行程 id 或数据版本变化时重查（#15）；revision 参与依赖是
-    // 因为 attachTripMedia 等 mutation 只 bump revision 不 reload trips，首图
-    // 可能从无到有。**换行程才先清旧封面**（防串卡）；同行程 revision 重查
-    // 不清——否则写日记/存笔记的每次 revision bump 都会让封面闪回占位。
-    const deckTripId = deckTrip?.id ?? null;
-    const loadedTripIdRef = useRef<string | null>(null);
+    // 笔记 + 事件（deck 卡数据）：revision 重载（同 library 自持界面取径）。
+    // 事件仅 open（done/failed 不进 deck——用户指令「完成的不显示」）。
     useEffect(() => {
-        if (!deckTripId) {
-            loadedTripIdRef.current = null;
-            setTripCover(null);
-            return;
-        }
-        if (loadedTripIdRef.current !== deckTripId) {
-            loadedTripIdRef.current = deckTripId;
-            setTripCover(null);
-        }
         let active = true;
-        listTripMediaByTrip(deckTripId)
+        db.listNotes()
             .then((rows) => {
-                if (!active) return;
-                // 封面取首图；纯视频行程取首视频（播放钮占位可点进全屏），
-                // 音频不作封面（无视觉帧）。不建 player：封面不背播放器开销。
-                const firstImage = rows.find((row) => row.kind === 'image');
-                const firstVideo = rows.find((row) => row.kind === 'video');
-                const next = firstImage
-                    ? { kind: 'image' as const, fileKey: firstImage.file_key }
-                    : firstVideo
-                        ? { kind: 'video' as const, fileKey: firstVideo.file_key }
-                        : null;
-                // 同值短路（#15）：结果未变不触发渲染
-                setTripCover((prev) =>
-                    prev?.kind === next?.kind && prev?.fileKey === next?.fileKey ? prev : next,
-                );
+                if (active) setNotes(rows);
             })
-            .catch(() => {
-                if (active) setTripCover(null);
+            .catch((caught) => {
+                if (active) {
+                    setNotes([]);
+                    useArchiveStore.setState({
+                        error: `笔记列表读取失败：${caught instanceof Error ? caught.message : String(caught)}`,
+                    });
+                }
             });
         return () => {
             active = false;
         };
-    }, [deckTripId, revision]);
+    }, [revision]);
+    useEffect(() => {
+        let active = true;
+        db.listEvents({ status: 'open' })
+            .then((rows) => {
+                if (active) setOpenEvents(rows);
+            })
+            .catch((caught) => {
+                if (active) {
+                    setOpenEvents([]);
+                    useArchiveStore.setState({
+                        error: `事件列表读取失败：${caught instanceof Error ? caught.message : String(caught)}`,
+                    });
+                }
+            });
+        return () => {
+            active = false;
+        };
+    }, [revision]);
 
-    // today 与 journalLabel 不随 trips/媒体变化，无需 memo（廉价字符串）
     const today = todayLocal();
     const journalLabel = formatDateGroupLabel(today, today);
 
-    if (!ready) return <LoadingView />;
+    // deck 卡序列（日记 → 行程 → 事件 → 笔记；2026-11-19 用户优先级指令
+    // 「优先级最高是日记，其次行程、事件、笔记」——笔记循环移到末位；完成态
+    // 过滤见文件头进入口径）。**useMemo 挂在下方 early return 之前**（hooks
+    // 铁律：ready/notes 翻转会改变 hook 数量——library「Rendered more hooks」
+    // 同款教训），引用稳定防 deck 层位定位 spring 无意义重跑（#15）。
+    const deckItems = useMemo<DeckItem[]>(() => {
+        const items: DeckItem[] = [];
+        // ① 日记（今天）：不存在 → 邀请卡（原日记空卡样式）；已收笔 → 不显示
+        if (!todayJournal) {
+            items.push({
+                key: 'diary-invite',
+                accessibilityLabel: `写今天的日记，${journalLabel.monthDay}`,
+                onPress: () => router.push('/write'),
+                node: (
+                    <View className="flex-1 flex-col">
+                        <View className="flex-1 items-center justify-center gap-2 px-6 py-5">
+                            <LucideBookOpen size={34} color={palette.muted} strokeWidth={1.5} />
+                            <Text className="text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                日记
+                            </Text>
+                            <Text className="text-[15px] font-medium text-ink-text dark:text-inkd-text">
+                                {journalLabel.monthDay} {journalLabel.weekday}
+                            </Text>
+                            <Text className="text-[13px] text-ink-muted dark:text-inkd-muted">
+                                今天的一页还没写
+                            </Text>
+                            <View className="mt-1 flex-row items-center">
+                                <Text className="text-[12px] font-medium text-ink-accent dark:text-inkd-accent">
+                                    开始写
+                                </Text>
+                                <LucideChevronRight size={13} color={palette.accent} strokeWidth={2} />
+                            </View>
+                        </View>
+                    </View>
+                ),
+            });
+        } else if (isEditable(todayJournal.status)) {
+            items.push({
+                key: `diary-${todayJournal.id}`,
+                accessibilityLabel: '打开日记',
+                onPress: () => router.push('/write'),
+                onLongPress: () => {
+                    haptics.impact('medium');
+                    setJournalMenu({ confirmDelete: false });
+                },
+                node: (
+                    <JournalCard
+                        journal={todayJournal}
+                        label={journalLabel}
+                        onOpen={() => router.push('/write')}
+                        onRequestMenu={() => {
+                            haptics.impact('medium');
+                            setJournalMenu({ confirmDelete: false });
+                        }}
+                    />
+                ),
+            });
+        }
+        // ② 行程（planning + ongoing；finished 不显示）
+        for (const trip of trips) {
+            if (trip.status === 'finished') continue;
+            items.push({
+                key: `trip-${trip.id}`,
+                accessibilityLabel: `打开行程：${tripDisplayTitle(trip.title)}`,
+                onPress: () => router.push({ pathname: '/trip/[id]', params: { id: trip.id } }),
+                onLongPress: () => {
+                    haptics.impact('medium');
+                    setTripMenu({ tripId: trip.id, confirmDelete: false });
+                },
+                node: (
+                    <TripCard
+                        trip={trip}
+                        onOpen={() => router.push({ pathname: '/trip/[id]', params: { id: trip.id } })}
+                        onRequestMenu={() => {
+                            haptics.impact('medium');
+                            setTripMenu({ tripId: trip.id, confirmDelete: false });
+                        }}
+                    />
+                ),
+            });
+        }
+        // ③ 事件（仅 open）
+        for (const event of openEvents ?? []) {
+            items.push({
+                key: `event-${event.id}`,
+                accessibilityLabel: `打开事件：${event.title}`,
+                onPress: () => router.push(`/events/${event.id}` as never),
+                onLongPress: () => {
+                    haptics.impact('medium');
+                    setEventMenu(event.id);
+                },
+                node: <EventDeckCard event={event} />,
+            });
+        }
+        // ④ 笔记（仅 open——2026-11-19 产品变更：笔记可「完成」，完成的进搜索；
+        // 标题空串兜底；2026-11-19 用户优先级指令：笔记排末位）
+        for (const note of notes ?? []) {
+            if (note.status !== 'open') continue;
+            items.push({
+                key: `note-${note.id}`,
+                accessibilityLabel: note.title?.trim() ? `打开笔记：${note.title}` : '打开未命名笔记',
+                onPress: () => router.push({ pathname: '/note/[id]', params: { id: note.id } } as never),
+                onLongPress: () => {
+                    haptics.impact('medium');
+                    setNoteMenu({ id: note.id, confirmDelete: false });
+                },
+                node: <NoteDeckCard note={note} />,
+            });
+        }
+        return items;
+        // today 不入依赖（日内恒定字符串）；journalLabel 由 today 派生同理
+    }, [todayJournal, notes, trips, openEvents, journalLabel, palette, router]);
 
-    const noContent = !todayJournal && !deckTrip;
+    if (!ready || notes === null || openEvents === null) return <LoadingView />;
 
     return (
         <View className="flex-1 bg-ink-base dark:bg-inkd-base">
@@ -231,9 +399,7 @@ export function ArchiveScreen() {
                         className="mt-1 text-[13px] text-ink-secondary dark:text-inkd-secondary"
                         style={{ fontVariant: ['tabular-nums'] }}
                     >
-                        {metrics.streak > 0
-                            ? `连续记录 ${metrics.streak} 天 · 点卡片进入内容`
-                            : '行程与今天的一页，都在这里'}
+                        {metrics.streak > 0 ? `连续记录 ${metrics.streak} 天` : '今天的记录都在这里'}
                     </Text>
                     {error ? (
                         <Text className="mt-1 text-[12px] text-ink-negative dark:text-inkd-negative">
@@ -242,71 +408,38 @@ export function ArchiveScreen() {
                     ) : null}
                 </View>
 
-                {noContent ? (
-                    <EmptyStateIcon />
-                ) : (
-                    // 屏边距 px-6（24）：与屏头 / Me / 搜索 / 行程详情同一屏边距口径
-                    //（原 px-5(20) 是与日卡 px-6 档并存的双轨，一致性收敛轮归一）。
-                    // mt-4（16）：deck 与屏头的顶部间距（修前仅屏头 pb-1 的 4dp，双卡
-                    // 几乎贴着副标题行；用户反馈「距顶部太近」）——4 + 16 = 20dp 净距，
-                    // 与底部换位指示点 mt-3 的呼吸节奏同档，仅动 deck 顶部间距
-                    <View className="mt-4 px-6">
-                        <View className="mx-auto w-full max-w-[560px]">
-                            <CardDeck
-                                a={{
-                                    id: 'journal',
-                                    node: (
-                                        <JournalCard
-                                            journal={todayJournal}
-                                            label={journalLabel}
-                                            onOpen={() => router.push('/write')}
-                                            onRename={() =>
-                                                setRenamingJournalId(todayJournal?.id ?? null)
-                                            }
-                                        />
-                                    ),
-                                }}
-                                b={{
-                                    id: 'trip',
-                                    node: <TripCard trip={deckTrip} cover={tripCover} />,
-                                }}
-                                onPressCard={(id, isFront) => {
-                                    if (!isFront) return;
-                                    if (id === 'journal') {
-                                        // 笔记侧：空/有内容都进 /write（编辑器自带建页语义）
-                                        router.push('/write');
-                                        return;
-                                    }
-                                    // 行程侧（参考笔记卡的可点口径）：没有行程 →
-                                    // 创建页（空态卡不再是死区），有行程 → 对应详情
-                                    if (deckTrip) {
-                                        router.push({ pathname: '/trip/[id]', params: { id: deckTrip.id } });
-                                    } else {
-                                        router.push('/trip/new');
-                                    }
-                                }}
-                            />
-                            <View className="mt-3 flex-row items-center justify-center gap-1.5">
-                                <View className="h-1.5 w-1.5 rounded-full bg-ink-accent dark:bg-inkd-accent" />
-                                <View className="h-1.5 w-1.5 rounded-full bg-ink-faint dark:bg-inkd-faint" />
-                            </View>
-                            {/* 事件入口卡（v6 事件实体，deck 区下方）：对齐 Me 页
-                                EventsEntryCard 语言（icon + 题 + 副标 + chevron），
-                                → /events。typedRoutes 类型未生成 → as never 最小
-                                妥协先例（me 页 SearchEntryCard 同口径） */}
-                            <EventsEntryCard />
+                {/* 动态多卡 deck（N 卡泛化：卡片样式/露条交互/430 高度 = 原 deck
+                    原样；背卡露条点按 = 提前到前位；完成态过滤见文件头）；屏边距
+                    px-6 与屏头 / Me / 搜索同一屏边距口径；mt-4 顶部间距（既有口径） */}
+                {/* 水平居中（mx-auto 阅读列）+ 保持屏边距 px-6；垂直位置照旧
+                    （2026-11-19 用户澄清：不是垂直居中） */}
+                <View className="mt-4 px-6">
+                    <View className="mx-auto w-full max-w-[560px]">
+                        <CardDeck items={deckItems} />
+                        {/* 换位指示点（原 deck 区下方装饰，UI 原样保留） */}
+                        <View className="mt-3 flex-row items-center justify-center gap-1.5">
+                            <View className="h-1.5 w-1.5 rounded-full bg-ink-accent dark:bg-inkd-accent" />
+                            <View className="h-1.5 w-1.5 rounded-full bg-ink-faint dark:bg-inkd-faint" />
                         </View>
+                        {/* 事件入口卡（原样保留 → /events 列表；deck 内的事件卡是
+                            单卡直达，此入口是列表页） */}
+                        <EventsEntryCard />
                     </View>
-                )}
+                </View>
             </View>
 
-            <ComposeFab onPress={() => setChooserOpen(true)} accessibilityLabel="新建" />
+            <ComposeFab
+                onPress={() => {
+                    haptics.impact();
+                    setChooserOpen(true);
+                }}
+                accessibilityLabel="新建"
+            />
 
-            {/* 重命名设置卡（笔记卡长按入口，共享组件 ui/rename-card）：条件渲染
-                scrim + 居中卡挂屏根（zIndex 50 压过 FAB/deck；卡内不可见挂 deck
-                槽位里——槽位是 absolute 定位容器，浮层会被约束在卡内）。落库通道
-                经 onSave 注入（store.updateJournalTitle，锁定预检 #7 兜底）；
-                Android 返回键由卡片自身 BackHandler 关闭（同块操作卡范式）。 */}
+            {/* 重命名设置卡（日记菜单入口，共享组件 ui/rename-card）：条件渲染
+                scrim + 居中卡挂屏根（zIndex 50 压过 FAB/deck）。落库通道经 onSave
+                注入（store.updateJournalTitle，锁定预检 #7 兜底）；Android 返回键
+                由卡片自身 BackHandler 关闭（同块操作卡范式）。 */}
             {renamingJournalId && todayJournal ? (
                 <RenameCard
                     initialTitle={todayJournal.title ?? ''}
@@ -318,79 +451,223 @@ export function ArchiveScreen() {
                 />
             ) : null}
 
-            {/* + 选择器：写日记 / 建行程 / 建事件——条件渲染遮罩而非 RN Modal：
-                Modal 是独立原生窗口，Expo Go(Fabric) 上其内容触摸概率性失效
-                （实测弹窗选项点击无响应）；条件渲染层与普通视图同机制，行为一致。 */}
+            {/* 行程菜单卡（行程卡长按入口，R2，共享组件 ui/action-menu-card）：
+                菜单作用于长按的那张行程卡（tripId 定位）；关闭行程 = end_date
+                落今天；编辑仅未锁定态（finished 只读，#7）；删除经二次确认步。 */}
+            {tripMenu ? (
+                (() => {
+                    const target = trips.find((trip) => trip.id === tripMenu.tripId) ?? null;
+                    if (!target) return null;
+                    return (
+                        <ActionMenuCard
+                            title="行程"
+                            rows={tripMenuRows(target, tripMenu.confirmDelete)}
+                            onAction={(key) => {
+                                if (key === 'close') {
+                                    haptics.success();
+                                    setTripMenu(null);
+                                    void useArchiveStore
+                                        .getState()
+                                        .updateTrip(target.id, { endDate: todayLocal() });
+                                    return;
+                                }
+                                if (key === 'new') {
+                                    setTripMenu(null);
+                                    router.push('/trip/new');
+                                    return;
+                                }
+                                if (key === 'edit') {
+                                    setTripMenu(null);
+                                    router.push({ pathname: '/trip/[id]/edit', params: { id: target.id } });
+                                    return;
+                                }
+                                if (key === 'delete') {
+                                    // 二次确认步：第一次点击只换行文案（卡保持打开）
+                                    if (!tripMenu.confirmDelete) {
+                                        setTripMenu({ tripId: target.id, confirmDelete: true });
+                                        return;
+                                    }
+                                    haptics.impact('heavy');
+                                    setTripMenu(null);
+                                    void useArchiveStore.getState().deleteTrip(target.id);
+                                }
+                            }}
+                            onClose={() => setTripMenu(null)}
+                        />
+                    );
+                })()
+            ) : null}
+
+            {/* 日记菜单卡（日记卡长按入口，共享组件 ui/action-menu-card）：措辞
+                用「日记」（每天一篇的 /write 页）；重命名 → RenameCard；完成收笔
+                = 手动提前结束；删除经二次确认步。 */}
+            {journalMenu && todayJournal ? (
+                <ActionMenuCard
+                    title="日记"
+                    rows={diaryMenuRows(todayJournal, journalMenu.confirmDelete)}
+                    onAction={(key) => {
+                        if (key === 'rename') {
+                            setJournalMenu(null);
+                            setRenamingJournalId(todayJournal.id);
+                            return;
+                        }
+                        if (key === 'complete') {
+                            haptics.success();
+                            setJournalMenu(null);
+                            void useArchiveStore.getState().completeJournal(todayJournal.id);
+                            return;
+                        }
+                        if (key === 'delete') {
+                            if (!journalMenu.confirmDelete) {
+                                setJournalMenu({ confirmDelete: true });
+                                return;
+                            }
+                            haptics.impact('heavy');
+                            setJournalMenu(null);
+                            void useArchiveStore.getState().deleteJournal(todayJournal.id);
+                        }
+                    }}
+                    onClose={() => setJournalMenu(null)}
+                />
+            ) : null}
+
+            {/* 事件菜单卡（事件卡长按入口，四字标题口径）：标记完成/失败 = 状态
+                即存（updateEventMeta bump revision，事件离堆——deck 只显 open）；
+                删除按产品口径不在此暴露（数据层能力保留）。 */}
+            {eventMenu ? (
+                <ActionMenuCard
+                    title="事件"
+                    rows={[
+                        {
+                            key: 'done',
+                            icon: <LucideCheck size={20} strokeWidth={1.9} />,
+                            title: '标记完成',
+                        },
+                        {
+                            key: 'failed',
+                            icon: <LucideTrash size={20} strokeWidth={1.9} />,
+                            title: '标记失败',
+                        },
+                    ]}
+                    onAction={(key) => {
+                        setEventMenu(null);
+                        haptics.success();
+                        void useArchiveStore.getState().updateEventMeta(eventMenu, {
+                            status: key === 'done' ? 'done' : 'failed',
+                        });
+                    }}
+                    onClose={() => setEventMenu(null)}
+                />
+            ) : null}
+
+            {/* 笔记菜单卡（笔记卡长按入口，四字标题口径）：重命名复用 RenameCard
+                （updateJournalTitle 对 open 笔记有效）；删除复用 deleteJournal
+                （级联删媒体，二次确认）。 */}
+            {noteMenu ? (
+                <ActionMenuCard
+                    title="笔记"
+                    rows={[
+                        {
+                            key: 'rename',
+                            icon: <LucidePencil size={20} strokeWidth={1.9} />,
+                            title: '改笔记名',
+                        },
+                        {
+                            key: 'complete',
+                            icon: <LucideCheck size={20} strokeWidth={1.9} />,
+                            title: '完成笔记',
+                        },
+                        {
+                            key: 'delete',
+                            icon: <LucideTrash size={16} strokeWidth={1.9} />,
+                            title: noteMenu.confirmDelete ? '再点一次' : '删除笔记',
+                            danger: true,
+                        },
+                    ]}
+                    onAction={(key) => {
+                        if (key === 'rename') {
+                            setNoteMenu(null);
+                            setRenamingJournalId(noteMenu.id);
+                            return;
+                        }
+                        if (key === 'complete') {
+                            haptics.success();
+                            setNoteMenu(null);
+                            // 完成笔记：closed 后离开首页 deck 与笔记堆（搜索仍可见）
+                            void useArchiveStore.getState().completeJournal(noteMenu.id);
+                            return;
+                        }
+                        if (!noteMenu.confirmDelete) {
+                            setNoteMenu({ id: noteMenu.id, confirmDelete: true });
+                            return;
+                        }
+                        haptics.impact('heavy');
+                        setNoteMenu(null);
+                        void useArchiveStore.getState().deleteJournal(noteMenu.id);
+                    }}
+                    onClose={() => setNoteMenu(null)}
+                />
+            ) : null}
+
+            {/* + 选择器（单容器行组，2026-11-19 用户指令「一个卡片容器包裹，
+                内部没有横线区分」——同 Me 内容卡语言）：条件渲染遮罩而非 RN
+                Modal：Modal 是独立原生窗口，Expo Go(Fabric) 上其内容触摸概率性
+                失效；条件渲染层与普通视图同机制，行为一致。 */}
             {chooserOpen ? (
                 <View className="absolute inset-0 z-50">
                     <Pressable
                         className="flex-1 items-center justify-center bg-ink-scrim px-10 dark:bg-inkd-scrim"
                         onPress={() => setChooserOpen(false)}
                     >
-                        {/* 卡片本体：无边框规范（#13）——border 零，base 底 + 圆角卡
-                            （#8 打磨轮：与 insert-menu / 块操作卡同一卡片语言）；
-                            卡头 = 题 + 右上关闭钮（关闭语言统一，scrim/返回键之外
-                            的显式出口） */}
-                        <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-5 dark:bg-inkd-base">
-                            <View className="flex-row items-center justify-between">
+                        <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base">
+                            {/* 卡头：题 + 右上关闭钮（关闭语言统一） */}
+                            <View className="flex-row items-center justify-between px-1 pt-0.5">
                                 <Text className="text-[15px] font-semibold text-ink-text dark:text-inkd-text">
                                     开始什么？
                                 </Text>
-                                {/* 44 视觉盒：左邻题文字非按压体，右缘贴卡内边距，无重叠核算项 */}
                                 <CloseButton onPress={() => setChooserOpen(false)} />
                             </View>
-                            <View className="mt-4 gap-2.5">
-                                {/* 三行均自带 p-3 完整视觉盒（高 ~64px ≥44）：不传 hitSlop（0），
-                                    命中盒 == 视觉盒；行距 gap-2.5(10px) 为不可点间隙——旧默认
-                                    hitSlop 10 时两行命中区恰好重叠（10 < 10+10），已随默认收敛解除 */}
-                                <BouncyPressable
+                            {/* 单容器行组：rounded-card surface 包裹 + overflow-hidden
+                                裁行高亮进圆角；行间零线条（留白即分隔），行内
+                                active:bg 高亮（Pressable 直挂无 remount 风险）；行高
+                                h-12（48 ≥44，hitSlop 0），裸图标 + 题单行 */}
+                            <View className="mt-3 overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface">
+                                <ChooserRow
+                                    icon={<LucideBookOpen size={18} strokeWidth={1.9} color={palette.secondary} />}
+                                    title="新建日记"
                                     onPress={() => {
+                                        haptics.impact();
                                         setChooserOpen(false);
                                         router.push('/write');
                                     }}
-                                    scaleTo={0.97}
-                                >
-                                    <ChooserRow
-                                        icon={<LucideBookOpen size={20} strokeWidth={1.9} />}
-                                        title="今天的日记"
-                                        hint="连续写，24:00 自动收笔"
-                                        tint={chooserTint}
-                                    />
-                                </BouncyPressable>
-                                <BouncyPressable
+                                />
+                                <ChooserRow
+                                    icon={<LucidePencil size={18} strokeWidth={1.9} color={palette.secondary} />}
+                                    title="新建笔记"
                                     onPress={() => {
+                                        haptics.impact();
+                                        setChooserOpen(false);
+                                        router.push('/note/new' as never);
+                                    }}
+                                />
+                                <ChooserRow
+                                    icon={<LucideCalendar size={18} strokeWidth={1.9} color={palette.secondary} />}
+                                    title="新的行程"
+                                    onPress={() => {
+                                        haptics.impact();
                                         setChooserOpen(false);
                                         router.push('/trip/new');
                                     }}
-                                    scaleTo={0.97}
-                                >
-                                    <ChooserRow
-                                        icon={<LucideCalendar size={20} strokeWidth={1.9} />}
-                                        title="新的行程"
-                                        hint="图标、视频、逐日骨架"
-                                        tint={chooserTint}
-                                    />
-                                </BouncyPressable>
-                                {/* 新建事件（v6 事件实体入口）：排在「新的行程」旁——创建
-                                    类动作同区，日记/行程/事件三入口同卡；图标用 LucideFlag
-                                    （事件域标，同下方 EventsEntryCard / Me 页事件卡语言）。
-                                    直进新建表单 /events/new，不落列表页；typedRoutes 类型
-                                    未生成 → as never 最小妥协先例（同文件 EventsEntryCard
-                                    的 /events 同口径） */}
-                                <BouncyPressable
+                                />
+                                <ChooserRow
+                                    icon={<LucideFlag size={18} strokeWidth={1.9} color={palette.secondary} />}
+                                    title="新建事件"
                                     onPress={() => {
+                                        haptics.impact();
                                         setChooserOpen(false);
                                         router.push('/events/new' as never);
                                     }}
-                                    scaleTo={0.97}
-                                >
-                                    <ChooserRow
-                                        icon={<LucideFlag size={20} strokeWidth={1.9} />}
-                                        title="新建事件"
-                                        hint="工单式记录，跟到完成"
-                                        tint={chooserTint}
-                                    />
-                                </BouncyPressable>
+                                />
                             </View>
                         </Pressable>
                     </Pressable>
@@ -400,27 +677,10 @@ export function ArchiveScreen() {
     );
 }
 
-/** 空态：图标配色统一走 palette（empty-state 组件自带布局）。 */
-function EmptyStateIcon() {
-    const palette = usePalette();
-    const router = useRouter();
-    return (
-        <EmptyState
-            icon={<LucideBookOpen size={40} color={palette.muted} strokeWidth={1.5} />}
-            title="一切都还没开始"
-            hint="写下今天的第一页，或先建一个行程。"
-            actionLabel="写今天的日记"
-            onAction={() => router.push('/write')}
-        />
-    );
-}
-
 /**
  * 事件入口卡（v6 事件实体，deck 区下方）：整卡即命中盒（≥44，hitSlop 0，四周
- * 无相邻命中元素），按压反馈走 active: 体系（Me 页入口卡同口径）。视觉对齐 Me
- * 的 EventsEntryCard / SearchEntryCard 语言：icon 容器 40×40 raised 底 + 题 +
- * 副行 + chevron（faint 档）；icon 用 LucideFlag（事件/工单语义标，与 Me 卡、
- * 插入菜单「新建事件」行同一图标语言）。
+ * 无相邻命中元素），按压反馈走 active: 体系（Me 页入口卡同口径）；icon 用
+ * LucideFlag（事件/工单语义标）。→ /events 列表页。
  */
 function EventsEntryCard() {
     const router = useRouter();
@@ -448,65 +708,37 @@ function EventsEntryCard() {
     );
 }
 
-/** 选择器行（#8 打磨轮：与 insert-menu MenuRow 同一行语言——icon 容器 40×40
-    rounded-control + raised 触感底，无边框规范 border 零；按压反馈统一由
-    外层 BouncyPressable 承担，行 View 不用 active: 伪类（css-interop 会把
-    View 升级成 Pressable 首帧后 remount、触摸中途被杀，见 insert-menu 注）。 */
+/** 选择器行（单容器行组内的一行，Me 内容卡 ContentEntryRow 同语言）：裸图标 +
+    题单行，行高 h-12（48 ≥44，hitSlop 0），行间贴靠零线条，按压 = 行级
+    active:bg 高亮（Pressable 本体直挂 active: 类无 css-interop remount 风险）。 */
 function ChooserRow({
     icon,
     title,
-    hint,
-    tint,
+    onPress,
 }: {
     icon: React.ReactNode;
     title: string;
-    hint: string;
-    tint: string;
+    onPress(): void;
 }) {
     return (
-        <View className="flex-row items-center gap-3 rounded-control bg-ink-surface p-3 dark:bg-inkd-surface">
-            <View
-                pointerEvents="none"
-                className="h-10 w-10 items-center justify-center rounded-control bg-ink-raised dark:bg-inkd-raised"
-            >
-                {withTint(icon, tint)}
-            </View>
-            <View className="flex-1">
-                <Text className="text-[15px] font-medium text-ink-text dark:text-inkd-text">{title}</Text>
-                <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">{hint}</Text>
-            </View>
-        </View>
+        <Pressable
+            onPress={onPress}
+            className="h-12 flex-row items-center gap-3 px-4 active:bg-ink-raised dark:active:bg-inkd-raised"
+            accessibilityRole="button"
+            accessibilityLabel={title}
+        >
+            {icon}
+            <Text className="flex-1 text-[15px] font-medium text-ink-text dark:text-inkd-text">{title}</Text>
+        </Pressable>
     );
 }
 
-/** 调用点的 icon 只给形状，色统一在这里补（缺色时原样渲染）。 */
-function withTint(node: React.ReactNode, color: string): React.ReactNode {
-    if (!isValidElement(node)) return node;
-    const element = node as React.ReactElement<{ color?: string }>;
-    return element.props.color !== undefined ? node : cloneElement(element, { color });
-}
-
-// ─── deck 卡片（垂直结构：封面在上 / 文字在下）─────────────────────────────
-
-/**
- * 卡壳：垂直两段式（封面全出血贴顶 + 文字区），overflow-hidden 让封面裁进
- * rounded-card（16）圆角；无阴影（房规）；surface-on-base tone 分层（#13
- * 无边框规范收敛：卡片级描边清除，与 trip-detail 日卡同一卡片语言）。
- */
-function CardShell({ children }: { children: React.ReactNode }) {
-    return (
-        <View className="h-full flex-col overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface">
-            {children}
-        </View>
-    );
-}
+// ─── deck 卡片（原样式保留：封面在上 / 文字在下的垂直两段式）─────────────────
 
 /** 封面实图：cover 裁切铺满 16:10（高封顶 220）；点击 → requestViewer 进 /viewer
     全屏路由预览。文件缺失时静默降级为 raised 底（use-file-url 文档化降级口径，
-    封面不打断浏览）。后位让位（deck 契约）：封面右缘落在后卡露条命中区，
-    后位时置空 onPress——穿透依赖 BouncyPressable 的 disabled 传导（2026-11
-    修复，仅置空回调不构成穿透；见 bouncy-pressable 文件头行为矩阵），
-    触摸这才真正落到 deck 卡 Pressable → 点露条换位。 */
+    封面不打断浏览）。后位让位由堆容器 pointerEvents="none" 承担（deck 对
+    背卡整树透明，封面按压体天然不可达），不再需要 isFront 逐层传导。 */
 function DeckCoverImage({
     fileKey,
     onPress,
@@ -516,17 +748,16 @@ function DeckCoverImage({
     onPress: () => void;
     accessibilityLabel: string;
 }) {
-    const isFront = useDeckSlotFront();
     const uri = useFileUrl(fileKey);
-    const canPress = uri != null && isFront;
+    const canPress = uri != null;
     return (
-        // hitSlop 不传（0）：封面视觉盒远超 44，命中盒 == 视觉盒（嵌套于 deck 卡
+        // hitSlop 不传（0）：封面视觉盒远超 44，命中盒 == 视觉盒（嵌套于堆卡
         // Pressable 内，命中协商由最内层胜出，卡点击语义不受侵占）
         <BouncyPressable onPress={canPress ? onPress : undefined} scaleTo={0.985}>
             <View
                 accessibilityLabel={accessibilityLabel}
                 className="w-full overflow-hidden bg-ink-raised dark:bg-inkd-raised"
-                style={{ aspectRatio: COVER_RATIO, maxHeight: COVER_MAX_HEIGHT }}
+                style={{ aspectRatio: 16 / 10, maxHeight: 220 }}
             >
                 {uri ? <Image source={{ uri }} className="h-full w-full" resizeMode="cover" /> : null}
             </View>
@@ -535,35 +766,21 @@ function DeckCoverImage({
 }
 
 /** 封面视频占位：不建 player（封面不背播放器开销，MediaThumb 同口径），
-    播放钮语义 + 点击 → requestViewer 进 /viewer 全屏播放（路由屏内
-    FullscreenVideoViewer 自带 controls）。后位让位同 DeckCoverImage。 */
+    播放钮语义 + 点击 → requestViewer 进 /viewer 全屏播放。后位让位同上。 */
 function DeckCoverVideo({ fileKey, onPress }: { fileKey: string; onPress: () => void }) {
-    const isFront = useDeckSlotFront();
     const uri = useFileUrl(fileKey);
-    const canPress = uri != null && isFront;
+    const canPress = uri != null;
     return (
         <BouncyPressable onPress={canPress ? onPress : undefined} scaleTo={0.985}>
             <View
                 className="w-full items-center justify-center bg-ink-raised dark:bg-inkd-raised"
-                style={{ aspectRatio: COVER_RATIO, maxHeight: COVER_MAX_HEIGHT }}
+                style={{ aspectRatio: 16 / 10, maxHeight: 220 }}
             >
                 <View className="h-12 w-12 items-center justify-center rounded-full bg-black/40">
                     <LucidePlay size={20} color="#FFFFFF" strokeWidth={2.2} />
                 </View>
             </View>
         </BouncyPressable>
-    );
-}
-
-/** 无图封面占位：中性 raised 底 + TripBadge（deck 56 档）锚定行程身份。 */
-function DeckCoverPlaceholder({ children }: { children: React.ReactNode }) {
-    return (
-        <View
-            className="w-full items-center justify-center bg-ink-raised dark:bg-inkd-raised"
-            style={{ aspectRatio: COVER_RATIO, maxHeight: COVER_MAX_HEIGHT }}
-        >
-            {children}
-        </View>
     );
 }
 
@@ -606,46 +823,34 @@ function SummaryText({
 }
 
 /**
- * 日记卡：封面（首图/首视频）+ 日期/状态 + 摘要 + 媒体字数角标。
- *
- * 文字区交互（不与 deck 导航冲突）：
- * - 点击 = 进入内容（前卡语义与 deck onPressCard('journal', true) 等价）；
- * - 长按 = 重命名设置卡（native/web 触屏；web 桌面 = 双击，与媒体块同口径）；
- * - 后卡整体让位：Pressable disabled（仅置空 handlers 仍会抢 responder，
- *   必须 disabled 触摸才穿透 deck 卡 Pressable）→ 点露条换位语义不变；
- * - 已收笔（closed）标题锁定（#7）：长按入口先挡，store.updateJournalTitle 兜底。
- * 封面点击 = 预览媒体（requestViewer 进 /viewer），长按封面仍走封面自身语义
- * （BouncyPressable 无 onLongPress，按住松开 = 预览，不弹重命名卡）。
+ * 日记卡（原样式原样保留，2026-11-19 用户澄清）：封面（首图/首视频）+ 日期/
+ * 状态 + 摘要 + 媒体字数角标；eyebrow 加「日记」类型前缀（多卡堆里区分实体）。
+ * 交互：点击 = 进入内容（/write）；长按 = 日记菜单卡（useBlockActionGestures
+ * 手势保留，web 桌面双击同口径）；后卡让位由堆容器 pointerEvents="none"
+ * 承担（不再需要卡内逐层传导）。
  */
 function JournalCard({
     journal,
     label,
     onOpen,
-    onRename,
+    onRequestMenu,
 }: {
-    journal: JournalRow | null;
+    journal: JournalRow;
     label: ReturnType<typeof formatDateGroupLabel>;
-    /** 点击进入内容（前卡；由屏层给 router.push('/write')）。 */
+    /** 点击进入内容（由屏层给 router.push('/write')）。 */
     onOpen: () => void;
-    /** 长按/双击 → 重命名设置卡（仅 open 状态启用）。 */
-    onRename: () => void;
+    /** 长按/双击 → 日记菜单卡。 */
+    onRequestMenu: () => void;
 }) {
     const palette = usePalette();
-    // hooks 规则：无条件调用——journal 在 null ↔ 有值翻转时 hooks 数量必须恒定
-    // （条件后调 hook 会在"写完今天第一篇"时炸 Invalid hook call，web 真机双端实证）
-    const isFront = useDeckSlotFront();
-    const mediaRows = useJournalMedia(journal?.id ?? null);
-    const blocks = useMemo(() => (journal ? parseBlocks(journal.blocks) : null), [journal]);
-    // 仍被正文引用的媒体 id 集（#10 封面陈旧根因）：编辑器删块是「移块不删行」
-    // 的软删语义（journal-logic.removeBlock），journal_media 行会保留——封面若
-    // 直接按媒体行取，已删除的图/视频仍会霸占首页卡片。封面数据源必须与正文
-    // 同源（blocks），媒体行只做 fileKey/尺寸的解析表；行内孤儿（块已删）一律
-    // 不参与封面候选。摘要与 meta 媒体标记同样直接按 blocks 计（同口径）。
+    const blocks = useMemo(() => parseBlocks(journal.blocks), [journal]);
+    // 封面数据通道（原 deck 卡口径恢复）：仍被正文引用的媒体 id 集 + 首图/首视频
+    // 候选（useJournalMedia = journal_media 行解析表；行内孤儿不参与封面候选）
+    const mediaRows = useJournalMedia(journal.id);
     const liveMediaIds = useMemo(
         () => new Set((blocks ?? []).filter((block) => block.t === 'media').map((block) => block.mediaId)),
         [blocks],
     );
-    // 封面取首图，无图取首视频，纯音频无封面（日记卡文字优先，省出摘要空间）
     const hero = useMemo(
         () =>
             mediaRows.find((row) => row.kind === 'image' && liveMediaIds.has(row.id)) ??
@@ -653,11 +858,8 @@ function JournalCard({
             null,
         [mediaRows, liveMediaIds],
     );
-    // 摘要两级重排（排版节奏优化，不改 journal-logic 取数口径）：previewText
-    // 把媒体以「[媒体]」占位内联进文字流（正是"文字媒体交混看着怪"的根源），
-    // 这里直接用屏侧已解析的 blocks 重排——首段 = 引导行（15px text 色 1 行，
-    // 日记的"开篇句"声部），其余段落 = 正文（muted 13px 预算行数）；媒体块
-    // 不再进文字流，改为底 meta 行「图 N · 视频 N · 音频 N」轻量标记。
+    // 摘要两级重排（原口径保留）：首段 = 引导行（15px text 色 1 行），其余段落
+    // = 正文（muted 13px 预算行数）
     const summaryParts = useMemo(() => {
         const parts = (blocks ?? [])
             .filter((block): block is Extract<JournalBlock, { t: 'p' }> => block.t === 'p' && block.text.trim() !== '')
@@ -666,75 +868,20 @@ function JournalCard({
         return {
             lead: parts[0] ?? '',
             body:
-                bodyJoined.length > SUMMARY_BODY_MAX
-                    ? `${bodyJoined.slice(0, SUMMARY_BODY_MAX)}…`
+                bodyJoined.length > 140
+                    ? `${bodyJoined.slice(0, 140)}…`
                     : bodyJoined,
         };
     }, [blocks]);
-    // 媒体计数按 kind 分列（meta 行标记用）：kind 在媒体行上（块只带 mediaId），
-    // 与封面同口径 join blocks ↔ mediaRows；上传占位块（PENDING_MEDIA_ID）无行
-    // 不计，落库后随 revision 重渲补上
-    const mediaTally = useMemo(() => {
-        const tally = { image: 0, video: 0, audio: 0 };
-        const rowKind = new Map(mediaRows.map((row) => [row.id, row.kind]));
-        for (const block of blocks ?? []) {
-            if (block.t !== 'media') continue;
-            const kind = rowKind.get(block.mediaId);
-            if (kind === 'image') tally.image += 1;
-            else if (kind === 'video') tally.video += 1;
-            else if (kind === 'audio') tally.audio += 1;
-        }
-        return tally;
-    }, [blocks, mediaRows]);
-    // meta 行媒体标记：「图 2 · 视频 1 · 」前缀（无媒体为空串，不引入悬空分隔点）
-    const mediaMeta = [
-        mediaTally.image > 0 ? `图 ${mediaTally.image}` : null,
-        mediaTally.video > 0 ? `视频 ${mediaTally.video}` : null,
-        mediaTally.audio > 0 ? `音频 ${mediaTally.audio}` : null,
-    ]
-        .filter((part): part is string => part != null)
-        .join(' · ');
-    const mediaMetaPrefix = mediaMeta ? `${mediaMeta} · ` : '';
-    const { maxLines, onLayout } = useSummaryLineBudget(JOURNAL_SUMMARY_LINE_HEIGHT);
-    const canRename = isFront && journal != null && isEditable(journal.status);
-    // 与媒体块同一套手势解析：长按（native/web 触屏）/双击（web 桌面）→ 重命名，
-    // 单击放行导航。onBlockAction 按 canRename 门控（#7 收笔锁定：长按入口在
-    // 手势源头关断，而不是等重命名卡打开后再由 store 兜底报错）；后卡的让位
-    // 不在手势层做，而在下方 Pressable 显式 disabled（触摸穿透 deck 卡 → 换位）
+    const { maxLines, onLayout } = useSummaryLineBudget(20);
     const gestures = useBlockActionGestures({
-        enabled: canRename,
-        onBlockAction: canRename ? onRename : undefined,
+        enabled: true,
+        onBlockAction: onRequestMenu,
         onSinglePress: onOpen,
     });
 
-    if (!journal || !blocks) {
-        // 空态卡 = 行动邀请（taste-skill：空态给方向，不是 mood 板）：留白居中 +
-        // 轻 CTA（accent 文字 + chevron，同有内容卡的 footer 语言，不堆框不加钮）。
-        // 点击语义在 deck 卡 Pressable（→ /write），卡内不放嵌套按压体——
-                // 保持 deck 触摸面纯净铁律（卡体 Pressable 零 className）
-        return (
-            <CardShell>
-                {/* 卡内边距 px-6 py-5：对齐日卡「水平 24 / 垂直 20」口径（同层级同值） */}
-                <View className="flex-1 items-center justify-center gap-2 px-6 py-5">
-                    <LucideBookOpen size={34} color={palette.muted} strokeWidth={1.5} />
-                    <Text className="text-[15px] font-medium text-ink-text dark:text-inkd-text">
-                        {label.monthDay} {label.weekday}
-                    </Text>
-                    <Text className="text-[13px] text-ink-muted dark:text-inkd-muted">
-                        今天的一页还没写
-                    </Text>
-                    <View className="mt-1 flex-row items-center">
-                        <Text className="text-[12px] font-medium text-ink-accent dark:text-inkd-accent">
-                            开始写
-                        </Text>
-                        <LucideChevronRight size={13} color={palette.accent} strokeWidth={2} />
-                    </View>
-                </View>
-            </CardShell>
-        );
-    }
     return (
-        <CardShell>
+        <View className="flex-1 flex-col">
             {hero ? (
                 hero.kind === 'image' ? (
                     <DeckCoverImage
@@ -747,41 +894,26 @@ function JournalCard({
                 ) : (
                     <DeckCoverVideo
                         fileKey={hero.file_key}
-                        onPress={() =>
-                            requestViewer({ kind: 'video', fileKey: hero.file_key, width: hero.width, height: hero.height })
-                        }
+                        onPress={() => requestViewer({ kind: 'video', fileKey: hero.file_key })}
                     />
                 )
             ) : null}
-            {/* 文字区 Pressable：handler 恒挂接（#8 双击清查——条件挂接在状态翻转
-                瞬间会让 Pressability 重配置吞首点；让位语义全部收敛到一个开关）。
-                后卡让位用 **pointerEvents="none"** 而非 Pressable disabled（2026-11
-                终验修复）：disabled 在 web 被 RN-web 落成原生 <button disabled>，
-                Chrome 对 disabled 表单控件抑制全部指针事件——触摸根本不进 React
-                事件系统，更不会冒泡到 deck 卡 Pressable，「点露条文字段换位」在
-                后卡=日记卡时整段失效（native 的「disabled 不认领 → 穿透」语义在
-                web 被 DOM 吞掉）。pointerEvents="none" 双端同语义：整个子树对触摸
-                透明，事件直接落到父级 deck 卡 Pressable → 换位；前卡恢复 'auto'
-                时 Pressability 无需重配置（prop 翻转 ≠ 挂接翻转，无 #8 吞首点窗口）。
-                长按触发后 Pressability 不补发 onPress，导航与重命名天然二选一；
-                web 桌面双击消歧窗口内单击导航延迟 320ms（同媒体块口径）。 */}
+            {/* 文字区 Pressable（原结构保留） */}
             <Pressable
-                pointerEvents={isFront ? 'auto' : 'none'}
                 onPress={gestures.onPress}
                 onLongPress={gestures.onLongPress}
-                // 文字区卡内边距 px-6 py-5：对齐 trip-detail 日卡口径（水平 24 / 垂直 20）
                 className="flex-1 flex-col px-6 py-5"
                 accessibilityRole="button"
-                accessibilityLabel={canRename ? '打开笔记，长按重命名' : '打开笔记'}
+                accessibilityLabel="打开日记，长按操作"
             >
-                {/* 日期行 = eyebrow 档：11px muted tabular（原 15px semibold 与
-                    标题同行同权、无节奏，降档后卡内声部收敛到标题/引导行）；
-                    relative（今天/昨天）accent 同行右随 */}
+                {/* eyebrow 行：类型前缀（日记）+ 日期 + relative + 状态（原结构，
+                    前缀为多卡堆新增的区分标识） */}
                 <View className="flex-row items-center justify-between">
                     <Text
                         className="text-[11px] text-ink-muted dark:text-inkd-muted"
                         style={{ fontVariant: ['tabular-nums'] }}
                     >
+                        {'日记 · '}
                         {label.monthDay} {label.weekday}
                         {label.relative ? (
                             <Text className="ml-2 text-[11px] font-medium text-ink-accent dark:text-inkd-accent">
@@ -795,9 +927,6 @@ function JournalCard({
                         {journal.status === 'open' ? '进行中' : '已收笔'}
                     </Text>
                 </View>
-                {/* 标题（#6 重命名落点）：重命名卡的可见结果——未命名不占位，
-                    有题一行截断；15px semibold = 卡题档（字号阶：与行程卡标题、
-                    选择器行题同一档，一致性收敛轮从阶外 17px 归一） */}
                 {journal.title ? (
                     <Text
                         numberOfLines={1}
@@ -806,18 +935,12 @@ function JournalCard({
                         {journal.title}
                     </Text>
                 ) : null}
-                {/* 引导行（节奏主层）：正文首段 15px text 色 1 行——无题日记的
-                    主声部、有题日记的开篇句；空内容日记渲染 muted 提示语（占位
-                    语义，不冒充内容声部）。媒体不在此层（原 [媒体] 内联占位
-                    打断节奏，已并入底 meta 行） */}
                 <Text
                     numberOfLines={1}
                     className={`mt-2.5 text-[15px] leading-6 ${summaryParts.lead ? 'text-ink-text dark:text-inkd-text' : 'text-ink-muted dark:text-inkd-muted'}`}
                 >
                     {summaryParts.lead || '还没写字，插入一张图也算。'}
                 </Text>
-                {/* 正文（后续段落）：muted 13px 两级中的第二级，flex-1 实测高度 →
-                    行数 clamp（宁少勿截半行），overflow-hidden 兜底 */}
                 <View className="mt-1 min-h-0 flex-1 overflow-hidden" onLayout={onLayout}>
                     {summaryParts.body ? (
                         <SummaryText
@@ -834,7 +957,6 @@ function JournalCard({
                         className="text-[11px] text-ink-muted dark:text-inkd-muted"
                         style={{ fontVariant: ['tabular-nums'] }}
                     >
-                        {mediaMetaPrefix}
                         {journal.word_count} 字
                     </Text>
                     <View className="flex-row items-center">
@@ -845,63 +967,49 @@ function JournalCard({
                     </View>
                 </View>
             </Pressable>
-        </CardShell>
+        </View>
     );
 }
 
-/** 行程卡：封面（首图/首视频/徽章占位）+ 区间 eyebrow + 标题/状态 + 描述 + 进度
-    （四层节奏与日记卡同语言，见文字区注）。 */
+/**
+ * 行程卡（原样式原样保留）：封面（首图/首视频/徽章占位）+ eyebrow（类型前缀 +
+ * 时间/区间）+ 标题/状态 + 描述 + 进度；封面按卡查询（useTripCover）。
+ * 交互：点击 → /trip/[id]；长按 → 行程菜单卡。
+ */
 function TripCard({
     trip,
-    cover,
+    onOpen,
+    onRequestMenu,
 }: {
-    trip: ReturnType<typeof useArchiveStore.getState>['trips'][number] | null;
-    cover: { kind: 'image' | 'video'; fileKey: string } | null;
+    trip: DeckTrip;
+    /** 点击进入行程（屏层给 router.push）。 */
+    onOpen: () => void;
+    /** 长按/双击 → 行程菜单卡（屏层持 setTripMenu）。 */
+    onRequestMenu: () => void;
 }) {
     const palette = usePalette();
-    const { maxLines, onLayout } = useSummaryLineBudget(TRIP_SUMMARY_LINE_HEIGHT);
-    if (!trip) {
-        // 空态卡（对齐日记空卡语言）：留白 + 轻 CTA；点击语义在 deck 卡
-        // Pressable（→ /trip/new，见 onPressCard 行程侧分支），卡内不放嵌套
-        // 按压体——deck 触摸面纯净铁律不变
-        return (
-            <CardShell>
-                {/* 卡内边距 px-6 py-5：对齐日卡口径（同层级同值） */}
-                <View className="flex-1 items-center justify-center gap-2 px-6 py-5">
-                    <LucideCalendar size={34} color={palette.muted} strokeWidth={1.5} />
-                    <Text className="text-[15px] font-medium text-ink-text dark:text-inkd-text">
-                        还没有行程
-                    </Text>
-                    <Text className="text-[13px] text-ink-muted dark:text-inkd-muted">
-                        计划中的每一天，从这里开始
-                    </Text>
-                    <View className="mt-1 flex-row items-center">
-                        <Text className="text-[12px] font-medium text-ink-accent dark:text-inkd-accent">
-                            创建行程
-                        </Text>
-                        <LucideChevronRight size={13} color={palette.accent} strokeWidth={2} />
-                    </View>
-                </View>
-            </CardShell>
-        );
-    }
+    const cover = useTripCover(trip.id);
+    const { maxLines, onLayout } = useSummaryLineBudget(20);
+    const gestures = useBlockActionGestures({
+        enabled: true,
+        onBlockAction: onRequestMenu,
+        onSinglePress: onOpen,
+    });
+    // 时间 eyebrow（R5 常住今天）：持续性行程出发后锚定今天（M月D日 · 第 N 天）
+    const todayLabel = tripTodayLabel(trip);
     return (
-        <CardShell>
+        <View className="flex-1 flex-col">
             {cover ? (
                 cover.kind === 'image' ? (
                     <DeckCoverImage
                         fileKey={cover.fileKey}
-                        onPress={() =>
-                            requestViewer({ kind: 'image', fileKey: cover.fileKey })
-                        }
+                        onPress={() => requestViewer({ kind: 'image', fileKey: cover.fileKey })}
                         accessibilityLabel="预览行程照片"
                     />
                 ) : (
                     <DeckCoverVideo
                         fileKey={cover.fileKey}
-                        onPress={() =>
-                            requestViewer({ kind: 'video', fileKey: cover.fileKey })
-                        }
+                        onPress={() => requestViewer({ kind: 'video', fileKey: cover.fileKey })}
                     />
                 )
             ) : (
@@ -909,34 +1017,33 @@ function TripCard({
                     <TripBadge icon={trip.icon} size="deck" />
                 </DeckCoverPlaceholder>
             )}
-            {/* 文字区：四层节奏与日记卡同语言——eyebrow（区间 11 muted tabular）/
-                标题（15 semibold + 状态 chip）/ 描述（13，flex-1 预算行数）/
-                底部进度 + meta + CTA；卡内边距 px-6 py-5 对齐日卡口径 */}
-            <View className="flex-1 flex-col px-6 py-5">
-                {/* 区间行 = eyebrow 槽位（对齐日记卡日期行，移到标题上方）：
-                    13px secondary → 11 muted tabular。区间文案走 formatTripSpan
-                    （持续性感知）：open 端不可用 formatTripRange */}
+            {/* 文字区 Pressable（原结构保留） */}
+            <Pressable
+                onPress={gestures.onPress}
+                onLongPress={gestures.onLongPress}
+                className="flex-1 flex-col px-6 py-5"
+                accessibilityRole="button"
+                accessibilityLabel="打开行程，长按操作"
+            >
+                {/* eyebrow：类型前缀（行程）+ 时间/区间（持续性感知） */}
                 <Text
                     numberOfLines={1}
                     className="text-[11px] text-ink-muted dark:text-inkd-muted"
                     style={{ fontVariant: ['tabular-nums'] }}
                 >
-                    {formatTripSpan(trip)}
-                    {trip.dayCount != null ? ` · ${trip.dayCount} 天` : ''}
+                    {'行程 · '}
+                    {todayLabel ?? formatTripSpan(trip)}
+                    {todayLabel == null && trip.dayCount != null ? ` · ${trip.dayCount} 天` : ''}
                 </Text>
                 <View className="mt-1 flex-row items-center justify-between">
                     <Text
                         numberOfLines={1}
                         className="mr-2 flex-1 text-[15px] font-semibold text-ink-text dark:text-inkd-text"
                     >
-                        {trip.title}
+                        {tripDisplayTitle(trip.title)}
                     </Text>
                     <StatusChip status={trip.status} />
                 </View>
-                {/* 描述（prose 槽位）：单字段无块结构，不做引导行/正文两级切分；
-                    tone 对齐 trip-detail 描述行（secondary）——同一数据
-                    （trip.description）跨屏同值（原 muted 是双轨漂移），节奏
-                    对齐取字号/间距/槽位次序，不破既定 tone 口径 */}
                 <View className="mt-2.5 min-h-0 flex-1 overflow-hidden" onLayout={onLayout}>
                     <SummaryText
                         maxLines={maxLines}
@@ -963,7 +1070,6 @@ function TripCard({
                             className="text-[11px] text-ink-muted dark:text-inkd-muted"
                             style={{ fontVariant: ['tabular-nums'] }}
                         >
-                            {/* 持续性行程无固定天数（dayCount = null），不渲染假分母 */}
                             {trip.dayCount == null
                                 ? `已写 ${trip.journalDays} 天`
                                 : `已写 ${trip.journalDays}/${trip.dayCount} 天`}
@@ -976,13 +1082,152 @@ function TripCard({
                         </View>
                     </View>
                 </View>
-            </View>
-        </CardShell>
+            </Pressable>
+        </View>
+    );
+}
+
+/** 无图封面占位：中性 raised 底 + TripBadge（deck 56 档）锚定行程身份。 */
+function DeckCoverPlaceholder({ children }: { children: React.ReactNode }) {
+    return (
+        <View
+            className="w-full items-center justify-center bg-ink-raised dark:bg-inkd-raised"
+            style={{ aspectRatio: 16 / 10, maxHeight: 220 }}
+        >
+            {children}
+        </View>
     );
 }
 
 /**
- * 重命名设置卡（首页笔记卡长按入口）：实现收口到共享组件 ui/rename-card
- * RenameCard（与 journal-edit 屏头编辑钮入口同一语义；此前两处逐行重复的
- * 卡实现已合并）。落库通道经 onSave 注入 store.updateJournalTitle。
+ * 笔记卡（2026-11-19 设计打磨，卡面语言 = 日记卡同构）：eyebrow（类型 +
+ * 更新时间，tabular）→ 题（15 semibold，无题回退「未命名笔记」）→ 引导行
+ * （15 text 色 1 行 = 描述或正文首段，无则 muted 占位）→ 正文预算行（13
+ * muted）→ 底 meta（字数 + 打开 CTA）。两级声部与日记卡同构——原来单槽
+ * 描述的「矮胖」观感根因是缺引导行层级。
  */
+function NoteDeckCard({ note }: { note: JournalRow }) {
+    const palette = usePalette();
+    const blocks = useMemo(() => parseBlocks(note.blocks), [note]);
+    // 引导行回退链：描述（未填跳过）→ 正文首段；正文 = 其余段落 13 muted 预算
+    const parts = useMemo(
+        () =>
+            (blocks ?? [])
+                .filter((block): block is Extract<JournalBlock, { t: 'p' }> => block.t === 'p' && block.text.trim() !== '')
+                .map((block) => block.text.trim()),
+        [blocks],
+    );
+    const lead = note.description?.trim() || parts[0] || '';
+    const body = useMemo(() => {
+        const rest = note.description?.trim() ? parts.join(' ') : parts.slice(1).join(' ');
+        return rest.length > 140 ? `${rest.slice(0, 140)}…` : rest;
+    }, [note, parts]);
+    const { maxLines, onLayout } = useSummaryLineBudget(20);
+    return (
+        <View className="flex-1 flex-col">
+            <View className="flex-1 flex-col px-6 py-5">
+                <Text
+                    numberOfLines={1}
+                    className="text-[11px] text-ink-muted dark:text-inkd-muted"
+                    style={{ fontVariant: ['tabular-nums'] }}
+                >
+                    {'笔记 · '}
+                    {`更新于 ${formatEventDateTime(note.updated_at)}`}
+                </Text>
+                <Text
+                    numberOfLines={1}
+                    className="mt-1 text-[15px] font-semibold text-ink-text dark:text-inkd-text"
+                >
+                    {note.title?.trim() || '未命名笔记'}
+                </Text>
+                <Text
+                    numberOfLines={1}
+                    className={`mt-2.5 text-[15px] leading-6 ${lead ? 'text-ink-text dark:text-inkd-text' : 'text-ink-muted dark:text-inkd-muted'}`}
+                >
+                    {lead || '还没有内容，点开写一点。'}
+                </Text>
+                <View className="mt-1 min-h-0 flex-1 overflow-hidden" onLayout={onLayout}>
+                    {body ? (
+                        <SummaryText
+                            maxLines={maxLines}
+                            lineClass="text-[13px] leading-5"
+                            textClass="text-ink-muted dark:text-inkd-muted"
+                        >
+                            {body}
+                        </SummaryText>
+                    ) : null}
+                </View>
+                <View className="flex-row items-center justify-between pt-3">
+                    <Text
+                        className="text-[11px] text-ink-muted dark:text-inkd-muted"
+                        style={{ fontVariant: ['tabular-nums'] }}
+                    >
+                        {note.word_count} 字
+                    </Text>
+                    <View className="flex-row items-center">
+                        <Text className="text-[12px] font-medium text-ink-accent dark:text-inkd-accent">
+                            打开笔记
+                        </Text>
+                        <LucideChevronRight size={13} color={palette.accent} strokeWidth={2} />
+                    </View>
+                </View>
+            </View>
+        </View>
+    );
+}
+
+/**
+ * 事件卡（新增，卡面语言对齐原 deck 卡）：eyebrow（类型前缀 + 更新时间）+
+ * 标题 + 短描述 + 底 meta。点击 → /events/[id]；无菜单（R3）。
+ */
+function EventDeckCard({ event }: { event: EventRow }) {
+    const palette = usePalette();
+    const { maxLines, onLayout } = useSummaryLineBudget(20);
+    return (
+        <View className="flex-1 flex-col">
+            <View className="flex-1 flex-col px-6 py-5">
+                <Text
+                    numberOfLines={1}
+                    className="text-[11px] text-ink-muted dark:text-inkd-muted"
+                    style={{ fontVariant: ['tabular-nums'] }}
+                >
+                    {'事件 · '}
+                    {`更新于 ${formatEventDateTime(event.updated_at)}`}
+                </Text>
+                <Text
+                    numberOfLines={2}
+                    className="mt-1 text-[15px] font-semibold text-ink-text dark:text-inkd-text"
+                >
+                    {event.title}
+                </Text>
+                {event.description?.trim() ? (
+                    <View className="mt-2.5 min-h-0 flex-1 overflow-hidden" onLayout={onLayout}>
+                        <SummaryText
+                            maxLines={maxLines}
+                            lineClass="text-[13px] leading-5"
+                            textClass="text-ink-secondary dark:text-inkd-secondary"
+                        >
+                            {event.description}
+                        </SummaryText>
+                    </View>
+                ) : (
+                    <View className="min-h-0 flex-1" />
+                )}
+                <View className="flex-row items-center justify-between pt-3">
+                    <Text
+                        className="text-[11px] text-ink-muted dark:text-inkd-muted"
+                        style={{ fontVariant: ['tabular-nums'] }}
+                    >
+                        进行中
+                    </Text>
+                    <View className="flex-row items-center">
+                        <Text className="text-[12px] font-medium text-ink-accent dark:text-inkd-accent">
+                            打开事件
+                        </Text>
+                        <LucideChevronRight size={13} color={palette.accent} strokeWidth={2} />
+                    </View>
+                </View>
+            </View>
+        </View>
+    );
+}

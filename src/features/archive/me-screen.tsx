@@ -15,55 +15,57 @@ import {
     LucideCalendar,
     LucideChevronRight,
     LucideFlag,
+    LucideNotebookPen,
     LucideSearch,
+    LucideSettings,
 } from '@/core/icons';
-import { useArchiveStore, type TripCard } from './store';
-import { formatTripSpan } from './trip-logic';
-import { LineChart, LoadingView, StatusChip, usePalette, useThemePref, type ThemePref } from './ui';
-import { useMediaAlignPref, type MediaAlign } from './ui/theme';
+import { haptics } from '@/core/haptics';
+import { useArchiveRevision, useArchiveStore } from './store';
+import { LineChart, LoadingView, usePalette } from './ui';
 
 /**
  * Me：身份行（Me 标题 + 连续天数）、指标卡（3 格 KPI 单行 + 30 天曲线）、
- * 我的内容组（搜索 / 事件 / 行程列表）、主题偏好。
+ * 我的内容组（搜索 / 事件 / 行程卡 / 设置行）。
  * 本屏唯一问题："我坚持得怎么样，东西在哪？"
  *
  * 信息收敛口径（区块审计后的取舍，功能一项不丢）：
  * - 身份行：纯文本标题行（无头像/UID），连续天数只在此出现一次——KPI 不再
  *   重复渲染同语义数值（去重后 3 格收单行）；
  * - 指标：3 格 KPI 单行 + 曲线并作一张 surface 卡（连续天数已在身份行，KPI
- *   去重后由 2×2 收单行；3 列是本卡单行容纳的上限，单元横向 padding 收窄为
- *   px-3 防 label 换行），数值 tabular-nums。**去线自然化（2026-11 用户反馈
+ *   去重后由 2×2 收单行）。2026-11-20 迭代终态：事件三态/笔记数/历史行程数
+ *   **不进指标卡**（8 格三行被否「太密集」、3 格 + 弱化明细行被否「太丑」，
+ *   两案均退役），改挂「我的内容」对应行尾（iOS 设置行尾值范式，见内容卡
+ *   注）——指标卡保持原版三格体量。**去线自然化（2026-11 用户反馈
  *   「线条划分怪怪的」）**：KPI 格间竖线、KPI 与曲线段横线全部拆除，卡内
  *   分区靠留白不靠线（Apple Journal 卡片节奏，同 event-card 口径）——格间
  *   24px（px-3×2）留白、曲线段与 KPI 段 24px（py-3×2）纵向节奏；
- * - 内容：搜索 / 事件 / 行程行们（+ 行程空态块）并作**一张** rounded-card
- *   surface 卡（2026-11 用户反馈「三个卡片合并为一个卡片，不能划分线条要
- *   自然」——第三轮迭代：独立小卡 → 单卡多行）。卡内行与行**零线条**：行间
- *   分隔完全交给留白与行内 padding 节奏（入口行 h-12 单行、行程行/空态块
- *   py-3.5，行内统一 px-4 左缘；Apple Journal 卡片节奏，同 event-card / 指标
- *   卡口径），无任何 hairline 元素。按压语言 = 行级 Pressable +
- *   active:bg-ink-raised 背景**高亮**（iOS 设置列表式）：合并卡内行不再有
- *   自己的卡面，BouncyPressable 的 scale 变形会让行在卡内「抖动」、整卡 dim
- *   会透出卡底，且相邻行静止 / 被按行缩放的联动观感怪——底色高亮与「一张
- *   大卡」的容器隐喻自洽；Pressable 本体直接挂 active: 类无 css-interop
- *   remount 风险（View 挂 active: 才会被升级 remount）。
- *   行程数量增减时行自然增减；入口行 48dp 单行，行程行保留两行信息密度，
- *   副题行删除（题名自释，a11y 完整描述保留在入口行 label）；
- * - 层级：身份行 → 指标卡 → 我的内容组 → 外观卡，共 4 块；区块间距统一
- *   24（mt-6），全部落在 4dp 网格上；
- * - 外观卡（2026-11 四版迭代：v1 文字分段滑块、v2 预览缩略图、v3 去卡壳
- *   轻行式均被否；用户定调「多用卡片」——v4 定稿 = **实时预览卡**：卡上
- *   半迷你日记页随主题/对齐即时演示，下半两组紧凑分段，卡内零 hairline；
- *   详见 AppearanceSection 注）；
+ * - 内容：搜索 / 事件 / 笔记 / 行程行并作**一张** rounded-card surface 卡
+ *   （2026-11 用户反馈「合并为一个卡片」口径延续；笔记行 → /notes、行程行 → /trips
+ *   堆叠库（各自只翻自己的卡），卡片本身只显示名字不预览内容）。**行尾弱化
+ *   计数（2026-11-20）**：事件行尾「进行 X · 完成 Y · 失败 Z」（状态词与事件
+ *   筛选两字词表同源）、笔记行尾「N 篇」、行程行尾「进行 X · 历史 Y」——
+ *   数据 = metrics.eventCounts / metrics.noteCount / store.trips 派生，数字
+ *   跟着入口走，不在指标卡另立格子。卡内行与行**零线条**：
+ *   行间分隔完全交给留白与行内 padding 节奏（入口行 h-12 单行），无任何
+ *   hairline 元素。按压语言 = 行级 Pressable + active:bg-ink-raised 背景高亮
+ *   （iOS 设置列表式）；**行程行恒静态（新2，2026-11-19 用户指令）**：不因
+ *   创建行程展开成行程列表——「行程还是行程，保持那张卡片」，行程内容在
+ *   Archive / 行程详情消费，Me 只留身份位；
+ * - 设置（新1，2026-11-19 用户指令；本轮再拆）：设置行从「我的内容」卡中
+ *   拆出独立成一张卡（同 rounded-card surface 语言、mt-6 区块间距，不带区块
+ *   标题——卡内就一行，标题是冗余描述）。设置页收口外观 / App 锁 / 备份与
+ *   恢复（原外观 / 导出三块整体进 /settings），Me 只留一行入口；
+ * - 设置（新1，2026-11-19 用户指令）：原外观 / App 锁 / 导出三块整体收口进
+ *   /settings 设置页（外观、安全、备份与恢复），Me 只留一行入口——本屏回到
+ *   「我坚持得怎么样，东西在哪」的单一问题，设置动作不占首屏；
+ * - 层级：身份行 → 指标卡 → 我的内容组，共 3 块；区块间距统一 24（mt-6），
+ *   全部落在 4dp 网格上；
  * - 动效（RN Animated native driver，同 BouncyPressable / boot-screen 通道，
  *   不用 reanimated——Fabric 上驱动触摸视图样式有概率吞按压）：内容单元
  *   fade + translateY 交错进场（300ms ease-out、60ms 步进、reduceMotion 直接
- *   终态，见 Enter），曲线 opt-in 淡入（line-chart.animated，仅本屏开启），
- *   外观卡进场动画见 AppearanceSection 注；动画层与布局/触摸层分离
- *   （Enter 外层普通 View 承担 className、内层 Animated.View 只挂动画 style，
- *   Pressable 一律在其 children 内部）；
- * - 关于/版本：审计确认本页无此区块，不新增（无需折叠）。
- * 内联检索区已独立成 /search 页（DEV.md #5），此处只留组内一行入口。
+ *   终态，见 Enter），曲线 opt-in 淡入（line-chart.animated，仅本屏开启）；
+ *   动画层与布局/触摸层分离（Enter 外层普通 View 承担 className、内层
+ *   Animated.View 只挂动画 style，Pressable 一律在其 children 内部）。
  */
 
 /** 进场节奏常量：单元 300ms（boot-screen 淡入同档）、交错 60ms（40~70ms
@@ -163,10 +165,24 @@ export function MeScreen() {
     const trips = useArchiveStore((s) => s.trips);
     const metrics = useArchiveStore((s) => s.metrics);
     const error = useArchiveStore((s) => s.error);
+    const loadAll = useArchiveStore((s) => s.loadAll);
+    const revision = useArchiveRevision();
+
+    // 指标保鲜（2026-11-20 新增事件/笔记 KPI 后必须诚实）：Me 常驻栈内不卸载，
+    // revision 型 mutation 前进即重跑 loadAll（事件三态/笔记数/行程派生计数不
+    // 滞留旧值）；revision = 0 启动基线由上一 effect 独占（library-screen 同款
+    // 双 effect 取径）。
+    useEffect(() => {
+        if (!ready) void loadAll();
+    }, [ready, loadAll]);
+    useEffect(() => {
+        if (revision > 0) void loadAll();
+    }, [revision, loadAll]);
 
     if (!ready) return <LoadingView />;
 
     const ongoing = trips.filter((t) => t.status === 'ongoing').length;
+    const finished = trips.filter((t) => t.status === 'finished').length;
 
     return (
         <View className="flex-1 bg-ink-base dark:bg-inkd-base">
@@ -194,7 +210,10 @@ export function MeScreen() {
                     keyboardShouldPersistTaps="handled"
                 >
                     {/* 指标卡：3 格 KPI 单行 + 30 天曲线并作一张 surface 卡（连续天数
-                        已在身份行，KPI 去重后由 2×2 收单行）。**无任何内部分隔线**：
+                        已在身份行，KPI 去重后收单行）。2026-11-20 迭代终态：事件三态/
+                        笔记数/历史行程数**不进指标卡**（8 格三行被否「太密集」、弱化
+                        明细行被否「太丑」），改挂「我的内容」对应行尾（iOS 设置行尾
+                        值范式——数字跟着入口走，见内容卡注）。**无任何内部分隔线**：
                         KPI 格间靠两侧 px-3 留白相加（24px），曲线段与 KPI 段靠 py-3×2
                         纵向节奏——卡内分区靠留白不靠线（同 event-card / Apple Journal
                         口径）。卡片级仍是 surface-on-base tone 分层、rounded-card 16、
@@ -233,13 +252,13 @@ export function MeScreen() {
                         </Enter>
                     </View>
 
-                    {/* 我的内容：一张卡（搜索 / 事件 / 行程行们合并，卡内零线条——
-                        行间靠 py 节奏与 px-4 统一左缘自然过渡，无 hairline）。卡壳
-                        不做整体动画：行作为内容单元交错淡入，卡面作为安静的「底」
-                        先立住（指标卡同款模式）。typedRoutes：'/search'、'/events'
-                        尚未进 .expo/types 路由联合（本组不跑 Metro，字面量由 metro
-                        启动时生成）——`as never` 是最小妥协（never 可赋给任何联合，
-                        不产生 any 的误拓宽），类型生成后可直接删除断言。 */}
+                    {/* 我的内容：一张卡（搜索 / 事件 / 笔记 / 行程，卡内零线条——行间
+                        靠 py 节奏与 px-4 统一左缘自然过渡，无 hairline）。卡壳不做整体
+                        动画：行作为内容单元交错淡入，卡面作为安静的「底」先立住。
+                        typedRoutes：'/search'、'/events'、'/notes'、'/trips'、'/settings' 尚未进
+                        .expo/types 路由联合（本组不跑 Metro，字面量由 metro 启动时生成）
+                        ——`as never` 是最小妥协（never 可赋给任何联合，不产生 any 的
+                        误拓宽），类型生成后可直接删除断言。 */}
                     <View className="mt-6">
                         <Enter delay={240} y={0}>
                             <Text className="mb-3 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
@@ -255,46 +274,101 @@ export function MeScreen() {
                                     accessibilityLabel="搜索笔记与行程"
                                 />
                             </Enter>
+                            {/* 行尾计数（2026-11-20 终态：事件三态/笔记数/行程两态挂
+                                对应入口行尾——数字跟着入口走，不占指标卡版面） */}
                             <Enter delay={280 + ENTER_STAGGER}>
                                 <ContentEntryRow
                                     icon={<LucideFlag size={18} strokeWidth={1.9} color={palette.secondary} />}
                                     label="事件"
+                                    trailing={`进行 ${metrics.eventCounts.open} · 完成 ${metrics.eventCounts.done} · 失败 ${metrics.eventCounts.failed}`}
                                     onPress={() => router.push('/events' as never)}
                                     accessibilityLabel="事件"
                                 />
                             </Enter>
-                            {/* 行程行：空态 = 静态「行程」单行（2026-11-11 用户指令：
-                                标签收敛「行程」两字、去副题与创建行程按钮）；
-                                有行程后按实际渲染行程行 */}
-                            {trips.length === 0 ? (
-                                <Enter delay={280 + ENTER_STAGGER * 2}>
-                                    <View className="flex-row items-center gap-3 px-4 py-3.5">
-                                        <LucideCalendar size={18} strokeWidth={1.9} color={palette.secondary} />
-                                        <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
-                                            行程
-                                        </Text>
-                                    </View>
-                                </Enter>
-                            ) : (
-                                trips.map((trip, index) => (
-                                    <Enter key={trip.id} delay={280 + ENTER_STAGGER * (2 + index)}>
-                                        <TripRow
-                                            trip={trip}
-                                            onPress={() =>
-                                                router.push({ pathname: '/trip/[id]', params: { id: trip.id } })
-                                            }
-                                        />
-                                    </Enter>
-                                ))
-                            )}
+                            {/* 笔记行 → /notes 笔记堆（只翻独立笔记卡；卡片只显示
+                                「笔记」二字不预览内容；2026-11-19 用户指令删除
+                                「日记」行——日记入口在首页 /write） */}
+                            <Enter delay={280 + ENTER_STAGGER * 2}>
+                                <Pressable
+                                    onPress={() => router.push('/notes' as never)}
+                                    className="flex-row items-center gap-3 px-4 py-3.5 active:bg-ink-raised dark:active:bg-inkd-raised"
+                                    accessibilityRole="button"
+                                    accessibilityLabel="笔记"
+                                >
+                                    <LucideNotebookPen size={18} strokeWidth={1.9} color={palette.secondary} />
+                                    <Text className="flex-1 text-[14px] font-medium text-ink-text dark:text-inkd-text">
+                                        笔记
+                                    </Text>
+                                    <Text
+                                        numberOfLines={1}
+                                        className="text-[12px] text-ink-muted dark:text-inkd-muted"
+                                        style={{ fontVariant: ['tabular-nums'] }}
+                                    >
+                                        {`${metrics.noteCount} 篇`}
+                                    </Text>
+                                    <LucideChevronRight size={16} strokeWidth={1.9} color={palette.faint} />
+                                </Pressable>
+                            </Enter>
+                            {/* 行程行（2026-11-19 用户指令澄清）：卡片恒显「行程」二字
+                                不展开内容，点按 → /library 堆叠库（笔记与行程翻卡，
+                                点卡进笔记编辑/行程详情） */}
+                            <Enter delay={280 + ENTER_STAGGER * 3}>
+                                <Pressable
+                                    onPress={() => router.push('/trips' as never)}
+                                    className="flex-row items-center gap-3 px-4 py-3.5 active:bg-ink-raised dark:active:bg-inkd-raised"
+                                    accessibilityRole="button"
+                                    accessibilityLabel="行程"
+                                >
+                                    <LucideCalendar size={18} strokeWidth={1.9} color={palette.secondary} />
+                                    <Text className="flex-1 text-[14px] font-medium text-ink-text dark:text-inkd-text">
+                                        行程
+                                    </Text>
+                                    <Text
+                                        numberOfLines={1}
+                                        className="text-[12px] text-ink-muted dark:text-inkd-muted"
+                                        style={{ fontVariant: ['tabular-nums'] }}
+                                    >
+                                        {`进行 ${ongoing} · 历史 ${finished}`}
+                                    </Text>
+                                    <LucideChevronRight size={16} strokeWidth={1.9} color={palette.faint} />
+                                </Pressable>
+                            </Enter>
                         </View>
                     </View>
 
-                    {/* 外观卡（主题 + 图片对齐）：区块在行组时间线之后淡入（严格
-                        自上而下，delay 锚点沿用原 ThemeSection 口径），实时预览卡
-                        = 预览块 + 两组紧凑分段（见 AppearanceSection 注）；进场 =
-                        标题与卡体两拍交错（克制） */}
-                    <AppearanceSection delay={280 + ENTER_STAGGER * (2 + trips.length)} />
+                    {/* 设置：独立区块（2026-11-19 用户指令「设置卡片单独一个 + 大一些」）：
+                        与「我的内容」同构的区块节奏（13px 区块题 + 独立卡），卡体加
+                        高（py-4 + 两行内衬 = 视觉重量与内容卡一致）。设置页收口外观 /
+                        App 锁 / 备份与恢复。Enter 时间线顺延（360 + STAGGER×4）。 */}
+                    <View className="mt-6">
+                        <Enter delay={280 + ENTER_STAGGER * 4} y={0}>
+                            <Text className="mb-3 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                设置
+                            </Text>
+                        </Enter>
+                        <Enter delay={280 + ENTER_STAGGER * 5} y={8}>
+                            {/* overflow-hidden 让行高亮底裁进 rounded-card 圆角；py-4
+                                加高卡体（用户指令「大一些」，行解剖仍 = 图标 + 题 +
+                                chevron 单行） */}
+                            <View className="overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface">
+                                <Pressable
+                                    onPress={() => {
+                                        haptics.impact();
+                                        router.push('/settings' as never);
+                                    }}
+                                    className="flex-row items-center gap-3 px-4 py-4 active:bg-ink-raised dark:active:bg-inkd-raised"
+                                    accessibilityRole="button"
+                                    accessibilityLabel="设置"
+                                >
+                                    <LucideSettings size={18} strokeWidth={1.9} color={palette.secondary} />
+                                    <Text className="flex-1 text-[14px] font-medium text-ink-text dark:text-inkd-text">
+                                        设置
+                                    </Text>
+                                    <LucideChevronRight size={16} strokeWidth={1.9} color={palette.faint} />
+                                </Pressable>
+                            </View>
+                        </Enter>
+                    </View>
                 </ScrollView>
             </View>
         </View>
@@ -322,23 +396,27 @@ function MetricCell({ value, unit, label }: { value: string; unit: string; label
 }
 
 /**
- * 内容入口行（搜索/事件共用行解剖）：48dp 单行 = 图标 + 题 + chevron，无卡壳
- * （卡面归合并卡整体，见屏头注释）。副题行收敛删除（题名自释，完整描述保留在
- * a11y label）。按压 = Pressable + active:bg-ink-raised 行级高亮（iOS 设置列表
- * 式，合并卡统一按压语言，取舍理由见屏头注释）：Pressable 本体直接挂 active:
- * 类无 css-interop remount 风险（View 挂 active: 才会被升级成 Pressable 首帧
- * 后 remount）。命中盒 = h-12（48 ≥44，hitSlop 0）；行间无 gap 贴靠，各行独立
- * 可按、触摸面无重叠（iOS 设置列表同款）。a11y 属性挂 Pressable 本体（无内层
- * 卡 View，不再需要 BouncyPressable 契约绕行）。
+ * 内容入口行（搜索/事件共用行解剖）：48dp 单行 = 图标 + 题 + [行尾值] +
+ * chevron，无卡壳（卡面归合并卡整体，见屏头注释）。trailing（2026-11-20
+ * 新增，可选）：行尾弱化计数（12px muted tabular，numberOfLines=1 防窄屏
+ * 换行）——iOS 设置行尾值范式，数字跟着入口走。按压 = Pressable +
+ * active:bg-ink-raised 行级高亮（iOS 设置列表式，合并卡统一按压语言）：
+ * Pressable 本体直接挂 active: 类无 css-interop remount 风险（View 挂
+ * active: 才会被升级成 Pressable 首帧后 remount）。命中盒 = h-12（48 ≥44，
+ * hitSlop 0）；行间无 gap 贴靠，各行独立可按、触摸面无重叠。a11y 属性挂
+ * Pressable 本体。
  */
 function ContentEntryRow({
     icon,
     label,
+    trailing,
     onPress,
     accessibilityLabel,
 }: {
     icon: ReactElement;
     label: string;
+    /** 行尾弱化计数（如「进行 2 · 完成 8 · 失败 1」）；缺省 = 无行尾值。 */
+    trailing?: string;
     onPress: () => void;
     accessibilityLabel: string;
 }) {
@@ -352,224 +430,17 @@ function ContentEntryRow({
         >
             {icon}
             <Text className="flex-1 text-[14px] font-medium text-ink-text dark:text-inkd-text">{label}</Text>
-            <LucideChevronRight size={16} strokeWidth={1.9} color={palette.faint} />
-        </Pressable>
-    );
-}
-
-/**
- * 行程行（合并卡内的行程条目行）：题名行（emoji + 标题 + 状态片）+ 副题行
- * （区间 · 天数 · 已写 · 计划百分比），无卡壳。按压 = 行级 active:bg-ink-raised
- * 高亮（合并卡统一按压语言，同 ContentEntryRow）；命中盒 = px-4 py-3.5 全宽
- * 两行（自然高 ≥44，hitSlop 0），相邻行程行贴靠不重叠。a11y role 挂 Pressable
- * 本体（题名 Text 自释，无显式 label——与原独立卡同口径）。
- */
-function TripRow({ trip, onPress }: { trip: TripCard; onPress: () => void }) {
-    const pct = trip.plansTotal > 0 ? Math.round((trip.plansDone / trip.plansTotal) * 100) : null;
-    return (
-        <Pressable
-            onPress={onPress}
-            className="px-4 py-3.5 active:bg-ink-raised dark:active:bg-inkd-raised"
-            accessibilityRole="button"
-        >
-            <View className="flex-row items-center justify-between">
+            {trailing ? (
                 <Text
                     numberOfLines={1}
-                    className="mr-3 flex-1 text-[14px] font-medium text-ink-text dark:text-inkd-text"
-                >
-                    {trip.icon ?? '🧭'} {trip.title}
-                </Text>
-                <StatusChip status={trip.status} />
-            </View>
-            <View className="mt-1 flex-row items-center">
-                <Text
-                    className="text-[12px] text-ink-secondary dark:text-inkd-secondary"
+                    className="text-[12px] text-ink-muted dark:text-inkd-muted"
                     style={{ fontVariant: ['tabular-nums'] }}
                 >
-                    {/* 区间文案走 formatTripSpan（持续性感知，open 行程安全：
-                        formatTripRange 对 'open' 会抛 RangeError）；天数与
-                        「已写」分母仅在固定跨度（dayCount != null）时追加，
-                        持续性行程不渲染假分母（参照 archive-screen 口径） */}
-                    {formatTripSpan(trip)}
-                    {trip.dayCount != null ? ` · ${trip.dayCount} 天` : ''}
-                    {trip.dayCount == null
-                        ? ` · 已写 ${trip.journalDays} 天`
-                        : ` · 已写 ${trip.journalDays}/${trip.dayCount} 天`}
+                    {trailing}
                 </Text>
-                {pct !== null ? (
-                    <Text
-                        className="ml-auto text-[12px] text-ink-muted dark:text-inkd-muted"
-                        style={{ fontVariant: ['tabular-nums'] }}
-                    >
-                        计划 {pct}%
-                    </Text>
-                ) : null}
-            </View>
+            ) : null}
+            <LucideChevronRight size={16} strokeWidth={1.9} color={palette.faint} />
         </Pressable>
-    );
-}
-
-/**
- * 外观卡（2026-11 迭代五版：v1 文字分段滑块、v2 预览缩略图、v3 去卡壳轻行、
- * v4 实时预览卡均被否/调整；最终形态 = **紧凑行式卡**：卡内两组「label 左
- * 14px medium + CompactSegmented 右」字段行（主题三档 / 图片对齐三档，
- * 同构不复制粘贴）——2026-11-11 用户指令删除真实日记预览块，卡回到纯设置
- * 行 + 「多用卡片」的卡壳承载；编辑器媒体块渲染对齐的设置入口，渲染消费在
- * 编辑器侧（另一链路），此处只做设置 UI）：
- * - 卡内分区零 hairline：行组间 mt-2 留白；
- * - 消费 useThemePref / useMediaAlignPref（persist 均在 hook 内收口）；
- * - 区块进场 = 标题（y=0 纯淡入）与卡体（y=8）两拍交错，时间线锚点由
- *   调用方传入（沿用原 ThemeSection 的「行组之后」口径，严格自上而下）。
- */
-function AppearanceSection({ delay }: { delay: number }) {
-    const [pref, setPref] = useThemePref();
-    const [align, setAlign] = useMediaAlignPref();
-    const themeOptions: Array<{ key: ThemePref; label: string }> = [
-        { key: 'system', label: '跟随系统' },
-        { key: 'light', label: '浅色' },
-        { key: 'dark', label: '深色' },
-    ];
-    const alignOptions: Array<{ key: MediaAlign; label: string }> = [
-        { key: 'left', label: '靠左' },
-        { key: 'center', label: '居中' },
-        { key: 'right', label: '靠右' },
-    ];
-    return (
-        <View className="mt-6">
-            <Enter delay={delay} y={0}>
-                <Text className="mb-3 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                    外观
-                </Text>
-            </Enter>
-            <Enter delay={delay + ENTER_STAGGER} y={8}>
-                <View className="rounded-card bg-ink-surface dark:bg-inkd-surface">
-                    {/* 主题行：label 左 + 紧凑分段右（2026-11-11 用户指令：删除
-                        真实日记预览块，卡内只留两组设置行） */}
-                    <View className="flex-row items-center justify-between px-4 pt-4">
-                        <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">主题</Text>
-                        <CompactSegmented options={themeOptions} value={pref} onChange={setPref} labelPrefix="主题" />
-                    </View>
-                    {/* 图片对齐行：行间 mt-2 留白不加线（去线自然化口径） */}
-                    <View className="mb-1 mt-2 flex-row items-center justify-between px-4">
-                        <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">图片对齐</Text>
-                        <CompactSegmented options={alignOptions} value={align} onChange={setAlign} labelPrefix="图片对齐" />
-                    </View>
-                </View>
-            </Enter>
-        </View>
-    );
-}
-
-/**
- * 紧凑分段滑块（v1 SegmentedTrack 的泛型紧凑版，主题与图片对齐两组同构
- * 不复制粘贴；卡内 tone 阶梯：轨道 ink-border、选中滑块 ink-base 反白；
- * 行右侧自然宽度，不做 flex-1 满宽）：
- * - 滑块承载选中背景（绝对定位铺段后，spring 跟随 friction 9，短滑不过冲），
- *   段落本体不挂条件 bg——规避 css-interop 条件 bg 三元 remount 风险点；
- *   首次布局直接落位不播横扫，选中变更 spring 滑移；
- * - **滑块几何一律内联 style**（Animated 系组件 className 在 web 被
- *   css-interop 静默丢弃，见 Enter 注）：Animated.View 只挂定位/宽度/
- *   transform，涂装交内层普通 View className；
- * - **几何 = 逐段实测宽度**（2026-11-11 真机穿模根因：分段自然宽度——px-4
- *   + 标签长短不一（「跟随系统」4 字 > 「浅色」2 字），旧等分假设
- *   (trackW-8)/3 与实际分段错位，滑块盖不住选中段、文字顶着黑丸边缘）。
- *   每段 onLayout 实测宽度 → 前缀和 offsets → 滑块宽 = 选中段实测宽、
- *   translateX = 选中段前缀和；段数与标签实例持有恒定，实测值只随宽度
- *   环境（旋转/拉伸）变化；v1 无此问题因其分段 flex-1 天然等宽；
- * - **轨道 overflow-hidden**：滑块是绝对定位层，轨道圆角（control 10）比
- *   滑块圆角（thumb 8）大，末端段圆角差异区由轨道裁切兜住；实测几何下
- *   滑块不越轨道内容区，裁切无副作用；
- * - 命中：段本体 h-8(32) < 44 → 纵向 hitSlop 4 补足；段间零间隙横向归 0
- *   （外扩会与邻段重叠误触）。
- */
-function CompactSegmented<T extends string>({
-    options,
-    value,
-    onChange,
-    labelPrefix,
-}: {
-    options: Array<{ key: T; label: string }>;
-    value: T;
-    onChange: (key: T) => void;
-    labelPrefix: string;
-}) {
-    const [segWidths, setSegWidths] = useState<number[]>([]);
-    const placedRef = useRef(false);
-    const sliderX = useRef(new Animated.Value(0)).current;
-    const activeIndex = Math.max(0, options.findIndex((option) => option.key === value));
-    // 逐段实测：offsets = 前缀和（段间零间隙，实测段宽和恒等于轨道内容区宽）
-    const measured = segWidths.length === options.length && segWidths.every((width) => width > 0);
-    let acc = 0;
-    const offsets = options.map((_, index) => {
-        const offset = acc;
-        acc += segWidths[index] ?? 0;
-        return offset;
-    });
-    const segW = measured ? segWidths[activeIndex] : 0;
-    useEffect(() => {
-        if (!measured) return;
-        const target = offsets[activeIndex];
-        if (!placedRef.current) {
-            placedRef.current = true;
-            sliderX.setValue(target);
-            return;
-        }
-        const spring = Animated.spring(sliderX, { toValue: target, friction: 9, useNativeDriver: true });
-        spring.start();
-        return () => spring.stop();
-        // offsets 随 segWidths 派生（O(段数) 每渲染直算），activeIndex 选中变更即重瞄准
-    }, [activeIndex, measured, offsets, sliderX]);
-    return (
-        <View className="flex-row overflow-hidden rounded-control bg-ink-border p-1 dark:bg-inkd-border">
-            {/* 滑块：纯视觉层先渲染（段落文字浮其上），几何内联 style（web 可靠性
-                见组件注），涂装在内层普通 View；实测未就绪时宽 0 不可见 */}
-            <Animated.View
-                pointerEvents="none"
-                style={{
-                    position: 'absolute',
-                    top: 4,
-                    bottom: 4,
-                    left: 4,
-                    width: segW,
-                    transform: [{ translateX: sliderX }],
-                }}
-            >
-                <View className="h-full w-full rounded-thumb bg-ink-base dark:bg-inkd-base" />
-            </Animated.View>
-            {options.map((option, index) => {
-                const active = value === option.key;
-                return (
-                    <Pressable
-                        key={option.key}
-                        onPress={() => onChange(option.key)}
-                        hitSlop={{ top: 4, bottom: 4, left: 0, right: 0 }}
-                        className="h-8 items-center justify-center px-4"
-                        onLayout={(event) =>
-                            setSegWidths((prev) => {
-                                const width = event.nativeEvent.layout.width;
-                                if (prev[index] === width) return prev;
-                                const next = [...prev];
-                                next[index] = width;
-                                return next;
-                            })
-                        }
-                        accessibilityRole="button"
-                        accessibilityState={{ selected: active }}
-                        accessibilityLabel={`${labelPrefix}：${option.label}`}
-                    >
-                        <Text
-                            className={`text-[12px] ${
-                                active
-                                    ? 'font-medium text-ink-text dark:text-inkd-text'
-                                    : 'text-ink-muted dark:text-inkd-muted'
-                            }`}
-                        >
-                            {option.label}
-                        </Text>
-                    </Pressable>
-                );
-            })}
-        </View>
     );
 }
 

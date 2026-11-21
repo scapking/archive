@@ -41,3 +41,7 @@ export const imageManipulator = {
 
 export type { Action, SaveOptions, ImageResult } from 'expo-image-manipulator';
 export { SaveFormat } from 'expo-image-manipulator';
+// 像素读取扩展面（2026-11-17 登记）：编码图片 → RGBA 原始字节（Skia 解码 +
+// 离屏绘制 + readPixels），供 GIF 编码等像素级下游消费；类型化错误随出口。
+export { readPixelsAsync, type RawPixels } from './read-pixels';
+export { ImageManipulatorError, type ImageManipulatorErrorCode } from './errors';

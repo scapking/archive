@@ -207,27 +207,11 @@ export function validateEventInput(input: EventInput): string | null {
  * 交互自说明）。
  */
 export const EVENT_TITLE_PLACEHOLDER = '事件名称';
-export const EVENT_HANDLED_BY_PLACEHOLDER = '负责人（选填）';
-export const EVENT_SUBJECT_PLACEHOLDER = '相关人员（选填）';
-export const EVENT_PHONE_PLACEHOLDER = '手机号（选填）';
-export const EVENT_EMAIL_PLACEHOLDER = '邮箱（选填）';
-export const EVENT_DESCRIPTION_PLACEHOLDER = '补充说明（选填）';
-
-// ─── /events 页头副标池（本轮保留：收敛范围是输入框描述，页头不在其列）───────
-
-/** /events 页头副标池（事件/工单语义的轻文案，每次进页固定一条）。 */
-export const EVENTS_HEADER_TAGLINES: readonly string[] = [
-    '要跟的事，记成工单。',
-    '挂着的事，别让它烂尾。',
-    '办完一件，勾掉一件。',
-    '办砸了也是结果，记下来。',
-    '最近动过的，排在最前。',
-];
-
-/** 池内均匀随机取一条（纯函数；调用方负责「每挂载固定一次」纪律）。 */
-export function pickEventCopy(pool: readonly string[]): string {
-    return pool[Math.floor(Math.random() * pool.length)];
-}
+export const EVENT_HANDLED_BY_PLACEHOLDER = '负责人';
+export const EVENT_SUBJECT_PLACEHOLDER = '相关人员';
+export const EVENT_PHONE_PLACEHOLDER = '手机号';
+export const EVENT_EMAIL_PLACEHOLDER = '邮箱';
+export const EVENT_DESCRIPTION_PLACEHOLDER = '补充说明';
 
 // ─── 正文块（复用 journal 块模型）───────────────────────────────────────────
 

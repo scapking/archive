@@ -6,13 +6,17 @@ export { BlockEditor, EditorToolbar } from './editor';
 // PENDING_MEDIA_ID 的事实源在 db/schema.ts：editor 与本 barrel 都只是 re-export
 // （v5 require cycle 修复终态），ui 层不再有任何自定义字面量定义点。
 export { PENDING_MEDIA_ID } from '../db';
+// ActionMenuCard：长按操作菜单卡共享组件（首页行程卡/笔记卡菜单、Me 导出菜单
+// 同语言收口；DayActionCard/chooser 的通用化）。依赖面 = react-native +
+// core/icons + ./close-button + ./editor-icons + ./theme，不回头依赖 store/ui，无环。
+export { ActionMenuCard, type ActionMenuRow } from './action-menu-card';
 export { AudioBlock, formatAudioTime } from './audio-player';
 export {
     CameraCaptureOverlay,
     isVideoCaptureSupported,
     type CameraCapture,
 } from './camera-overlay';
-export { CardDeck } from './deck';
+export { CardDeck, type DeckItem } from './deck';
 // CloseButton：全部卡片浮层/全屏层的统一关闭钮（journal-edit / archive 等多屏
 // 此前按域内深取纪律直连 ./ui/close-button，出口扩充后收口）。依赖面 =
 // react-native + core/icons + ./theme，均为 ui 内既有依赖，无环。

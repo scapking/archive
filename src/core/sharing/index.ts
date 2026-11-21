@@ -68,6 +68,7 @@ const MIME_EXTENSIONS: Record<string, string> = {
     'application/zip': 'zip',
     'application/json': 'json',
     'text/plain': 'txt',
+    'text/html': 'html',
 };
 
 /**

@@ -8,7 +8,10 @@
     "scheme": "archive",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "Allow Archive to use Face ID to unlock the app."
+      }
     },
     "android": {
       "adaptiveIcon": {

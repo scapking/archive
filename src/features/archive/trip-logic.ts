@@ -47,6 +47,30 @@ export function todayLocal(): string {
     return toLocalDate(new Date());
 }
 
+/**
+ * 行程标题兜底文案（R2「行程名称非必须」）：title 列 NOT NULL，未命名落空串；
+ * 展示层一律经本函数取题（空串 → 兜底名），禁止各屏散落三元判断。
+ */
+export const TRIP_TITLE_FALLBACK = '未命名行程';
+
+export function tripDisplayTitle(title: string): string {
+    return title.trim().length > 0 ? title : TRIP_TITLE_FALLBACK;
+}
+
+/**
+ * 行程「常住今天」的卡面标签（R5）：持续性行程出发后恒进行中，deck 卡的
+ * 时间锚定从「出发日」改为「今天」——eyebrow = 今天日期 + 第 N 天（出发日
+ * 起算）。仅持续性行程适用（固定区间行程仍走 formatTripRange 区间语义）；
+ * 出发前（today < start_date）返回 null，调用方回退 formatTripSpan。
+ */
+export function tripTodayLabel(
+    row: Pick<TripRow, 'start_date' | 'end_date'>,
+    today = todayLocal(),
+): string | null {
+    if (!isTripOpenEnded(row) || today < row.start_date) return null;
+    return `${formatDateParts(today).monthDay} · 第 ${dayDiff(row.start_date, today) + 1} 天`;
+}
+
 /** 本地日期加 n 天（n 可为负）。 */
 export function addDaysLocal(value: string, n: number): string {
     const date = parseLocalDate(value);
@@ -114,7 +138,11 @@ export function deriveTripStatus(
     today = todayLocal(),
 ): TripStatus {
     if (today < row.start_date) return 'planning';
-    if (!isTripOpenEnded(row) && today > row.end_date) return 'finished';
+    // 结束日当天即 finished（2026-11-19 用户指令「关闭行程要真正归档完成」）：
+    // 旧口径 today > end_date 会让「关闭行程（end_date = 今天）」的行程当天仍显
+    // 示进行中、卡留在首页——用户感知为「没归档」。新口径：到达结束日即回忆 +
+    // 内容锁定（#7 语义随之：结束日当天起只读）。
+    if (!isTripOpenEnded(row) && today >= row.end_date) return 'finished';
     return 'ongoing';
 }
 
@@ -156,9 +184,9 @@ export interface TripInput {
     endDate: string | null;
 }
 
-/** 建行程表单校验：返回错误文案；null = 通过（日期部分另见 isValidLocalDate）。 */
+/** 建行程表单校验：返回错误文案；null = 通过（日期部分另见 isValidLocalDate）。
+    标题非必须（R2）：只在上限维度校验，空串由展示层 tripDisplayTitle 兜底。 */
 export function validateTripInput(input: TripInput): string | null {
-    if (input.title.trim().length === 0) return '给行程起个名字';
     if (input.title.trim().length > 40) return '行程名最多 40 个字';
     if (!isValidLocalDate(input.startDate)) return '出发日期不完整';
     if (input.endDate !== null) {
