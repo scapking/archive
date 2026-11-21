@@ -11,3 +11,12 @@ Thumbs.db
 # 本地临时
 *.log
 tmp/
+
+# 发布签名材料（只经 GitHub Secrets 传递，绝不入库）
+*.keystore
+*.jks
+release-assets/
+
+# Python 测试字节码缓存
+__pycache__/
+*.pyc
