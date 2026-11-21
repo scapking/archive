@@ -245,7 +245,20 @@ jobs:
           import os
           import re
           import sys
+          import zipfile
           from pathlib import Path
+
+          def validate_archive(path, required_entries):
+              with zipfile.ZipFile(path) as archive:
+                  corrupt_entry = archive.testzip()
+                  if corrupt_entry is not None:
+                      raise SystemExit(
+                          f"Corrupt archive entry in {path}: {corrupt_entry}"
+                      )
+                  names = set(archive.namelist())
+                  missing = sorted(set(required_entries) - names)
+                  if missing:
+                      raise SystemExit(f"Missing entries in {path}: {missing}")
 
           tag = os.environ["RELEASE_TAG"]
           if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
@@ -261,6 +274,11 @@ jobs:
               raise SystemExit(f"Expected one non-empty Android APK, found {android!r}")
           if len(ios) != 1 or not ios[0].stat().st_size:
               raise SystemExit(f"Expected one non-empty iOS IPA, found {ios!r}")
+          validate_archive(android[0], {"AndroidManifest.xml", "classes.dex"})
+          validate_archive(
+              ios[0],
+              {"Payload/Archive.app/Info.plist", "Payload/Archive.app/main.jsbundle"},
+          )
           PY
 
       - name: Create GitHub Release
