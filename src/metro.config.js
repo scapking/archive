@@ -1,5 +1,22 @@
+const fs = require('fs');
+const path = require('path');
+
 const { getDefaultConfig } = require('expo/metro-config');
 const { withNativeWind } = require('nativewind/metro');
+
+const cssInteropRoot = path.dirname(
+  require.resolve('react-native-css-interop/package.json'),
+);
+const cssInteropCacheDirectory = path.join(cssInteropRoot, '.cache');
+const cssInteropWebStylesheet = path.join(cssInteropCacheDirectory, 'web.css');
+
+// css-interop 0.2.x 在打包阶段才写 web.css，届时 Metro 初始文件映射已结束；
+// forceWriteFileSystem 又会关闭其虚拟模块 SHA 补丁，干净安装因此无法计算该文件 SHA。
+// 先登记空文件，让 Metro 收录路径；lazy SHA 会在 transform 时读取随后写入的最终 CSS。
+fs.mkdirSync(cssInteropCacheDirectory, { recursive: true });
+if (!fs.existsSync(cssInteropWebStylesheet)) {
+  fs.writeFileSync(cssInteropWebStylesheet, '');
+}
 
 const config = getDefaultConfig(__dirname);
 
