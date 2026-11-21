@@ -34,6 +34,7 @@
 | 文档 | 内容 |
 |---|---|
 | [GitHub 发布流水线实施计划](../superpowers/plans/2026-11-21-github-release-pipeline.md) | CI、Android/iOS 构建与 GitHub Release 的实施和验收步骤 |
+| [Archive v0.4.0 发布实施计划](../superpowers/plans/2026-11-22-v0-4-0-release.md) | 0.4.0 版本、书本图标、Android 崩溃修复、正式签名与公开发布步骤 |
 
 ## 一致性自检（提交前跑一遍）
 
