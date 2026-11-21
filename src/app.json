@@ -2,20 +2,25 @@
   "expo": {
     "name": "Archive",
     "slug": "archive",
-    "version": "1.0.0",
+    "version": "0.4.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "archive",
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
+      "bundleIdentifier": "com.anonymous.archive",
+      "buildNumber": "4",
+      "icon": "./assets/images/icon.png",
       "infoPlist": {
         "NSFaceIDUsageDescription": "Allow Archive to use Face ID to unlock the app."
       }
     },
     "android": {
+      "package": "com.anonymous.archive",
+      "versionCode": 4,
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#F7F2E8",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
@@ -42,11 +47,11 @@
         {
           "image": "./assets/images/splash-icon.png",
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff",
+          "backgroundColor": "#F7F2E8",
           "dark": {
-            "image": "./assets/images/splash-icon.png",
+            "image": "./assets/images/splash-icon-dark.png",
             "resizeMode": "contain",
-            "backgroundColor": "#080A0A"
+            "backgroundColor": "#171B18"
           }
         }
       ],
