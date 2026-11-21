@@ -14,7 +14,9 @@ concurrency:
 
 env:
   CI: "1"
+  EXPO_NO_GIT_STATUS: "1"
   EXPO_NO_TELEMETRY: "1"
+  NODE_OPTIONS: --max-old-space-size=4096
   RELEASE_TAG: ${{ github.ref_name }}
 
 jobs:
@@ -42,7 +44,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: 24.22.0
           cache: pnpm
           cache-dependency-path: src/pnpm-lock.yaml
 
@@ -60,6 +62,7 @@ jobs:
           "$sdkmanager_bin" \
             "platforms;android-37" \
             "build-tools;37.0.0" \
+            "cmake;3.30.5" \
             "ndk;27.1.12297006" \
             "platform-tools"
 
@@ -78,11 +81,15 @@ jobs:
           PY
 
       - name: Generate Android project
-        run: pnpm exec expo prebuild --platform android --no-install
+        run: pnpm exec expo prebuild --platform android --clean --no-install --skip-dependency-update expo,react-native
 
       - name: Build release APK
         working-directory: src/android
-        run: ./gradlew assembleRelease --no-daemon
+        env:
+          NODE_ENV: production
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace :app:assembleRelease
 
       - name: Collect APK
         run: |
@@ -124,7 +131,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: 24.22.0
           cache: pnpm
           cache-dependency-path: src/pnpm-lock.yaml
 
@@ -143,14 +150,19 @@ jobs:
           PY
 
       - name: Generate iOS project
-        run: pnpm exec expo prebuild --platform ios --no-install
+        run: pnpm exec expo prebuild --platform ios --clean --no-install --skip-dependency-update expo,react-native
+
+      - name: Configure Xcode Node path
+        run: printf 'export NODE_BINARY=%s\n' "$(command -v node)" > ios/.xcode.env.local
 
       - name: Install CocoaPods dependencies
         working-directory: src/ios
-        run: pod install --repo-update
+        run: pod install
 
       - name: Build unsigned iOS app
         working-directory: src/ios
+        env:
+          NODE_ENV: production
         run: |
           xcodebuild \
             -workspace Archive.xcworkspace \
@@ -169,6 +181,7 @@ jobs:
           version="${RELEASE_TAG#v}"
           app_path="ios/build/Build/Products/Release-iphoneos/Archive.app"
           test -d "$app_path"
+          test -f "$app_path/main.jsbundle"
           staging="$RUNNER_TEMP/archive-ipa"
           mkdir -p "$staging/Payload" release-assets
           ditto "$app_path" "$staging/Payload/Archive.app"
