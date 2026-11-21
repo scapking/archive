@@ -54,6 +54,63 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Unit and contract tests
+        run: pnpm test
+
+      - name: Brand assets check
+        run: pnpm assets:check
+
+      - name: Release metadata test
+        run: node --test ../tests/release-metadata.test.ts
+
+      - name: Android signing transformer tests
+        working-directory: .
+        run: python3 -m unittest discover -s tests -p 'test_configure_android_release_signing.py' -v
+
+      - name: Release workflow contract test
+        working-directory: .
+        run: python3 -m unittest discover -s tests -p 'test_release_workflow.py' -v
+
+      - name: Scan tracked files for credential patterns
+        working-directory: .
+        run: |
+          python3 - <<'PY'
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          listing = subprocess.run(
+              ["git", "ls-files", "-z"], capture_output=True, check=True
+          ).stdout
+          findings = []
+          patterns = [
+              ("private key block", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+              (
+                  "inline base64 blob",
+                  re.compile(r"^[A-Za-z0-9+/]{512,}={0,2}$", re.M),
+              ),
+          ]
+          for raw_name in listing.split(b"\0"):
+              if not raw_name:
+                  continue
+              name = raw_name.decode("utf-8", "surrogateescape")
+              path = Path(name)
+              if not path.is_file():
+                  continue
+              try:
+                  content = path.read_text(encoding="utf-8")
+              except (UnicodeDecodeError, OSError):
+                  continue
+              for label, pattern in patterns:
+                  if pattern.search(content):
+                      findings.append(f"{name}: {label}")
+          if findings:
+              print("Credential patterns found:", file=sys.stderr)
+              print("\n".join(findings), file=sys.stderr)
+              raise SystemExit(1)
+          PY
+
       - name: Verify generated web CSS
         run: |
           pnpm web:css
