@@ -29,6 +29,12 @@
 3. 新增 core 能力、新增业务域、新增 assets 种类、新增顶层目录、新增豁免：各自的上游文档（glossary / directory-structure）必须同步登记。
 4. 规范变更随代码一起走 git，提交信息带 `standards:` 前缀。
 
+## 项目文档
+
+| 文档 | 内容 |
+|---|---|
+| [GitHub 发布流水线实施计划](../superpowers/plans/2026-11-21-github-release-pipeline.md) | CI、Android/iOS 构建与 GitHub Release 的实施和验收步骤 |
+
 ## 一致性自检（提交前跑一遍）
 
 ```bash

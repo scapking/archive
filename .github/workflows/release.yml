@@ -1,0 +1,260 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CI: "1"
+  EXPO_NO_TELEMETRY: "1"
+  RELEASE_TAG: ${{ github.ref_name }}
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: src
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@9bbca1e9dc2902adb87e8780fe5c98796985a62d # v6.1.1
+        with:
+          version: 10.34.7
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: src/pnpm-lock.yaml
+
+      - name: Set up Java
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager_bin="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$sdkmanager_bin"
+          yes | "$sdkmanager_bin" --licenses >/dev/null 2>&1 || true
+          "$sdkmanager_bin" \
+            "platforms;android-37" \
+            "build-tools;37.0.0" \
+            "ndk;27.1.12297006" \
+            "platform-tools"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate release tag
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+
+          tag = os.environ["RELEASE_TAG"]
+          if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+              raise SystemExit(f"Invalid release tag: {tag!r}")
+          PY
+
+      - name: Generate Android project
+        run: pnpm exec expo prebuild --platform android --no-install
+
+      - name: Build release APK
+        working-directory: src/android
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Collect APK
+        run: |
+          version="${RELEASE_TAG#v}"
+          mkdir -p release-assets
+          cp android/app/build/outputs/apk/release/app-release.apk \
+            "release-assets/archive-android-${version}.apk"
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-apk
+          path: src/release-assets/archive-android-*.apk
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  ios:
+    name: iOS unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: src
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@9bbca1e9dc2902adb87e8780fe5c98796985a62d # v6.1.1
+        with:
+          version: 10.34.7
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: src/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate release tag
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+
+          tag = os.environ["RELEASE_TAG"]
+          if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+              raise SystemExit(f"Invalid release tag: {tag!r}")
+          PY
+
+      - name: Generate iOS project
+        run: pnpm exec expo prebuild --platform ios --no-install
+
+      - name: Install CocoaPods dependencies
+        working-directory: src/ios
+        run: pod install --repo-update
+
+      - name: Build unsigned iOS app
+        working-directory: src/ios
+        run: |
+          xcodebuild \
+            -workspace Archive.xcworkspace \
+            -scheme Archive \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          version="${RELEASE_TAG#v}"
+          app_path="ios/build/Build/Products/Release-iphoneos/Archive.app"
+          test -d "$app_path"
+          staging="$RUNNER_TEMP/archive-ipa"
+          mkdir -p "$staging/Payload" release-assets
+          ditto "$app_path" "$staging/Payload/Archive.app"
+          (
+            cd "$staging"
+            zip -qry "$GITHUB_WORKSPACE/src/release-assets/archive-ios-${version}-unsigned.ipa" Payload
+          )
+
+      - name: Upload unsigned iOS IPA
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-ipa
+          path: src/release-assets/archive-ios-*-unsigned.ipa
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs:
+      - android
+      - ios
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download Android APK
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: android-apk
+          path: release-assets/android
+
+      - name: Download unsigned iOS IPA
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ios-ipa
+          path: release-assets/ios
+
+      - name: Validate version and assets
+        env:
+          APP_VERSION: "1.0.0"
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+              raise SystemExit(f"Invalid release tag: {tag!r}")
+          app_version = json.loads(Path("src/app.json").read_text())["expo"]["version"]
+          if tag != f"v{app_version}":
+              raise SystemExit(
+                  f"Tag {tag!r} does not match app version {app_version!r}"
+              )
+          android = list(Path("release-assets/android").glob("archive-android-*.apk"))
+          ios = list(Path("release-assets/ios").glob("archive-ios-*-unsigned.ipa"))
+          if len(android) != 1 or not android[0].stat().st_size:
+              raise SystemExit(f"Expected one non-empty Android APK, found {android!r}")
+          if len(ios) != 1 or not ios[0].stat().st_size:
+              raise SystemExit(f"Expected one non-empty iOS IPA, found {ios!r}")
+          PY
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          android_asset="release-assets/android/archive-android-${version}.apk"
+          ios_asset="release-assets/ios/archive-ios-${version}-unsigned.ipa"
+          test -s "$android_asset"
+          test -s "$ios_asset"
+          gh release create "$RELEASE_TAG" \
+            "$android_asset" \
+            "$ios_asset" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            --latest \
+            --title "Archive $RELEASE_TAG" \
+            --notes "Android APK: internal release signed with the Expo debug key. iOS IPA: unsigned compile artifact; sign it before device installation or App Store distribution."
