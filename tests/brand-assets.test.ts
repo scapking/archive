@@ -16,6 +16,8 @@ const sharp = requireFromSrc('sharp') as typeof import('sharp');
 const canvasSize = 1254;
 const paper = [247, 242, 232] as const;
 const ink = [32, 37, 34] as const;
+// #171B18 — the narrow darker center-spine fill declared by the brief.
+const spine = [23, 27, 24] as const;
 const legacyWhaleSha256 =
     'db3ba8f0ce0f1b7dcadd1f4f332bcef53d5855ca945b63cabb106f9db0f9a027';
 
@@ -79,6 +81,26 @@ const alphaBounds = (
         height: bottom - top + 1,
         visiblePixels,
     };
+};
+
+const countExactColorPixels = (
+    data: Buffer,
+    channels: number,
+    target: readonly number[],
+) => {
+    let count = 0;
+
+    for (let offset = 0; offset < data.length; offset += channels) {
+        if (
+            data[offset] === target[0] &&
+            data[offset + 1] === target[1] &&
+            data[offset + 2] === target[2]
+        ) {
+            count += 1;
+        }
+    }
+
+    return count;
 };
 
 const assertRequiredFileExists = async (filePath: string) => {
@@ -257,6 +279,65 @@ test('splash and adaptive foreground marks have meaningful transparent alpha bou
             `${name} does not contain a meaningful visible mark`,
         );
     }
+});
+
+test('splash marks use the exact ink and warm paper colors', async () => {
+    // The generator recolors the canonical SVG with a silent string replace,
+    // so a changed fill spelling would silently emit an ink book for the dark
+    // splash (or a paper book for the light one). Pin the rendered colors.
+    const light = await readRawPixels(assetPath('splash-icon.png'));
+    const lightInkPixels = countExactColorPixels(
+        light.data,
+        light.info.channels,
+        ink,
+    );
+    const lightPaperPixels = countExactColorPixels(
+        light.data,
+        light.info.channels,
+        paper,
+    );
+
+    assert.ok(
+        lightInkPixels >= 100_000,
+        `splash-icon.png has only ${lightInkPixels} exact ink pixels`,
+    );
+    assert.equal(
+        lightPaperPixels,
+        0,
+        'splash-icon.png contains warm paper pixels instead of an ink mark',
+    );
+
+    const dark = await readRawPixels(assetPath('splash-icon-dark.png'));
+    const darkPaperPixels = countExactColorPixels(
+        dark.data,
+        dark.info.channels,
+        paper,
+    );
+    const darkInkPixels = countExactColorPixels(
+        dark.data,
+        dark.info.channels,
+        ink,
+    );
+    const darkSpinePixels = countExactColorPixels(
+        dark.data,
+        dark.info.channels,
+        spine,
+    );
+
+    assert.ok(
+        darkPaperPixels >= 100_000,
+        `splash-icon-dark.png has only ${darkPaperPixels} exact warm paper pixels`,
+    );
+    assert.equal(
+        darkInkPixels,
+        0,
+        'splash-icon-dark.png contains ink pixels instead of a warm paper mark',
+    );
+    assert.equal(
+        darkSpinePixels,
+        0,
+        'splash-icon-dark.png retains the darker spine fill instead of warm paper',
+    );
 });
 
 test('Android monochrome asset is a non-empty alpha silhouette on transparency', async () => {
