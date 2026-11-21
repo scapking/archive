@@ -27,6 +27,7 @@ import {
     todayLocal,
     validateTripInput,
 } from './trip-logic';
+import { runTripSubmit } from './trip-submit-logic';
 import { safeBack } from './ui';
 // 深路径注记：FieldInput 未入 ui/index.ts 出口（该文件不在本组改动权限内），
 // 域内深取；ui/index.ts 出口扩充时收口（同 close-button / editor-icons 先例）。
@@ -259,36 +260,47 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
         if (!canSubmit) return;
         setSubmitting(true);
         try {
-            if (trip) {
-                const ok = await updateTrip(trip.id, {
-                    title,
-                    startDate,
-                    endDate: endDateValue,
-                    description,
-                    icon,
-                    videoKey,
-                });
-                if (ok) safeBack();
-                return;
-            }
-            const created = await createTrip({
-                title,
-                startDate,
-                endDate: endDateValue,
-                description,
-                icon,
+            const submitTripId = trip?.id;
+            await runTripSubmit({
+                tripId: submitTripId,
+                create: () =>
+                    createTrip({
+                        title,
+                        startDate,
+                        endDate: endDateValue,
+                        description,
+                        icon,
+                    }),
+                update: () => {
+                    if (!submitTripId) {
+                        throw new Error('行程更新缺少行程 ID');
+                    }
+                    return updateTrip(submitTripId, {
+                        title,
+                        startDate,
+                        endDate: endDateValue,
+                        description,
+                        icon,
+                        videoKey,
+                    });
+                },
+                // 成功路径不复位 submitting：离场屏在原生移除过渡中不得再变更。
+                onCreated: (tripId) => {
+                    router.replace({ pathname: '/trip/[id]', params: { id: tripId } });
+                },
+                onUpdated: () => {
+                    safeBack();
+                },
+                onFailed: () => {
+                    setSubmitting(false);
+                },
             });
-            if (created) router.replace({ pathname: '/trip/[id]', params: { id: created.id } });
         } catch (caught) {
             // 防御：updateTrip/createTrip 契约不 throw（失败走 false/null + store.error），
             // 这里只兜环境级意外，不让异常变 unhandled rejection
             useArchiveStore.setState({
                 error: `保存失败：${caught instanceof Error ? caught.message : String(caught)}`,
             });
-        } finally {
-            // 中断场景：store 方法意外 reject 时复位提交态——PrimaryButton 由
-            // submitting 禁用，不复位 = 按钮永久禁用；常规失败走 false/null +
-            // store.error（不禁按钮，可直接重试）
             setSubmitting(false);
         }
     };
