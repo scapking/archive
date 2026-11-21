@@ -91,6 +91,19 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
         self.assertIn(
             ".github/scripts/configure-android-release-signing.py", self.android
         )
+        # The build step runs from src/android, so the transformer must be
+        # addressed relative to the repository root (../../.github/...).
+        transformer_lines = [
+            line
+            for line in self.android.splitlines()
+            if "configure-android-release-signing.py" in line
+        ]
+        self.assertEqual(len(transformer_lines), 1, "expected one transformer call")
+        self.assertIn(
+            "python3 ../../.github/scripts/configure-android-release-signing.py",
+            transformer_lines[0],
+        )
+        self.assertNotIn("python3 ../.github/scripts/", self.android)
         assemble_lines = [
             line
             for line in self.android.splitlines()
@@ -100,13 +113,19 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
         self.assertIn(
             "-PreactNativeArchitectures=arm64-v8a", assemble_lines[0]
         )
+        self.assertIn("chmod +x gradlew", self.android)
         for name in GRADLE_ENV_VARS:
             self.assertIn(name, self.android)
         self.assertIn("$RUNNER_TEMP/archive-release.keystore", self.android)
         self.assertIn("base64 --decode", self.android)
         self.assertIn("chmod 0600", self.android)
+        self.assertIn("umask 077", self.android)
         self.assertIn("trap", self.android)
         self.assertIn("EXIT", self.android)
+        # The EXIT trap must only remove the keystore: the certificate digest
+        # captured inside this step is consumed by the later verify step.
+        self.assertIn('rm -f "$keystore"', self.android)
+        self.assertNotIn('rm -f "$keystore" "$release_cert"', self.android)
         self.assertIn(': "${ANDROID_KEYSTORE_BASE64:?', self.android)
 
     def test_secret_names_appear_only_as_secrets_references(self) -> None:
@@ -140,9 +159,24 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
 
     def test_apk_is_verified_before_upload(self) -> None:
         self.assertIn('apksigner" verify --verbose --print-certs', self.android)
-        self.assertIn("Verified using v2 scheme: true", self.android)
+        # build-tools 37.0.0 apksigner prints the scheme name with a
+        # parenthetical: "Verified using v2 scheme (APK Signature Scheme v2):
+        # true". Pin the exact runtime literal so format drift fails here
+        # instead of on the first Actions run.
+        self.assertIn(
+            "Verified using v2 scheme (APK Signature Scheme v2): true",
+            self.android,
+        )
         self.assertIn("Signer #1 certificate SHA-256 digest", self.android)
         self.assertIn("release-cert-sha256.txt", self.android)
+        # keytool prints uppercase colon-separated digests while apksigner
+        # prints lowercase bare hex: every digest must be normalized before
+        # comparison or the equality check is always false and the debug
+        # inequality always true (the guard would be a no-op).
+        self.assertEqual(self.android.count("tr -d ':'"), 3)
+        self.assertEqual(self.android.count("tr 'A-Z' 'a-z'"), 3)
+        self.assertIn('test "$apk_cert" = "$(cat "$release_cert")"', self.android)
+        self.assertIn('test "$apk_cert" != "$debug_cert"', self.android)
         self.assertIn("debug.keystore", self.android)
         self.assertIn("androiddebugkey", self.android)
         self.assertIn('abis="$(unzip', self.android)
