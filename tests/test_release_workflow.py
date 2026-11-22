@@ -116,6 +116,41 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
         self.assertIn("chmod +x gradlew", self.android)
         for name in GRADLE_ENV_VARS:
             self.assertIn(name, self.android)
+        # The brief requires the Gradle-facing variables at step scope: they
+        # must be exported BEFORE the transformer runs (it validates os.environ
+        # and fails closed), not prefixed onto the gradlew command only.
+        export_lines = [
+            line
+            for line in self.android.splitlines()
+            if line.strip().startswith("export ANDROID_RELEASE_")
+        ]
+        self.assertEqual(
+            len(export_lines),
+            4,
+            f"expected four exported ANDROID_RELEASE_* variables, found {export_lines!r}",
+        )
+        transformer_index = next(
+            index
+            for index, line in enumerate(self.android.splitlines())
+            if "configure-android-release-signing.py" in line
+        )
+        last_export_index = max(
+            index
+            for index, line in enumerate(self.android.splitlines())
+            if line.strip().startswith("export ANDROID_RELEASE_")
+        )
+        self.assertLess(
+            last_export_index,
+            transformer_index,
+            "the ANDROID_RELEASE_* exports must precede the transformer call",
+        )
+        self.assertFalse(
+            any(
+                line.strip().startswith("ANDROID_RELEASE_")
+                for line in self.android.splitlines()
+            ),
+            "ANDROID_RELEASE_* must be exported, not command-prefixed",
+        )
         self.assertIn("$RUNNER_TEMP/archive-release.keystore", self.android)
         self.assertIn("base64 --decode", self.android)
         self.assertIn("chmod 0600", self.android)

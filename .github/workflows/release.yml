@@ -136,14 +136,15 @@ jobs:
             | tr -d ':' | tr 'A-Z' 'a-z' > "$release_cert"
           test -s "$release_cert"
 
+          export ANDROID_RELEASE_STORE_FILE="$keystore"
+          export ANDROID_RELEASE_STORE_PASSWORD="$ANDROID_KEYSTORE_PASSWORD"
+          export ANDROID_RELEASE_KEY_ALIAS="$ANDROID_KEY_ALIAS"
+          export ANDROID_RELEASE_KEY_PASSWORD="$ANDROID_KEY_PASSWORD"
+
           python3 ../../.github/scripts/configure-android-release-signing.py app/build.gradle
 
           chmod +x gradlew
 
-          ANDROID_RELEASE_STORE_FILE="$keystore" \
-          ANDROID_RELEASE_STORE_PASSWORD="$ANDROID_KEYSTORE_PASSWORD" \
-          ANDROID_RELEASE_KEY_ALIAS="$ANDROID_KEY_ALIAS" \
-          ANDROID_RELEASE_KEY_PASSWORD="$ANDROID_KEY_PASSWORD" \
           ./gradlew --no-daemon --stacktrace :app:assembleRelease -PreactNativeArchitectures=arm64-v8a
 
       - name: Verify the signed APK
