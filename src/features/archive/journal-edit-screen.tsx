@@ -20,7 +20,6 @@ import {
     createIcon,
     LucidePenLine,
     LucideImagePlay,
-    LucidePencil,
     LucidePlus,
     LucideTrash,
 } from '@/core/icons';
@@ -1212,7 +1211,7 @@ export function JournalEditScreen({
                                     accessibilityLabel="编辑标题"
                                     className="h-9 w-9 items-center justify-center rounded-control border border-ink-border bg-ink-surface dark:border-inkd-border dark:bg-inkd-surface"
                                 >
-                                    <LucidePencil size={16} strokeWidth={1.9} color={palette.secondary} />
+                                    <LucidePenLine size={16} strokeWidth={1.9} color={palette.secondary} />
                                 </View>
                             </BouncyPressable>
                         ) : null}

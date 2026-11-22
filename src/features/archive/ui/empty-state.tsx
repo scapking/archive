@@ -15,7 +15,8 @@ export function EmptyState({
 }: {
     icon: ReactNode;
     title: string;
-    hint: string;
+    /** 可选的第二行指引（「怎么做」）；不传则不渲染该行。 */
+    hint?: string;
     actionLabel?: string;
     onAction?: () => void;
 }) {
@@ -23,9 +24,11 @@ export function EmptyState({
         <View className="flex-1 items-center justify-center px-10">
             <View className="mb-4 h-12 w-12 items-center justify-center opacity-70">{icon}</View>
             <Text className="text-[15px] font-medium text-ink-text dark:text-inkd-text">{title}</Text>
-            <Text className="mt-1.5 text-center text-[13px] leading-5 text-ink-muted dark:text-inkd-muted">
-                {hint}
-            </Text>
+            {hint ? (
+                <Text className="mt-1.5 text-center text-[13px] leading-5 text-ink-muted dark:text-inkd-muted">
+                    {hint}
+                </Text>
+            ) : null}
             {actionLabel && onAction ? (
                 // 间距放 Pressable 外层包裹（margin 不计入命中区）：Pressable 框
                 // == 按钮视觉盒（44px 高），避免按钮上方 24px 空隙被算进命中区

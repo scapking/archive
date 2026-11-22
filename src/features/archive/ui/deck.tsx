@@ -12,7 +12,9 @@ import type { PanResponderGestureState } from 'react-native';
  * 几何铁律（原 deck 沿用）：前卡 right=PEEK 留出露条；背卡 translateX =
  * depth×STRIDE，右侧三条 24px 堆叠边（不越容器右缘：72 ≤ PEEK）。两卡高度由
  * 槽位 top/bottom 0 恒等，height prop 定 deck 高（首页 430 原样；/notes、/trips
- * 520 长卡——互不影响）。
+ * 520 长卡——互不影响）。**露条边-only 铁律（v0.4.2）**：背卡内容右缩进 PEEK
+ * 收进左区，露条只显卡壳面——卡面右缘元素（StatusChip/chevron 等）不得透进
+ * 露条（用户反馈「堆叠卡图标互相透压」，见 DeckCardLayer 内注）。
  *
  * 结构铁律（原 deck 沿用）：**zIndex 用 React state 驱动（静态 style），禁止
  * 写进动画值**；动画底层 = **RN 内置 Animated（native driver）**——reanimated
@@ -359,8 +361,22 @@ function DeckCardLayer({
                     <View className="h-full w-full flex-1 flex-col overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface">
                         {/* 卡面铺满整卡（flex-1 占满壳）——渐变类卡面的颜色自然
                             延伸到卡底，页码叠加其上同属一块渐变（2026-11-20 用户
-                            指令「整个容器一致颜色，页码包裹在渐变里」） */}
-                        <View className="min-h-0 flex-1">{item.node}</View>
+                            指令「整个容器一致颜色，页码包裹在渐变里」）。
+                            背卡（depth>0）内容收进左区（右缩进 PEEK，v0.4.2 用户
+                            反馈「堆叠卡图标互相透压」）：露出的右缘 76px 露条只
+                            显卡壳面（surface + 圆角边），卡面自身的右缘元素
+                            （StatusChip/chevron/文字尾）不再透进露条与前卡相挤；
+                            overflow-hidden 兜面内绝对定位元素。前卡（depth=0）
+                            不缩——内容照旧用满整卡宽 */}
+                        <View className="min-h-0 flex-1">
+                            {depth === 0 ? (
+                                item.node
+                            ) : (
+                                <View className="min-h-0 flex-1 overflow-hidden" style={{ marginRight: PEEK }}>
+                                    {item.node}
+                                </View>
+                            )}
+                        </View>
                         {/* 页码 = 卡底内侧居中叠加（非独立行）：色调随卡面
                             pageLabelTone（渐变白 / 素面 muted），pointerEvents
                             none 不挡卡面触摸 */}

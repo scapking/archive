@@ -1,9 +1,18 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+    memo,
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type ComponentRef,
+} from 'react';
 import {
     BackHandler,
     Image,
     Keyboard,
     Pressable,
+    ScrollView,
     Text,
     View,
 } from 'react-native';
@@ -20,11 +29,10 @@ import {
 } from '@/core/icons';
 import { haptics } from '@/core/haptics';
 import * as db from './db';
-// 屏层数据编排（行程项 mutation 与错误/revision 通道）+ 时刻/时间格式纯函数
-// （tripItemDueAt / isValidTripItemTime：通知时间闸与 deck 排序的单一事实源，
-// 屏层禁止另写时刻组合）。
+// 屏层数据编排（行程项 mutation 与错误/revision 通道）+ 时刻纯函数
+// （tripItemDueAt：通知时间闸与 deck 排序的单一事实源，屏层禁止另写时刻组合；
+// isValidTripItemTime 校验收口 store 层——表单时间走滚轮值域恒合法，屏层不再复检）。
 import {
-    isValidTripItemTime,
     tripItemDueAt,
     useArchiveRevision,
     useArchiveStore,
@@ -71,9 +79,9 @@ import { DeadEndView } from './journal-edit-screen';
  * - 长按前卡 → 操作卡（ActionMenuCard）：标记完成 / 标记失败 / 添加图片 /
  *   添加视频 / 删除此行程（时间闸在 store 层兜底；锁定行程 isTripLocked 时
  *   长按与 FAB 入口全部关断，整页只读）；
- * - `+` FAB → 创建行程项表单卡（同屏 scrim + 居中卡，同 ActionMenuCard 语言）：
- *   时间（HH:mm，取简实现：单数字小时轻量归一 + 正则校验）+ 标题 + 描述
- *   （选填）→ store.createTripItem（成功后自动调度本地通知，权限被拒静默降级）；
+ * - `+` FAB → 创建行程项表单卡（分步引导式，v0.4.2 用户指令「带交互的」：时间
+ *   双滚轮 → 标题（自动聚焦）→ 备注可选可跳过；已完成步回显为可点行回改）→
+ *   store.createTripItem（成功后自动调度本地通知，权限被拒静默降级）；
  * - **应用内闹钟**（页内 useEffect 定时检查）：前台期间某 pending 项的时刻
  *   （local_date + time）到达时弹确认卡——标题「行程时间到」+ 正文（时间 +
  *   标题 + 描述）+「知道了」；确认后本次不再弹（dismissedAlarmIds 会话集），
@@ -204,10 +212,22 @@ const TripItemCardFace = memo(function TripItemCardFace({
     );
 });
 
+/** 滚轮单行高与可见行数：5 行窗口（上下各 2 行空区把首末项滚到中线）。 */
+const WHEEL_ITEM_H = 44;
+const WHEEL_VISIBLE_ROWS = 5;
+/** 滚轮值域：时 0-23；分 5 分钟步进（00-55，行程项粒度口径，与通知分钟对齐）。 */
+const WHEEL_HOURS = Array.from({ length: 24 }, (_, i) => i);
+const WHEEL_MINUTES = Array.from({ length: 12 }, (_, i) => i * 5);
+
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+
 /**
- * 创建行程项表单卡（scrim + 居中卡，ActionMenuCard/RenameCard 同语言，禁 RN
- * Modal 条件渲染）：时间（HH:mm）+ 标题 + 描述（选填）。本地校验先行（时间
- * 正则 + 标题非空），store 校验失败（error 通道）同样就地展示可重试。
+ * 创建行程项表单卡（分步引导式，v0.4.2 用户指令「带交互的，不再是三个输入框」）：
+ * 步骤 = 时间（时/分双滚轮）→ 标题（自动聚焦）→ 备注（可选折叠，可跳过直接
+ * 添加）。已完成步回显为可点行（点行回旧步修改）。时间步无错误态（滚轮值域
+ * 恒合法）、标题步空值关住「下一步」——本地正则校验退场，仅剩 store 失败
+ * （error 通道）就地展示可重试。scrim + 居中卡，ActionMenuCard/RenameCard 同
+ * 语言，禁 RN Modal 条件渲染。
  */
 function TripItemFormCard({
     onSubmit,
@@ -220,13 +240,26 @@ function TripItemFormCard({
     /** store.error 就地文案（失败后展示，避免陈旧错误串场）。 */
     errorText: string | null;
 }) {
-    const palette = usePalette();
-    const [time, setTime] = useState('');
+    const [step, setStep] = useState<'time' | 'title' | 'note'>('time');
+    // 时间初值 = 「下一个可选的整 5 分钟」（滚轮需要确定初值；59→60 归零进位）。
+    // 一次取 now 定格快照，两个 useState 共用（分取两次 Date 会跨分钟漂移）。
+    const [initialTime] = useState(() => {
+        const now = new Date();
+        const rolled = Math.ceil(now.getMinutes() / 5) * 5;
+        return {
+            hour: (now.getHours() + (rolled >= 60 ? 1 : 0)) % 24,
+            minute: rolled % 60,
+        };
+    });
+    const [hour, setHour] = useState(initialTime.hour);
+    const [minute, setMinute] = useState(initialTime.minute);
     const [title, setTitle] = useState('');
-    const [description, setDescription] = useState('');
-    const [localError, setLocalError] = useState<string | null>(null);
+    const [note, setNote] = useState('');
+    const [noteOpen, setNoteOpen] = useState(false);
     const [saveFailed, setSaveFailed] = useState(false);
     const submittingRef = useRef(false);
+
+    const timeLabel = `${pad2(hour)}:${pad2(minute)}`;
 
     // 打开即收键盘准备输入；Android 返回键关闭（替代 Modal onRequestClose 语义）
     useEffect(() => {
@@ -240,36 +273,31 @@ function TripItemFormCard({
         return () => sub.remove();
     }, [onClose]);
 
-    /**
-     * 时间取轻归一：容忍单位数小时（'9:30' → '09:30'）与首尾空白；其余
-     * （'0930'、'9点半' 等）不做魔法解析——store 层正则是权威闸。
-     */
-    const normalizeTime = (raw: string): string => {
-        const trimmed = raw.trim();
-        const padded = trimmed.match(/^(\d):(\d{2})$/);
-        return padded ? `0${padded[1]}:${padded[2]}` : trimmed;
+    // 步进导航（轻触感反馈）：回旧步 = 回显行点按；标题步空值关住前进（按钮
+    // disabled + onSubmitEditing 同闸）
+    const goTitle = () => {
+        haptics.impact('light');
+        setStep('title');
+    };
+    const goNote = () => {
+        if (title.trim().length === 0) return;
+        haptics.impact('light');
+        setStep('note');
+    };
+    const backTo = (target: 'time' | 'title') => {
+        haptics.impact('light');
+        setStep(target);
     };
 
     const submit = async () => {
         if (submittingRef.current) return;
-        const normalizedTime = normalizeTime(time);
-        const trimmedTitle = title.trim();
-        if (!isValidTripItemTime(normalizedTime)) {
-            setLocalError('时间用 24 小时制 HH:mm，如 09:30');
-            return;
-        }
-        if (trimmedTitle.length === 0) {
-            setLocalError('给行程项起个名字');
-            return;
-        }
-        setLocalError(null);
         setSaveFailed(false);
         submittingRef.current = true;
         try {
             const ok = await onSubmit({
-                time: normalizedTime,
-                title: trimmedTitle,
-                description: description.trim(),
+                time: timeLabel,
+                title: title.trim(),
+                description: note.trim(),
             });
             if (!ok) setSaveFailed(true);
             else onClose();
@@ -289,7 +317,7 @@ function TripItemFormCard({
                 accessibilityLabel="关闭添加行程项"
             >
                 {/* 卡体拦截冒泡：点卡不关（同 ActionMenuCard 卡体结构） */}
-                <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base">
+                <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-4 dark:bg-inkd-base">
                     <View className="flex-row items-center justify-between">
                         <Text className="text-[15px] font-semibold text-ink-text dark:text-inkd-text">
                             添加行程项
@@ -297,55 +325,230 @@ function TripItemFormCard({
                         {/* 44 视觉盒：左邻题文字非按压体，右缘贴卡内边距，无重叠核算项 */}
                         <CloseButton onPress={onClose} />
                     </View>
-                    {/* 三个域：小标签 + FieldInput（容器承载视觉、输入透明，仓库
-                        统一输入口径）；tone=surface 在 base 卡上成输入井，焦点
-                        raised 加深一档（同 RenameCard 语言） */}
-                    <Text className="mt-3 text-[12px] text-ink-muted dark:text-inkd-muted">时间</Text>
-                    <FieldInput
-                        tone="surface"
-                        autoFocus
-                        value={time}
-                        onChangeText={(text) => setTime(text)}
-                        placeholder="HH:mm"
-                        maxLength={5}
-                        returnKeyType="next"
-                        containerClassName="mt-1.5"
-                        accessibilityLabel="行程项时间"
-                    />
-                    <Text className="mt-3 text-[12px] text-ink-muted dark:text-inkd-muted">标题</Text>
-                    <FieldInput
-                        tone="surface"
-                        value={title}
-                        onChangeText={(text) => setTitle(text)}
-                        placeholder="这段时间做什么？"
-                        maxLength={40}
-                        returnKeyType="next"
-                        containerClassName="mt-1.5"
-                        accessibilityLabel="行程项标题"
-                    />
-                    <Text className="mt-3 text-[12px] text-ink-muted dark:text-inkd-muted">
-                        描述（选填）
-                    </Text>
-                    <FieldInput
-                        tone="surface"
-                        value={description}
-                        onChangeText={(text) => setDescription(text)}
-                        placeholder="留言或备注"
-                        multiline
-                        containerClassName="mt-1.5"
-                        accessibilityLabel="行程项描述"
-                    />
-                    {localError || (saveFailed && errorText) ? (
+
+                    {/* 步 1：时间（双滚轮）——每步一个大控件占满卡 */}
+                    {step === 'time' ? (
+                        <>
+                            <View className="mt-3 flex-row gap-3">
+                                <TimeWheelColumn
+                                    label="时"
+                                    values={WHEEL_HOURS}
+                                    index={hour}
+                                    onSelect={setHour}
+                                    accessibilityLabel="小时"
+                                />
+                                <TimeWheelColumn
+                                    label="分"
+                                    values={WHEEL_MINUTES}
+                                    index={minute}
+                                    onSelect={setMinute}
+                                    accessibilityLabel="分钟"
+                                />
+                            </View>
+                            <View className="mt-4">
+                                <PrimaryButton label="下一步" onPress={goTitle} />
+                            </View>
+                        </>
+                    ) : null}
+
+                    {/* 步 2：标题（自动聚焦；空值关住前进） */}
+                    {step === 'title' ? (
+                        <>
+                            <StepEchoRow label="时间" value={timeLabel} onPress={() => backTo('time')} />
+                            <Text className="mt-3 text-[12px] text-ink-muted dark:text-inkd-muted">
+                                标题
+                            </Text>
+                            <FieldInput
+                                tone="surface"
+                                autoFocus
+                                value={title}
+                                onChangeText={setTitle}
+                                placeholder="这段时间做什么？"
+                                maxLength={40}
+                                returnKeyType="next"
+                                onSubmitEditing={goNote}
+                                containerClassName="mt-1.5"
+                                accessibilityLabel="行程项标题"
+                            />
+                            <View className="mt-4">
+                                <PrimaryButton
+                                    label="下一步"
+                                    disabled={title.trim().length === 0}
+                                    onPress={goNote}
+                                />
+                            </View>
+                        </>
+                    ) : null}
+
+                    {/* 步 3：备注（可选折叠）——不展开直接「添加」即跳过 */}
+                    {step === 'note' ? (
+                        <>
+                            <StepEchoRow label="时间" value={timeLabel} onPress={() => backTo('time')} />
+                            <StepEchoRow label="标题" value={title.trim()} onPress={() => backTo('title')} />
+                            {noteOpen ? (
+                                <>
+                                    <Text className="mt-3 text-[12px] text-ink-muted dark:text-inkd-muted">
+                                        备注（选填）
+                                    </Text>
+                                    <FieldInput
+                                        tone="surface"
+                                        autoFocus
+                                        multiline
+                                        value={note}
+                                        onChangeText={setNote}
+                                        placeholder="留言或备注"
+                                        containerClassName="mt-1.5"
+                                        accessibilityLabel="行程项备注"
+                                    />
+                                </>
+                            ) : (
+                                <Pressable
+                                    onPress={() => {
+                                        haptics.impact('light');
+                                        setNoteOpen(true);
+                                    }}
+                                    className="mt-3 flex-row items-center justify-center rounded-control bg-ink-surface py-3 active:bg-ink-raised dark:bg-inkd-surface dark:active:bg-inkd-raised"
+                                    accessibilityRole="button"
+                                    accessibilityLabel="添加备注"
+                                >
+                                    <Text className="text-[13px] text-ink-secondary dark:text-inkd-secondary">
+                                        添加备注（选填）
+                                    </Text>
+                                </Pressable>
+                            )}
+                            <View className="mt-4">
+                                <PrimaryButton label="添加" onPress={() => void submit()} />
+                            </View>
+                        </>
+                    ) : null}
+
+                    {saveFailed && errorText ? (
                         <Text className="mt-2 text-[12px] text-ink-negative dark:text-inkd-negative">
-                            {localError ?? errorText}
+                            {errorText}
                         </Text>
                     ) : null}
-                    <View className="mt-4">
-                        <PrimaryButton label="添加" onPress={() => void submit()} />
-                    </View>
                 </Pressable>
             </Pressable>
         </View>
+    );
+}
+
+/**
+ * 滚轮列（纯 RN 实现，不引选择器依赖——date-input 同款三端可用性纪律）：
+ * ScrollView 垂直 snap（间距 = 行高），上下各 2 行空区把首末项滚到中线；
+ * settle 双通道（onMomentumScrollEnd + onScrollEndDrag——Android 慢拖可能不发
+ * momentum 事件，endDrag 兜底；settle 幂等，重复触发无害）。中带高亮垫在行下
+ * （raised 亮度一档，FieldInput 聚焦语义同源），选中行字色加重。挂载即
+ * scrollTo 定位当前值（animated false，无飞行感；步骤切换卸载重挂，值由父层
+ * state 持有）。
+ */
+function TimeWheelColumn({
+    label,
+    values,
+    index,
+    onSelect,
+    accessibilityLabel,
+}: {
+    label: string;
+    values: number[];
+    index: number;
+    onSelect(index: number): void;
+    accessibilityLabel: string;
+}) {
+    const scrollRef = useRef<ComponentRef<typeof ScrollView> | null>(null);
+    useEffect(() => {
+        scrollRef.current?.scrollTo({ y: index * WHEEL_ITEM_H, animated: false });
+        // 挂载定位只跑一次（见头注）：后续 index 变化都来自本列滚动，无需回写
+        // eslint 不在仓库纪律内（无 ESLint），依赖数组恒空是刻意的
+    }, []);
+
+    const settle = (y: number) => {
+        const next = Math.max(0, Math.min(values.length - 1, Math.round(y / WHEEL_ITEM_H)));
+        if (next !== index) onSelect(next);
+    };
+
+    return (
+        <View className="flex-1">
+            <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">{label}</Text>
+            <View className="mt-1.5 overflow-hidden rounded-control bg-ink-surface dark:bg-inkd-surface">
+                {/* 中带高亮（先铺 → 行滚动其上）：绝对定位 raised 条，pointerEvents
+                    none 不挡滚动 */}
+                <View
+                    pointerEvents="none"
+                    className="absolute left-0 right-0 bg-ink-raised dark:bg-inkd-raised"
+                    style={{
+                        top: ((WHEEL_VISIBLE_ROWS - 1) / 2) * WHEEL_ITEM_H,
+                        height: WHEEL_ITEM_H,
+                    }}
+                />
+                <ScrollView
+                    ref={scrollRef}
+                    style={{ height: WHEEL_VISIBLE_ROWS * WHEEL_ITEM_H }}
+                    showsVerticalScrollIndicator={false}
+                    snapToInterval={WHEEL_ITEM_H}
+                    onMomentumScrollEnd={(e) => settle(e.nativeEvent.contentOffset.y)}
+                    onScrollEndDrag={(e) => settle(e.nativeEvent.contentOffset.y)}
+                    accessibilityLabel={accessibilityLabel}
+                >
+                    <View style={{ height: ((WHEEL_VISIBLE_ROWS - 1) / 2) * WHEEL_ITEM_H }} />
+                    {values.map((value, i) => (
+                        <View
+                            key={value}
+                            className="items-center justify-center"
+                            style={{ height: WHEEL_ITEM_H }}
+                        >
+                            <Text
+                                className={
+                                    i === index
+                                        ? 'text-[22px] font-medium text-ink-text dark:text-inkd-text'
+                                        : 'text-[22px] text-ink-muted dark:text-inkd-muted'
+                                }
+                                style={{ fontVariant: ['tabular-nums'] }}
+                            >
+                                {pad2(value)}
+                            </Text>
+                        </View>
+                    ))}
+                    <View style={{ height: ((WHEEL_VISIBLE_ROWS - 1) / 2) * WHEEL_ITEM_H }} />
+                </ScrollView>
+            </View>
+        </View>
+    );
+}
+
+/**
+ * 已完成步的回显行（分步表单导航）：点行回到该步修改；右侧「修改」是动作名
+ * （动词化 CTA），行内 label + 值左置。视觉同 FieldInput 井（surface + 控件
+ * 圆角），按压 raised 一档。
+ */
+function StepEchoRow({
+    label,
+    value,
+    onPress,
+}: {
+    label: string;
+    value: string;
+    onPress(): void;
+}) {
+    return (
+        <Pressable
+            onPress={onPress}
+            className="mt-3 flex-row items-center justify-between rounded-control bg-ink-surface px-3 py-2.5 active:bg-ink-raised dark:bg-inkd-surface dark:active:bg-inkd-raised"
+            accessibilityRole="button"
+            accessibilityLabel={`修改${label}`}
+        >
+            <View className="min-w-0 flex-1 flex-row items-baseline gap-2">
+                <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">{label}</Text>
+                <Text
+                    numberOfLines={1}
+                    className="min-w-0 flex-1 text-[15px] font-medium text-ink-text dark:text-inkd-text"
+                    style={{ fontVariant: ['tabular-nums'] }}
+                >
+                    {value}
+                </Text>
+            </View>
+            <Text className="ml-2 text-[12px] text-ink-muted dark:text-inkd-muted">修改</Text>
+        </Pressable>
     );
 }
 
@@ -707,7 +910,7 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
                             <EmptyState
                                 icon={<LucideClock size={40} color={palette.muted} strokeWidth={1.5} />}
                                 title="这一天还没有安排"
-                                hint={locked ? '行程已结束，内容只读' : '点 + 添加'}
+                                hint={locked ? '行程已结束，内容只读' : undefined}
                             />
                         }
                     />

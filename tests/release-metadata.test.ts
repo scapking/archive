@@ -58,7 +58,7 @@ const pluginOptions = (config: ExpoConfig, name: string): Record<string, unknown
     return entry[1] as Record<string, unknown>;
 };
 
-test('release metadata pins the v0.4.1 native version contract', async () => {
+test('release metadata pins the v0.4.2 native version contract', async () => {
     const expo = (await readJson(path.join(srcRoot, 'app.json'))) as {
         expo: ExpoConfig;
     };
@@ -67,12 +67,12 @@ test('release metadata pins the v0.4.1 native version contract', async () => {
     )) as PackageJson;
     const config = expo.expo;
 
-    assert.equal(config.version, '0.4.1');
-    assert.equal(packageJson.version, '0.4.1');
+    assert.equal(config.version, '0.4.2');
+    assert.equal(packageJson.version, '0.4.2');
     assert.equal(config.android.package, 'com.anonymous.archive');
-    assert.equal(config.android.versionCode, 5);
+    assert.equal(config.android.versionCode, 6);
     assert.equal(config.ios.bundleIdentifier, 'com.anonymous.archive');
-    assert.equal(config.ios.buildNumber, '5');
+    assert.equal(config.ios.buildNumber, '6');
     assert.equal(config.ios.icon, './assets/images/icon.png');
 });
 
@@ -106,9 +106,12 @@ test('release metadata keeps identity and asset wiring intact', async () => {
     const splash = pluginOptions(config, 'expo-splash-screen') as SplashOptions;
     assert.equal(splash.image, './assets/images/splash-icon.png');
     assert.equal(splash.resizeMode, 'contain');
-    assert.equal(splash.backgroundColor, '#F7F2E8');
+    // v0.4.2：splash 底色与页面底色 token 三段同源（ink-base #FFFFFF /
+    // inkd-base #080A0A）——splash → 过渡页零色差（用户反馈「两层 logo 叠显 +
+    // 底色跳变」，boot-screen 头注）
+    assert.equal(splash.backgroundColor, '#FFFFFF');
     assert.ok(splash.dark, 'splash plugin is missing the dark variant');
     assert.equal(splash.dark?.image, './assets/images/splash-icon-dark.png');
     assert.equal(splash.dark?.resizeMode, 'contain');
-    assert.equal(splash.dark?.backgroundColor, '#171B18');
+    assert.equal(splash.dark?.backgroundColor, '#080A0A');
 });

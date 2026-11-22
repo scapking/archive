@@ -10,7 +10,6 @@ import {
     LucideCheck,
     LucideChevronRight,
     LucideFlag,
-    LucidePencil,
     LucidePlay,
     LucidePlus,
     LucideTrash,
@@ -94,7 +93,7 @@ function tripMenuRows(trip: DeckTrip, confirmDelete: boolean): ActionMenuRow[] {
             : []),
         { key: 'new', icon: <LucidePlus size={20} strokeWidth={1.9} />, title: '新建行程' },
         ...(trip.status !== 'finished'
-            ? [{ key: 'edit', icon: <LucidePencil size={20} strokeWidth={1.9} />, title: '编辑行程' }]
+            ? [{ key: 'edit', icon: <LucidePenLine size={20} strokeWidth={1.9} />, title: '编辑行程' }]
             : []),
         {
             key: 'delete',
@@ -113,7 +112,7 @@ function tripMenuRows(trip: DeckTrip, confirmDelete: boolean): ActionMenuRow[] {
 function diaryMenuRows(journal: JournalRow, confirmDelete: boolean): ActionMenuRow[] {
     const open = isEditable(journal.status);
     return [
-        ...(open ? [{ key: 'rename', icon: <LucidePencil size={20} strokeWidth={1.9} />, title: '改日记名' }] : []),
+        ...(open ? [{ key: 'rename', icon: <LucidePenLine size={20} strokeWidth={1.9} />, title: '改日记名' }] : []),
         ...(open ? [{ key: 'complete', icon: <LucideCheck size={20} strokeWidth={1.9} />, title: '完成收笔' }] : []),
         {
             key: 'delete',
@@ -569,7 +568,7 @@ export function ArchiveScreen() {
                     rows={[
                         {
                             key: 'rename',
-                            icon: <LucidePencil size={20} strokeWidth={1.9} />,
+                            icon: <LucidePenLine size={20} strokeWidth={1.9} />,
                             title: '改笔记名',
                         },
                         {
@@ -642,7 +641,7 @@ export function ArchiveScreen() {
                                     }}
                                 />
                                 <ChooserRow
-                                    icon={<LucidePencil size={18} strokeWidth={1.9} color={palette.secondary} />}
+                                    icon={<LucidePenLine size={18} strokeWidth={1.9} color={palette.secondary} />}
                                     title="新建笔记"
                                     onPress={() => {
                                         haptics.impact();

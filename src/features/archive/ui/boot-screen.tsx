@@ -3,12 +3,17 @@ import {
     AccessibilityInfo,
     Animated,
     Easing,
+    Image,
     Text,
     View,
+    useWindowDimensions,
     type NativeEventSubscription,
 } from 'react-native';
-import { LucidePenLine } from '@/core/icons';
-import { usePalette } from './theme';
+import { useEffectiveTheme } from './theme';
+
+/** 品牌 PNG 双变体（与 app.json expo-splash-screen plugin 同一文件，见头注）。 */
+const BOOT_LOGO_LIGHT = require('../../../assets/images/splash-icon.png');
+const BOOT_LOGO_DARK = require('../../../assets/images/splash-icon-dark.png');
 
 /**
  * 启动过渡页（boot screen，Android-only 参与；web/iOS 由 _layout 直接进 app）。
@@ -26,14 +31,15 @@ import { usePalette } from './theme';
  * native 的初始生效档 = Appearance 系统档（color-scheme.ts:54-61 fallback），
  * 故 dark: 变体从首帧即正确，splash → 过渡页无缝。
  *
- * 【Logo 选型】三个候选的取舍：① HatchLogoSkia（core/svg/logo）= Skia Canvas +
- * LinearGradient + reanimated；② HatchLogo（core/icons/hatch-logo）= GradientCycle
- * 渐变分层 + reanimated——两者都是「动画引擎 + 渐变」双红线冲突（本页动画只许
- * RN Animated transform/opacity、无渐变），且 Skia canvas / 多层宿主视图偏重；
- * ③ 品牌 PNG（assets/images/splash-icon.png）经查是不透明白底 RGB 图（五张资产
- * 同一份文件），深色主题下会成黑底白砖。故取 Lucide 单图标（PenLine，已在
- * core/icons 适配层、语义 = 书写/记录，与桌面笔形图标 brand-mark 同源），
- * 色值走 usePalette().text（非 CSS 场景语义色纪律）随主题翻转。
+ * 【Logo 选型（v0.4.2 重定）】品牌 PNG（assets/images/splash-icon.png，浅色档 /
+ * splash-icon-dark.png，深色档）——v0.4.1 重生成后为 1254×1254 RGBA 透明底品牌笔
+ * （旧注「不透明白底 RGB」描述的是重生成前的旧资产，已失效）。**关键约束 = 与
+ * 原生 splash 零缝交接**：本页与 expo-splash-screen plugin 配置引用同一对 PNG，
+ * plugin 底色（app.json，#FFFFFF/#080A0A）与页面底色 token 三段同源，图像渲染
+ * 几何复刻 contain 数学（方形资产渲染边 = min(屏宽, 屏高)，居中）——splash 隐去
+ * 与本页淡入同图同位同底色，用户看到的是「一个 logo」，不再是两层图标叠显
+ * （v0.4.2 用户反馈）。仍不取 Skia/GradientCycle 动画 logo：动画引擎 + 渐变双
+ * 红线冲突（本页动画只许 RN Animated transform/opacity、无渐变）。
  *
  * 【动效】两个克制项，全部 RN Animated transform/opacity + useNativeDriver：
  * ① logo + 文案整体淡入 320ms；② 淡入完成后 logo 呼吸缩放 1↔1.04（2600ms 循环，
@@ -57,13 +63,25 @@ const BOOT_BREATH_HALF_MS = 1300;
 /** 呼吸峰值：1.04（肉眼可感的下限附近，克制不抢戏）。 */
 const BOOT_BREATH_PEAK = 1.04;
 
-/** Logo 尺寸：56px（屏题 20 的 ~2.8 倍，居中视觉重量与 Apple 启动页相近）。 */
-const BOOT_LOGO_SIZE = 56;
+/**
+ * 笔迹下缘在品牌资产内的纵向占比：资产 1254×1254，笔 + 收笔横线止于约 73%
+ * 高度处（下部 27% 是留白）。状态注记锚在笔迹下缘而非图像底缘——图像全宽
+ * （复刻 splash contain 几何）后，若按图像底缘排，「初始化中」会漂到离笔迹
+ * 100+dp 的下方，构图散架。资产重生成时随 brand-assets.test 一起复核此值。
+ */
+const BOOT_INK_BOTTOM_RATIO = 0.73;
+
+/** 状态注记与笔迹下缘的间距（对齐原 mt-6 的 24dp 节奏）。 */
+const BOOT_NOTE_GAP = 24;
 
 export function BootScreen() {
-    // 非 CSS 场景语义色纪律（theme.ts 头注）：SVG icon color 从 palette 取，
-    // 双翻期间随生效主题翻转（对档重建后重挂载读到对档色，翻二复原）。
-    const palette = usePalette();
+    // 生效主题档（nativewind useColorScheme 认 set 覆盖）：双翻期间随档翻转，
+    // logo 资产随之换浅/深变体（与 plugin dark 配置同一对文件，交接无换图感）。
+    const theme = useEffectiveTheme();
+    // splash 几何复刻：contain 模式下方形资产渲染边 = min(屏宽, 屏高)，居中
+    // （竖屏手机 = 全屏宽，与原生 splash 逐像素同位）。
+    const { width, height } = useWindowDimensions();
+    const logoSize = Math.min(width, height);
     // reduceMotion（系统减弱动态）：检测是异步的，初值 false；检测返回 true 时
     // 由下方 effect 收敛到静态终态（最坏代价 = 首拍 logo 晚 1-2 帧出现）。
     const [reduceMotion, setReduceMotion] = useState(false);
@@ -148,14 +166,32 @@ export function BootScreen() {
         // 全屏底：ink/inkd token，与 splash / Stack contentStyle 同源（见头注）。
         // 条件类恒等：dark 变体静态写出，无动态拼串。
         <View className="flex-1 items-center justify-center bg-ink-base dark:bg-inkd-base">
-            {/* 淡入作用域 = logo + 文案整体（一条时间线，两元素同步呼吸出场） */}
-            <Animated.View style={{ opacity: fadeAnim }} className="items-center">
-                {/* 呼吸作用域仅 logo（文字缩放会显噪） */}
+            {/* 淡入作用域 = logo（绝对定位满幅居中，与 splash 图像同位） */}
+            <Animated.View
+                style={{ opacity: fadeAnim }}
+                className="absolute inset-0 items-center justify-center"
+            >
+                {/* 呼吸作用域仅 logo。fadeDuration 0 = 关掉 RN Image 自带淡入
+                （Android 默认 ~150ms）：splash 隐去瞬间 logo 必须已在位，否则
+                出现「空底 → logo 后到」的二次出现感 */}
                 <Animated.View style={{ transform: [{ scale: breathAnim }] }}>
-                    <LucidePenLine size={BOOT_LOGO_SIZE} color={palette.text} strokeWidth={1.75} />
+                    <Image
+                        source={theme === 'dark' ? BOOT_LOGO_DARK : BOOT_LOGO_LIGHT}
+                        style={{ width: logoSize, height: logoSize }}
+                        resizeMode="contain"
+                        fadeDuration={0}
+                    />
                 </Animated.View>
-                {/* 极轻状态注记：meta 字号 + muted（用户口径「Logo 然后进行初始化」） */}
-                <Text className="mt-6 text-[12px] text-ink-muted dark:text-inkd-muted">
+            </Animated.View>
+            {/* 极轻状态注记（用户口径「Logo 然后进行初始化」）：meta 字号 + muted，
+                绝对定位锚在笔迹下缘（见 BOOT_INK_BOTTOM_RATIO 注）——logo 满幅后
+                不再随图像底缘走，与淡入同一条时间线出场 */}
+            <Animated.View
+                style={{ opacity: fadeAnim, top: height / 2 + (BOOT_INK_BOTTOM_RATIO - 0.5) * logoSize + BOOT_NOTE_GAP }}
+                pointerEvents="none"
+                className="absolute left-0 right-0 items-center"
+            >
+                <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">
                     初始化中
                 </Text>
             </Animated.View>

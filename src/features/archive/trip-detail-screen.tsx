@@ -16,7 +16,7 @@ import {
     LucideCalendar,
     LucideCheck,
     LucideImage,
-    LucidePencil,
+    LucidePenLine,
     LucideTrash,
     LucideVideo,
 } from '@/core/icons';
@@ -175,7 +175,7 @@ function DayActionCard({
     // 触感底；行高 ~72 ≥44，不传 hitSlop（0），行距 gap-2.5（10px）为不可点间隙
     // 从简口径（2026-11-19 用户指令）：行副标描述全线退役，标题自释
     const rows: Array<{ action: DayCardAction; icon: React.ReactNode; title: string }> = [
-        { action: 'write', icon: <LucidePencil size={20} strokeWidth={1.9} />, title: '写这一天' },
+        { action: 'write', icon: <LucidePenLine size={20} strokeWidth={1.9} />, title: '写这一天' },
         { action: 'set-background', icon: <LucideImage size={20} strokeWidth={1.9} />, title: '设置背景' },
     ];
 
@@ -907,7 +907,7 @@ export function TripDetailScreen() {
                                     accessibilityLabel="编辑行程"
                                     className="h-9 w-9 items-center justify-center rounded-control border border-ink-border bg-ink-surface dark:border-inkd-border dark:bg-inkd-surface"
                                 >
-                                    <LucidePencil size={16} strokeWidth={1.9} color={palette.secondary} />
+                                    <LucidePenLine size={16} strokeWidth={1.9} color={palette.secondary} />
                                 </View>
                             </BouncyPressable>
                         ) : null}
