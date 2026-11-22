@@ -6,7 +6,7 @@ import {
     View,
     type NativeEventSubscription,
 } from 'react-native';
-import { LucideBookOpen, LucideLock } from '@/core/icons';
+import { LucidePenLine, LucideLock } from '@/core/icons';
 import { haptics } from '@/core/haptics';
 import { localAuth } from '@/core/local-auth';
 import { usePalette } from './ui/theme';
@@ -181,7 +181,7 @@ export function AppLockGate({ children }: { children: ReactNode }) {
             {/* 锁定覆盖层（全屏不透明，盖过全部内容与 RecordingSessionHost 的
                 悬浮 chip——zIndex 60 高于各覆盖层 z-50 档） */}
             <View className="absolute inset-0 z-[60] flex-1 items-center justify-center bg-ink-base dark:bg-inkd-base">
-                <LucideBookOpen size={56} color={palette.secondary} strokeWidth={1.5} />
+                <LucidePenLine size={56} color={palette.secondary} strokeWidth={1.5} />
                 <Text className="mt-5 text-[20px] font-semibold text-ink-text dark:text-inkd-text">
                     Archive
                 </Text>

@@ -18,7 +18,7 @@ import { useRouter } from 'expo-router';
 import {
     BouncyPressable,
     createIcon,
-    LucideBookOpen,
+    LucidePenLine,
     LucideImagePlay,
     LucidePencil,
     LucidePlus,
@@ -1153,7 +1153,7 @@ export function JournalEditScreen({
                         保留）；内容→动作区间距归 DeadEndView（mt-12） */}
                     <View className="flex-1 pt-8">
                         <DeadEndView
-                            icon={<LucideBookOpen size={40} color={palette.muted} strokeWidth={1.5} />}
+                            icon={<LucidePenLine size={40} color={palette.muted} strokeWidth={1.5} />}
                             title="打不开这一页"
                             hint="日记可能已被删除，或数据读取失败。"
                             actionLabel="重试"

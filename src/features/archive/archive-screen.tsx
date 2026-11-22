@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import {
     BouncyPressable,
-    LucideBookOpen,
+    LucidePenLine,
     LucideCalendar,
     LucideCheck,
     LucideChevronRight,
@@ -289,7 +289,7 @@ export function ArchiveScreen() {
                 node: (
                     <View className="flex-1 flex-col">
                         <View className="flex-1 items-center justify-center gap-2 px-6 py-5">
-                            <LucideBookOpen size={34} color={palette.muted} strokeWidth={1.5} />
+                            <LucidePenLine size={34} color={palette.muted} strokeWidth={1.5} />
                             <Text className="text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                 日记
                             </Text>
@@ -633,7 +633,7 @@ export function ArchiveScreen() {
                                 h-12（48 ≥44，hitSlop 0），裸图标 + 题单行 */}
                             <View className="mt-3 overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface">
                                 <ChooserRow
-                                    icon={<LucideBookOpen size={18} strokeWidth={1.9} color={palette.secondary} />}
+                                    icon={<LucidePenLine size={18} strokeWidth={1.9} color={palette.secondary} />}
                                     title="新建日记"
                                     onPress={() => {
                                         haptics.impact();

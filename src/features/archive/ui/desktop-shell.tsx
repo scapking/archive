@@ -8,7 +8,7 @@ import {
     View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LucideBookOpen, LucideChevronRight } from '@/core/icons';
+import { LucidePenLine, LucideChevronRight } from '@/core/icons';
 import { archiveConfig } from '@/config/archive';
 import { usePalette } from './theme';
 import { Sidebar } from './sidebar';
@@ -162,7 +162,7 @@ function ShellSlot({ collapsed }: { collapsed: boolean }) {
                         className="h-7 w-7 items-center justify-center rounded-control"
                         style={{ backgroundColor: palette.primaryBtn }}
                     >
-                        <LucideBookOpen size={15} color={palette.onPrimaryBtn} />
+                        <LucidePenLine size={15} color={palette.onPrimaryBtn} />
                     </View>
                     <Pressable
                         accessibilityRole="button"

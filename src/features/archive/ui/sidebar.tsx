@@ -1,11 +1,11 @@
 import { Pressable, Text, View } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LucideBack, LucideBookOpen, LucideUser } from '@/core/icons';
+import { LucideBack, LucidePenLine, LucideUser } from '@/core/icons';
 import { usePalette } from './theme';
 
 const NAV_ITEMS = [
-    { href: '/(tabs)', label: 'Archive', icon: LucideBookOpen },
+    { href: '/(tabs)', label: 'Archive', icon: LucidePenLine },
     { href: '/me', label: 'Me', icon: LucideUser },
 ] as const;
 
@@ -48,7 +48,7 @@ export function Sidebar({ onCollapse }: { onCollapse?: () => void } = {}) {
                         className="h-7 w-7 items-center justify-center rounded-control"
                         style={{ backgroundColor: palette.primaryBtn }}
                     >
-                        <LucideBookOpen size={15} color={palette.onPrimaryBtn} />
+                        <LucidePenLine size={15} color={palette.onPrimaryBtn} />
                     </View>
                     <View className="min-w-0 flex-1">
                         <Text className="text-[15px] font-semibold text-ink-text dark:text-inkd-text">

@@ -7,7 +7,7 @@ import {
     View,
     type NativeEventSubscription,
 } from 'react-native';
-import { LucideBookOpen } from '@/core/icons';
+import { LucidePenLine } from '@/core/icons';
 import { usePalette } from './theme';
 
 /**
@@ -31,8 +31,8 @@ import { usePalette } from './theme';
  * 渐变分层 + reanimated——两者都是「动画引擎 + 渐变」双红线冲突（本页动画只许
  * RN Animated transform/opacity、无渐变），且 Skia canvas / 多层宿主视图偏重；
  * ③ 品牌 PNG（assets/images/splash-icon.png）经查是不透明白底 RGB 图（五张资产
- * 同一份文件），深色主题下会成黑底白砖。故取 Lucide 单图标（BookOpen，已在
- * core/icons 适配层、语义 = 日记/档案，契合系统极简 / Apple Journal 口径），
+ * 同一份文件），深色主题下会成黑底白砖。故取 Lucide 单图标（PenLine，已在
+ * core/icons 适配层、语义 = 书写/记录，与桌面笔形图标 brand-mark 同源），
  * 色值走 usePalette().text（非 CSS 场景语义色纪律）随主题翻转。
  *
  * 【动效】两个克制项，全部 RN Animated transform/opacity + useNativeDriver：
@@ -152,7 +152,7 @@ export function BootScreen() {
             <Animated.View style={{ opacity: fadeAnim }} className="items-center">
                 {/* 呼吸作用域仅 logo（文字缩放会显噪） */}
                 <Animated.View style={{ transform: [{ scale: breathAnim }] }}>
-                    <LucideBookOpen size={BOOT_LOGO_SIZE} color={palette.text} strokeWidth={1.75} />
+                    <LucidePenLine size={BOOT_LOGO_SIZE} color={palette.text} strokeWidth={1.75} />
                 </Animated.View>
                 {/* 极轻状态注记：meta 字号 + muted（用户口径「Logo 然后进行初始化」） */}
                 <Text className="mt-6 text-[12px] text-ink-muted dark:text-inkd-muted">

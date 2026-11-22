@@ -1,6 +1,6 @@
 import { Link, Stack, router } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
-import { LucideBookOpen } from '@/core/icons';
+import { LucidePenLine } from '@/core/icons';
 import { usePalette } from '@/features/archive';
 
 /** 404（主题化）：说明 + 回首页动作，与全局 ink 令牌一致。整页点按任意位置
@@ -16,7 +16,7 @@ export default function NotFoundScreen() {
                 accessibilityLabel="回到 Archive"
                 onPress={() => router.replace('/')}
             >
-                <LucideBookOpen size={40} color={palette.muted} strokeWidth={1.5} />
+                <LucidePenLine size={40} color={palette.muted} strokeWidth={1.5} />
                 <Text className="mt-4 text-[20px] font-semibold text-ink-text dark:text-inkd-text">
                     走到了没有路的地方
                 </Text>

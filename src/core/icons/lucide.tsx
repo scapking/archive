@@ -33,6 +33,7 @@ import ChevronRight from 'lucide-react-native/icons/chevron-right';
 import Video from 'lucide-react-native/icons/video';
 import Play from 'lucide-react-native/icons/play';
 import BookOpen from 'lucide-react-native/icons/book-open';
+import PenLine from 'lucide-react-native/icons/pen-line';
 import TrendingUp from 'lucide-react-native/icons/trending-up';
 import Clock from 'lucide-react-native/icons/clock';
 // v6 事件实体（工单式）新增：Flag = 事件/工单语义标（事件入口卡、插入菜单「新建事件」行），
@@ -109,6 +110,7 @@ export {
     Video as LucideVideo,
     Play as LucidePlay,
     BookOpen as LucideBookOpen,
+    PenLine as LucidePenLine,
     TrendingUp as LucideTrendingUp,
     Clock as LucideClock,
     Flag as LucideFlag,
