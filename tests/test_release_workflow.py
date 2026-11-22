@@ -202,7 +202,16 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
             "Verified using v2 scheme (APK Signature Scheme v2): true",
             self.android,
         )
-        self.assertIn("Signer #1 certificate SHA-256 digest", self.android)
+        # build-tools 37 print-certs labels signer blocks per scheme
+        # ("V2 Signer: certificate SHA-256 digest: …", "V3.0 Signer: …"); the
+        # legacy "Signer #1" prefix is gone. The extraction must therefore be
+        # scheme-agnostic and normalized before comparison.
+        self.assertIn(
+            "sed -n 's/.*certificate SHA-256 digest: //p'", self.android
+        )
+        self.assertNotIn(
+            "sed -n 's/^Signer #1 certificate SHA-256 digest: //p'", self.android
+        )
         self.assertIn("release-cert-sha256.txt", self.android)
         # keytool prints uppercase colon-separated digests while apksigner
         # prints lowercase bare hex: every digest must be normalized before
