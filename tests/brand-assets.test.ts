@@ -16,7 +16,7 @@ const sharp = requireFromSrc('sharp') as typeof import('sharp');
 const canvasSize = 1254;
 const paper = [247, 242, 232] as const;
 const ink = [32, 37, 34] as const;
-// #171B18 — the narrow darker center-spine fill declared by the brief.
+// #171B18 — the legacy open-book center-spine fill; must never leak back in.
 const spine = [23, 27, 24] as const;
 const legacyWhaleSha256 =
     'db3ba8f0ce0f1b7dcadd1f4f332bcef53d5855ca945b63cabb106f9db0f9a027';
@@ -171,13 +171,16 @@ test('asset check renders temporary output without rewriting tracked assets', as
     }
 });
 
-test('canonical SVG is a flat three-path open book', async () => {
-    const svgPath = path.join(imagesRoot, 'open-book-icon.svg');
+test('canonical SVG is a flat pen mark in the declared palette', async () => {
+    const svgPath = path.join(imagesRoot, 'brand-mark.svg');
     await assertRequiredFileExists(svgPath);
     const svg = await readFile(svgPath, 'utf8');
 
-    assert.match(svg, /<svg\b[^>]*\bviewBox="0 0 1254 1254"/);
-    assert.equal((svg.match(/<path\b/g) ?? []).length, 3);
+    assert.match(svg, /<svg\b[^>]*\bviewBox="0 0 512 512"/);
+    assert.ok(
+        (svg.match(/<path\b/g) ?? []).length >= 1,
+        'canonical mark must be drawn with vector paths',
+    );
 
     for (const forbiddenPattern of [
         /<text\b/i,
@@ -190,6 +193,33 @@ test('canonical SVG is a flat three-path open book', async () => {
         /\bshadow\b/i,
     ]) {
         assert.doesNotMatch(svg, forbiddenPattern);
+    }
+
+    // The pen mark is flat and must stay inside its declared palette so the
+    // generator's string-replace recolors and the pixel assertions below
+    // keep working.
+    const declaredPalette = [
+        '#202522', // ink — nib and written stroke
+        '#3E5C76', // pen blue — body
+        '#E4CDBB', // sand — ferrule
+        '#C77B5A', // terracotta — end cap
+    ];
+    const usedColors = [
+        ...svg.matchAll(/\b(?:fill|stroke)="(#[0-9A-Fa-f]{6})"/g),
+    ].map((match) => match[1]);
+
+    assert.ok(usedColors.length >= 5, 'canonical mark has too few color uses');
+    for (const color of usedColors) {
+        assert.ok(
+            declaredPalette.includes(color),
+            `canonical SVG uses an undeclared color: ${color}`,
+        );
+    }
+    for (const color of declaredPalette) {
+        assert.ok(
+            usedColors.includes(color),
+            `canonical SVG is missing the declared color ${color}`,
+        );
     }
 });
 
@@ -211,7 +241,7 @@ test('every generated PNG is 1254 by 1254 and replaces the whale', async () => {
     }
 });
 
-test('icon and favicon use the warm paper canvas and ink book', async () => {
+test('icon and favicon use the warm paper canvas and pen palette', async () => {
     for (const name of ['icon.png', 'favicon.png'] as const) {
         const filePath = assetPath(name);
         await assertRequiredFileExists(filePath);
@@ -235,6 +265,10 @@ test('icon and favicon use the warm paper canvas and ink book', async () => {
         assert.ok(
             colors.has(ink.join(',')),
             `${name} does not contain the exact ink color`,
+        );
+        assert.ok(
+            colors.has('62,92,118'),
+            `${name} does not contain the pen blue body color`,
         );
     }
 });
@@ -282,9 +316,11 @@ test('splash and adaptive foreground marks have meaningful transparent alpha bou
 });
 
 test('splash marks use the exact ink and warm paper colors', async () => {
-    // The generator recolors the canonical SVG with a silent string replace,
-    // so a changed fill spelling would silently emit an ink book for the dark
-    // splash (or a paper book for the light one). Pin the rendered colors.
+    // The generator recolors the canonical SVG with string replaces, so a
+    // changed fill spelling would silently emit an ink pen for the dark
+    // splash (or a colored pen for the light one). The mark is multi-color:
+    // only the nib + written stroke recolor between splashes, so pin those
+    // with a discriminating floor rather than the old whole-book 100k.
     const light = await readRawPixels(assetPath('splash-icon.png'));
     const lightInkPixels = countExactColorPixels(
         light.data,
@@ -298,7 +334,7 @@ test('splash marks use the exact ink and warm paper colors', async () => {
     );
 
     assert.ok(
-        lightInkPixels >= 100_000,
+        lightInkPixels >= 10_000,
         `splash-icon.png has only ${lightInkPixels} exact ink pixels`,
     );
     assert.equal(
@@ -325,7 +361,7 @@ test('splash marks use the exact ink and warm paper colors', async () => {
     );
 
     assert.ok(
-        darkPaperPixels >= 100_000,
+        darkPaperPixels >= 10_000,
         `splash-icon-dark.png has only ${darkPaperPixels} exact warm paper pixels`,
     );
     assert.equal(

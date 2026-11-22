@@ -8,7 +8,7 @@ const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, '..', '..');
 const sourceRoot = path.join(repositoryRoot, 'src');
 const imagesRoot = path.join(sourceRoot, 'assets', 'images');
-const canonicalSvgPath = path.join(imagesRoot, 'open-book-icon.svg');
+const canonicalSvgPath = path.join(imagesRoot, 'brand-mark.svg');
 
 const requireFromSource = createRequire(path.join(sourceRoot, 'package.json'));
 const sharp = requireFromSource('sharp');
@@ -17,7 +17,8 @@ const canvasSize = 1254;
 const paper = '#F7F2E8';
 const ink = '#202522';
 const inkRgb = [32, 37, 34];
-const spine = '#171B18';
+const penBlue = '#3E5C76';
+const penBlueDark = '#9FB6C9';
 const adaptiveMarkSize = 1150;
 
 const assetNames = [
@@ -36,10 +37,14 @@ const pngOptions = {
     palette: false,
 };
 
-const recolorSvg = (svg, pageColor, spineColor) =>
+// Dark-canvas recolor: ink becomes warm paper, the pen body lightens so it
+// still reads on #171B18; sand and terracotta are legible on both canvases.
+// Both fill and stroke spellings must move — the nib/swash are stroke-drawn.
+const recolorForDarkCanvas = (svg) =>
     svg
-        .replaceAll(`fill="${ink}"`, `fill="${pageColor}"`)
-        .replaceAll(`fill="${spine}"`, `fill="${spineColor}"`);
+        .replaceAll(`fill="${ink}"`, `fill="${paper}"`)
+        .replaceAll(`stroke="${ink}"`, `stroke="${paper}"`)
+        .replaceAll(`fill="${penBlue}"`, `fill="${penBlueDark}"`);
 
 const renderMark = async (svg, size = canvasSize) =>
     sharp(Buffer.from(svg))
@@ -107,13 +112,9 @@ const renderCenteredMark = async (mark) => {
 };
 
 const renderAssets = async (canonicalSvg) => {
-    const inkMark = await renderMark(canonicalSvg);
-    const paperMark = await renderMark(
-        recolorSvg(canonicalSvg, paper, paper),
-    );
-    const monochromeMark = await normalizeMonochromeColor(
-        await renderMark(recolorSvg(canonicalSvg, ink, ink)),
-    );
+    const mark = await renderMark(canonicalSvg);
+    const darkMark = await renderMark(recolorForDarkCanvas(canonicalSvg));
+    const monochromeMark = await normalizeMonochromeColor(mark);
     const adaptiveMark = await renderMark(canonicalSvg, adaptiveMarkSize);
     const paperBackground = await sharp({
         create: {
@@ -127,10 +128,10 @@ const renderAssets = async (canonicalSvg) => {
         .toBuffer();
 
     return new Map([
-        ['icon.png', await renderMarkOnCanvas(inkMark, paper)],
-        ['favicon.png', await renderMarkOnCanvas(inkMark, paper)],
-        ['splash-icon.png', inkMark],
-        ['splash-icon-dark.png', paperMark],
+        ['icon.png', await renderMarkOnCanvas(mark, paper)],
+        ['favicon.png', await renderMarkOnCanvas(mark, paper)],
+        ['splash-icon.png', mark],
+        ['splash-icon-dark.png', darkMark],
         ['android-icon-foreground.png', await renderCenteredMark(adaptiveMark)],
         ['android-icon-background.png', paperBackground],
         ['android-icon-monochrome.png', monochromeMark],
