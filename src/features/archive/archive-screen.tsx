@@ -5,14 +5,21 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import {
     BouncyPressable,
-    LucidePenLine,
+    LucideBookOpen,
     LucideCalendar,
+    LucideCalendarX,
     LucideCheck,
     LucideChevronRight,
+    LucideClose,
     LucideFlag,
+    LucidePenLine,
+    LucidePencil,
     LucidePlay,
     LucidePlus,
+    LucideRoute,
+    LucideStickyNote,
     LucideTrash,
+    LucideType,
 } from '@/core/icons';
 import { haptics } from '@/core/haptics';
 import { useArchiveRevision, useArchiveStore } from './store';
@@ -89,11 +96,11 @@ type DeckTrip = ReturnType<typeof useArchiveStore.getState>['trips'][number];
 function tripMenuRows(trip: DeckTrip, confirmDelete: boolean): ActionMenuRow[] {
     return [
         ...(trip.status === 'ongoing'
-            ? [{ key: 'close', icon: <LucideCheck size={20} strokeWidth={1.9} />, title: '关闭行程' }]
+            ? [{ key: 'close', icon: <LucideCalendarX size={20} strokeWidth={1.9} />, title: '关闭行程' }]
             : []),
-        { key: 'new', icon: <LucidePlus size={20} strokeWidth={1.9} />, title: '新建行程' },
+        { key: 'new', icon: <LucideRoute size={20} strokeWidth={1.9} />, title: '新建行程' },
         ...(trip.status !== 'finished'
-            ? [{ key: 'edit', icon: <LucidePenLine size={20} strokeWidth={1.9} />, title: '编辑行程' }]
+            ? [{ key: 'edit', icon: <LucidePencil size={20} strokeWidth={1.9} />, title: '编辑行程' }]
             : []),
         {
             key: 'delete',
@@ -112,7 +119,7 @@ function tripMenuRows(trip: DeckTrip, confirmDelete: boolean): ActionMenuRow[] {
 function diaryMenuRows(journal: JournalRow, confirmDelete: boolean): ActionMenuRow[] {
     const open = isEditable(journal.status);
     return [
-        ...(open ? [{ key: 'rename', icon: <LucidePenLine size={20} strokeWidth={1.9} />, title: '改日记名' }] : []),
+        ...(open ? [{ key: 'rename', icon: <LucideType size={20} strokeWidth={1.9} />, title: '改日记名' }] : []),
         ...(open ? [{ key: 'complete', icon: <LucideCheck size={20} strokeWidth={1.9} />, title: '完成收笔' }] : []),
         {
             key: 'delete',
@@ -544,7 +551,7 @@ export function ArchiveScreen() {
                         },
                         {
                             key: 'failed',
-                            icon: <LucideTrash size={20} strokeWidth={1.9} />,
+                            icon: <LucideClose size={20} strokeWidth={1.9} />,
                             title: '标记失败',
                         },
                     ]}
@@ -568,7 +575,7 @@ export function ArchiveScreen() {
                     rows={[
                         {
                             key: 'rename',
-                            icon: <LucidePenLine size={20} strokeWidth={1.9} />,
+                            icon: <LucideType size={20} strokeWidth={1.9} />,
                             title: '改笔记名',
                         },
                         {
@@ -632,7 +639,7 @@ export function ArchiveScreen() {
                                 h-12（48 ≥44，hitSlop 0），裸图标 + 题单行 */}
                             <View className="mt-3 overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface">
                                 <ChooserRow
-                                    icon={<LucidePenLine size={18} strokeWidth={1.9} color={palette.secondary} />}
+                                    icon={<LucideBookOpen size={18} strokeWidth={1.9} color={palette.secondary} />}
                                     title="新建日记"
                                     onPress={() => {
                                         haptics.impact();
@@ -641,7 +648,7 @@ export function ArchiveScreen() {
                                     }}
                                 />
                                 <ChooserRow
-                                    icon={<LucidePenLine size={18} strokeWidth={1.9} color={palette.secondary} />}
+                                    icon={<LucideStickyNote size={18} strokeWidth={1.9} color={palette.secondary} />}
                                     title="新建笔记"
                                     onPress={() => {
                                         haptics.impact();
@@ -650,7 +657,7 @@ export function ArchiveScreen() {
                                     }}
                                 />
                                 <ChooserRow
-                                    icon={<LucideCalendar size={18} strokeWidth={1.9} color={palette.secondary} />}
+                                    icon={<LucideRoute size={18} strokeWidth={1.9} color={palette.secondary} />}
                                     title="新的行程"
                                     onPress={() => {
                                         haptics.impact();

@@ -17,7 +17,9 @@ import {
     LucideCheck,
     LucideImage,
     LucidePenLine,
+    LucidePencil,
     LucideTrash,
+    LucideWallpaper,
     LucideVideo,
 } from '@/core/icons';
 import { haptics } from '@/core/haptics';
@@ -176,7 +178,7 @@ function DayActionCard({
     // 从简口径（2026-11-19 用户指令）：行副标描述全线退役，标题自释
     const rows: Array<{ action: DayCardAction; icon: React.ReactNode; title: string }> = [
         { action: 'write', icon: <LucidePenLine size={20} strokeWidth={1.9} />, title: '写这一天' },
-        { action: 'set-background', icon: <LucideImage size={20} strokeWidth={1.9} />, title: '设置背景' },
+        { action: 'set-background', icon: <LucideWallpaper size={20} strokeWidth={1.9} />, title: '设置背景' },
     ];
 
     return (
@@ -907,7 +909,7 @@ export function TripDetailScreen() {
                                     accessibilityLabel="编辑行程"
                                     className="h-9 w-9 items-center justify-center rounded-control border border-ink-border bg-ink-surface dark:border-inkd-border dark:bg-inkd-surface"
                                 >
-                                    <LucidePenLine size={16} strokeWidth={1.9} color={palette.secondary} />
+                                    <LucidePencil size={16} strokeWidth={1.9} color={palette.secondary} />
                                 </View>
                             </BouncyPressable>
                         ) : null}

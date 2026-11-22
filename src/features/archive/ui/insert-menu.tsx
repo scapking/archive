@@ -4,12 +4,14 @@ import {
     BouncyPressable,
     LucideCamera,
     LucideCheck,
+    LucideClapperboard,
+    LucideFilm,
     LucideImage,
     LucideMic,
     LucidePlus,
     LucideVideo,
 } from '@/core/icons';
-import { ImagePlayIcon, tintIcon } from './editor-icons';
+import { tintIcon } from './editor-icons';
 import { CloseButton } from './close-button';
 import { isRecordingSupported } from './recorder-overlay';
 import { isVideoCaptureSupported } from './camera-overlay';
@@ -119,13 +121,13 @@ export function InsertMenu({
      *  journal 行序 = 事件行序的同源保证）。 */
     const allRows: Array<{ action: InsertAction; icon: React.ReactNode; title: string }> = [
         { action: 'library-image', icon: <LucideImage size={20} strokeWidth={1.9} />, title: '相册图片' },
-        { action: 'library-video', icon: <ImagePlayIcon size={20} strokeWidth={1.9} />, title: '相册视频' },
+        { action: 'library-video', icon: <LucideFilm size={20} strokeWidth={1.9} />, title: '相册视频' },
         ...(isRecordingSupported()
             ? [{ action: 'record' as const, icon: <LucideMic size={20} strokeWidth={1.9} />, title: '录音' }]
             : []),
         { action: 'photo', icon: <LucideCamera size={20} strokeWidth={1.9} />, title: '拍照' },
         ...(isVideoCaptureSupported()
-            ? [{ action: 'video' as const, icon: <LucideVideo size={20} strokeWidth={1.9} />, title: '拍摄视频' }]
+            ? [{ action: 'video' as const, icon: <LucideClapperboard size={20} strokeWidth={1.9} />, title: '拍摄视频' }]
             : []),
         // 「+」语言一致（添加语义同 FAB 罗盘本钮）；排在媒体行之后、完成收笔之前（#11）
         { action: 'append-text', icon: <LucidePlus size={20} strokeWidth={1.9} />, title: '添加文本' },

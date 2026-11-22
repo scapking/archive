@@ -51,6 +51,19 @@ import ImagePlay from 'lucide-react-native/icons/image-play';
 import Upload from 'lucide-react-native/icons/upload';
 import NotebookPen from 'lucide-react-native/icons/notebook-pen';
 
+// v0.4.3 图标去重（用户指令「每个功能使用不同的图标」）：Type = 改名/编辑标题、
+// StickyNote = 新建笔记、Route = 新建行程、CalendarX = 关闭行程、Wallpaper =
+// 设置背景、Film = 相册视频、Shield = 防截屏、Clapperboard = 拍摄视频。同
+// per-icon 深路径先例，静态组件用法无需 __iconData。
+import Type from 'lucide-react-native/icons/type';
+import StickyNote from 'lucide-react-native/icons/sticky-note';
+import Route from 'lucide-react-native/icons/route';
+import CalendarX from 'lucide-react-native/icons/calendar-x';
+import Wallpaper from 'lucide-react-native/icons/wallpaper';
+import Film from 'lucide-react-native/icons/film';
+import Shield from 'lucide-react-native/icons/shield';
+import Clapperboard from 'lucide-react-native/icons/clapperboard';
+
 import {
     __iconData as houseData,
 } from 'lucide-react-native/icons/house';
@@ -121,6 +134,14 @@ export {
     ImagePlay as LucideImagePlay,
     Upload as LucideUpload,
     NotebookPen as LucideNotebookPen,
+    Type as LucideType,
+    StickyNote as LucideStickyNote,
+    Route as LucideRoute,
+    CalendarX as LucideCalendarX,
+    Wallpaper as LucideWallpaper,
+    Film as LucideFilm,
+    Shield as LucideShield,
+    Clapperboard as LucideClapperboard,
 };
 
 export { MorphIcon, type MorphIconProps, type MorphHandle } from 'morphicons/react-native';

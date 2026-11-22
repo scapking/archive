@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-    LucideCamera,
+    LucideShield,
     LucideDownload,
     LucideFileText,
     LucideLock,
@@ -371,7 +371,7 @@ function SecuritySection({
                     字段注已写 */}
                 <View className="mb-1 mt-2 flex-row items-center justify-between px-4 pb-3">
                     <View className="flex-row items-center gap-3">
-                        <LucideCamera size={18} strokeWidth={1.9} color={palette.secondary} />
+                        <LucideShield size={18} strokeWidth={1.9} color={palette.secondary} />
                         <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
                             防截屏
                         </Text>
