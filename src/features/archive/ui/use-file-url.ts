@@ -6,21 +6,15 @@ import { mediaByJournalIds } from '../db';
 // 中立广播层（store mutation 时经 data-revision.notifyDataRevision 转发）。
 import { useDataRevision } from '../data-revision';
 import type { JournalMediaRow } from '../db';
+// 状态机纯函数（v0.4.4 堆叠换张零占位帧的修复面，node 测试直接覆盖）
+import {
+    MISSING_FILE_URL_STATE,
+    nextFileUrlState,
+    type FileUrlState,
+    type FileUrlStatus,
+} from './file-url-state';
 
-/**
- * file-storage key 的解析三态：
- * - loading：key 存在，文件 URL 解析中（渲染占位底，不裸黑块）；
- * - ready：拿到可渲染 URI（native: file://，web: blob:）；
- * - missing：读取失败 / key 缺失（文件删除或损坏，属文档化可自愈降级：
- *   缺文件的媒体不应打断时间线浏览，渲染为明确的失败态而非永久占位）。
- */
-export type FileUrlStatus = 'loading' | 'ready' | 'missing';
-
-export interface FileUrlState {
-    status: FileUrlStatus;
-    /** 仅 status === 'ready' 时非空；blob 生命周期由会话缓存层接管（见下）。 */
-    uri: string | null;
-}
+export type { FileUrlState, FileUrlStatus };
 
 /**
  * 会话级 URL 缓存（web blob 层的性能修复面，「大文件加载慢」的第二根因）：
@@ -221,27 +215,27 @@ export function useFileUrlState(key: string | null): FileUrlState {
     // 首渲染同步快路径：会话缓存有效命中（同 revision、引用中）直接 ready，
     // FlatList 回收重挂/切屏回来不闪占位底（initializer 与 effect 的 acquire
     // 各自独立，引用计数由 effect 收口）
-    const [state, setState] = useState<FileUrlState>(() => {
-        if (key) {
-            const peeked = peekCachedUrl(key, revision);
-            if (peeked != null) return { status: 'ready', uri: peeked };
-        }
-        return LOADING_STATE;
-    });
-    // 上一个 key 追踪：同 key 的 revision 复验不清回 loading（保持已就绪画面
-    // 静默换源），仅换 key 才回 loading 防 URI 串位
+    const [state, setState] = useState<FileUrlState>(() =>
+        nextFileUrlState(LOADING_STATE, key, key ? peekCachedUrl(key, revision) : null),
+    );
+    // 换 key 的派生在**渲染期同步**完成（React 派生态调整模式）：deck 换张的
+    // 新前卡（原邻卡）URI 恒在会话缓存里，命中即 ready——不再经过「先 LOADING
+    // 一帧 → 异步 acquire」的占位闪烁（v0.4.4 用户反馈「切换堆叠会刷新/加载
+    // 一下」的根因）。同 key 的 revision 复验不清回 loading（保持已就绪画面
+    // 静默换源），防 URI 串位的职责由「仅换 key 才派生」承担
     const prevKeyRef = useRef<string | null>(null);
+    if (prevKeyRef.current !== key) {
+        prevKeyRef.current = key;
+        const next = nextFileUrlState(state, key, key ? peekCachedUrl(key, revision) : null);
+        if (next !== state) setState(next);
+    }
 
     useEffect(() => {
         if (!key) {
-            prevKeyRef.current = key;
             // 无 key = 无媒体行数据，直接按缺失处理（与 catch 分支同降级）
             setState(MISSING_STATE);
             return;
         }
-        const keyChanged = prevKeyRef.current !== key;
-        prevKeyRef.current = key;
-        if (keyChanged) setState(LOADING_STATE);
         let active = true;
         let handle: { release(): void } | null = null;
         acquireFileUrl(key, revision)
@@ -253,12 +247,9 @@ export function useFileUrlState(key: string | null): FileUrlState {
                     return;
                 }
                 handle = acquired;
-                // 同 URI 幂等：revision 复验复用既有条目时不触发多余重渲
-                setState((prev) =>
-                    prev.status === 'ready' && prev.uri === acquired.uri
-                        ? prev
-                        : { status: 'ready', uri: acquired.uri },
-                );
+                // 同 URI 幂等（引用稳定）：revision 复验复用既有条目时不触发
+                // 多余重渲（nextFileUrlState 返回 prev 本体）
+                setState((prev) => nextFileUrlState(prev, key, acquired.uri));
             })
             .catch(() => {
                 // 缺文件时静默置空是安全的：媒体行在、二进制缺失属可自愈状态
@@ -282,6 +273,18 @@ export function useFileUrlState(key: string | null): FileUrlState {
  */
 export function useFileUrl(key: string | null): string | null {
     return useFileUrlState(key).uri;
+}
+
+/**
+ * 预热（v0.4.4 deck 邻卡）：acquire 后立即 release——条目留在会话缓存
+ * （引用计数 0 + 延迟撤销），消费方换 key 首渲染 peek 命中即 ready（同步
+ * 路径），不再有 LOADING 占位帧。失败静默（预热是增强，非数据依赖）。
+ */
+export function prewarmFileUrl(key: string, revision: number): void {
+    if (!key) return;
+    void acquireFileUrl(key, revision)
+        .then((acquired) => acquired.release())
+        .catch(() => undefined);
 }
 
 /** 某篇日记的媒体行（数据版本变化自动重载；订阅经 data-revision，不经 store）。 */

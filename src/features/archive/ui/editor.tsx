@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, forwardRef } from 'react';
+import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, forwardRef } from 'react';
 import {
     AccessibilityInfo,
     ActivityIndicator,
@@ -40,7 +40,8 @@ import {
     useVideoThumbState,
 } from './media-view';
 import { usePalette, useMediaAlignPref } from './theme';
-import { useFileUrlState } from './use-file-url';
+import { useDataRevision } from '../data-revision';
+import { useFileUrlState, prewarmFileUrl } from './use-file-url';
 // 全屏查看请求汇点（中立层，谁引都不成环，见其文件头）
 import { requestViewer } from '../viewer-request';
 import type { JournalBlock, JournalMediaRow } from '../db';
@@ -1216,7 +1217,7 @@ const DECK_REDUCED_FADE_MS = 160;
  * 视频堆前卡 = DeckVideoFrontCard（同 frame/同描边/同手势链的封面态
  * 变体，见其注）。
  */
-function DeckFrontCard({
+function DeckFrontCardImpl({
     media,
     width,
     height,
@@ -1291,6 +1292,8 @@ function DeckFrontCard({
     );
 }
 
+const DeckFrontCard = memo(DeckFrontCardImpl);
+
 /**
  * 相纸卡体（底缘后卡，图片堆露边层）：与中卡同尺寸的整卡渲染（同 frame +
  * cover 裁切，楔形露出的是真实相邻图内容、不是窄边条占位），位形（下移/
@@ -1323,7 +1326,7 @@ function DeckFrontCard({
  * 与命中面分离——双按压体叠命中区只会互相抢）；图片未就绪时保持 raised
  * 占位底（楔形带放不下失败文案，加载态即垫边色）。
  */
-function DeckBackCard({
+function DeckBackCardImpl({
     media,
     width,
     height,
@@ -1353,6 +1356,8 @@ function DeckBackCard({
         </View>
     );
 }
+
+const DeckBackCard = memo(DeckBackCardImpl);
 
 /**
  * 堆叠中卡（视频堆前卡，MediaVideo 封面态的 deck frame 变体）：paused 首帧
@@ -1386,7 +1391,7 @@ function DeckBackCard({
  * "none"（expo-video 原生层吞触摸，#2b 同口径），按压统一走外层
  * BouncyPressable；触摸面零 className。
  */
-function DeckVideoFrontCard({
+function DeckVideoFrontCardImpl({
     media,
     width,
     height,
@@ -1490,6 +1495,8 @@ function DeckVideoFrontCard({
     );
 }
 
+const DeckVideoFrontCard = memo(DeckVideoFrontCardImpl);
+
 /**
  * 相纸卡体（视频堆露边层）：**真封面 Image（无 player）**——2026-11-08 用户
  * 反馈「视频堆叠的底层视频没有加载封面」的修复面。旧实现是 raised 底 + 居中
@@ -1513,7 +1520,7 @@ function DeckVideoFrontCard({
  * 见 DECK_CARD_RADIUS 注）；mat 垫边同 DECK_MAT。
  * 零交互纯视觉：点按命中由宿主底缘楔形带点按体承担。
  */
-function DeckVideoBackCard({
+function DeckVideoBackCardImpl({
     media,
     width,
     height,
@@ -1556,6 +1563,8 @@ function DeckVideoBackCard({
     );
 }
 
+const DeckVideoBackCard = memo(DeckVideoBackCardImpl);
+
 /**
  * 堆叠中卡（音频成员变体，显式混合组专用）：把 AudioBlock 卡（media-view
  * 同源口径，media-view.tsx 收口）居中放进 deck 固定 frame——音频卡是常驻
@@ -1565,7 +1574,7 @@ function DeckVideoBackCard({
  * dimmed = 多选模式下的「音频不可选」置灰（inline opacity，不落条件类）。
  * onBlockAction 透传长按/桌面双击操作卡链路。
  */
-function DeckAudioFrontCard({
+function DeckAudioFrontCardImpl({
     item,
     width,
     height,
@@ -1603,6 +1612,8 @@ function DeckAudioFrontCard({
         </View>
     );
 }
+
+const DeckAudioFrontCard = memo(DeckAudioFrontCardImpl);
 
 /**
  * 相纸卡体（音频成员露边层，显式混合组专用）：**零播放器零状态订阅**的
@@ -2339,6 +2350,16 @@ function MediaDeckStack({
     const leftItem = itemCount >= 3 ? items[(safeIndex - 1 + itemCount) % itemCount] : null;
     const rightItem = items[(safeIndex + 1) % itemCount];
 
+    // 邻卡 URI 预热（v0.4.4 堆叠换张零占位帧的另一半）：换张后成为新前卡的
+    // 邻卡提前 acquire（acquire 即 release——条目留会话缓存，引用计数 0 +
+    // 延迟撤销），换 key 渲染期 peek 恒命中，前卡首帧就是真图（file-url-state
+    // 的同步 ready 路径）。缩略图/大图共用同一会话缓存，预热零额外读取。
+    const dataRevision = useDataRevision();
+    useEffect(() => {
+        if (leftItem) prewarmFileUrl(leftItem.media.file_key, dataRevision);
+        if (rightItem) prewarmFileUrl(rightItem.media.file_key, dataRevision);
+    }, [leftItem, rightItem, dataRevision]);
+
     return (
         <View
             className="relative overflow-hidden"
@@ -2371,6 +2392,7 @@ function MediaDeckStack({
                             音频 = 声纹占位（露边层零播放器零订阅，性能红线） */}
                         {leftItem.deckKind === 'video' ? (
                             <DeckVideoBackCard
+                                key={leftItem.media.id}
                                 media={leftItem.media}
                                 width={cardWidth}
                                 height={cardHeight}
@@ -2379,6 +2401,7 @@ function MediaDeckStack({
                             <DeckAudioBackCard width={cardWidth} height={cardHeight} />
                         ) : (
                             <DeckBackCard
+                                key={leftItem.media.id}
                                 media={leftItem.media}
                                 width={cardWidth}
                                 height={cardHeight}
@@ -2395,6 +2418,7 @@ function MediaDeckStack({
                     <DeckAnimatedSlot style={[{ flex: 1 }, rightSlotStyle]}>
                         {rightItem.deckKind === 'video' ? (
                             <DeckVideoBackCard
+                                key={rightItem.media.id}
                                 media={rightItem.media}
                                 width={cardWidth}
                                 height={cardHeight}
@@ -2403,6 +2427,7 @@ function MediaDeckStack({
                             <DeckAudioBackCard width={cardWidth} height={cardHeight} />
                         ) : (
                             <DeckBackCard
+                                key={rightItem.media.id}
                                 media={rightItem.media}
                                 width={cardWidth}
                                 height={cardHeight}
@@ -2444,6 +2469,7 @@ function MediaDeckStack({
                                     />
                                 ) : frontItem.deckKind === 'audio' ? (
                                     <DeckAudioFrontCard
+                                        key={frontItem.media.id}
                                         item={frontItem}
                                         width={cardWidth}
                                         height={cardHeight}
@@ -2453,6 +2479,7 @@ function MediaDeckStack({
                                     />
                                 ) : (
                                     <DeckFrontCard
+                                        key={frontItem.media.id}
                                         media={frontItem.media}
                                         width={cardWidth}
                                         height={cardHeight}
