@@ -13,6 +13,7 @@ import {
     Keyboard,
     Platform,
     Pressable,
+    Switch,
     Text,
     View,
 } from 'react-native';
@@ -229,7 +230,7 @@ function TripItemFormCard({
     errorText,
 }: {
     /** 提交通道（store.createTripItem）：resolve false = 失败（卡片保持打开）。 */
-    onSubmit(input: { time: string; title: string; description: string }): Promise<boolean>;
+    onSubmit(input: { time: string; title: string; description: string; withAlarm: boolean }): Promise<boolean>;
     onClose(): void;
     /** store.error 就地文案（失败后展示，避免陈旧错误串场）。 */
     errorText: string | null;
@@ -249,10 +250,15 @@ function TripItemFormCard({
     const [title, setTitle] = useState('');
     const [note, setNote] = useState('');
     const [noteOpen, setNoteOpen] = useState(false);
+    // 系统闹钟（用户指令 #9「创建时支持自定义创建系统闹钟」）：默认开（行程
+    // 提醒是核心场景），开关行随手关——iOS/web 模块缺失时开关仍在（提交后
+    // 由 core/alarm 门面 no-op，不给平台差异摆 UI）。
+    const [withAlarm, setWithAlarm] = useState(true);
     const [saveFailed, setSaveFailed] = useState(false);
     const submittingRef = useRef(false);
 
     const timeLabel = normalizeWheelTime(hour, minute);
+    const palette = usePalette();
 
     // 打开即收键盘准备输入；Android 返回键关闭（替代 Modal onRequestClose 语义）
     useEffect(() => {
@@ -282,6 +288,7 @@ function TripItemFormCard({
                 time: timeLabel,
                 title: title.trim(),
                 description: note.trim(),
+                withAlarm,
             });
             if (!ok) setSaveFailed(true);
             else onClose();
@@ -362,6 +369,26 @@ function TripItemFormCard({
                             />
                         </>
                     ) : null}
+                    {/* 系统闹钟开关（用户指令 #9，创建时可选）：默认开。Android
+                        到点 = 真闹钟（全屏响铃，锁屏可关）；iOS/web 无加闹钟
+                        API，提交后由 core/alarm 门面 no-op（强提醒走既有通知
+                        链），开关本身不做平台差异摆位 */}
+                    <View className="mt-3 flex-row items-center justify-between rounded-control bg-ink-surface px-3 py-2.5 dark:bg-inkd-surface">
+                        <View className="min-w-0 flex-1 pr-2">
+                            <Text className="text-[13px] font-medium text-ink-text dark:text-inkd-text">
+                                到点响铃
+                            </Text>
+                            <Text className="mt-0.5 text-[11px] text-ink-muted dark:text-inkd-muted">
+                                注册系统闹钟，到点全屏提醒
+                            </Text>
+                        </View>
+                        <Switch
+                            value={withAlarm}
+                            onValueChange={setWithAlarm}
+                            trackColor={{ false: palette.border, true: palette.accent }}
+                            ios_backgroundColor={palette.border}
+                        />
+                    </View>
                     <View className="mt-4">
                         <PrimaryButton
                             label={noteOpen ? '添加' : '下一步'}
@@ -723,13 +750,14 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
 
     /** 创建表单提交通道：store 校验失败 resolve false（表单就地展示可重试）。 */
     const runCreateTripItem = useCallback(
-        async (input: { time: string; title: string; description: string }): Promise<boolean> => {
+        async (input: { time: string; title: string; description: string; withAlarm: boolean }): Promise<boolean> => {
             const row = await createTripItem({
                 tripId,
                 date,
                 time: input.time,
                 title: input.title,
                 description: input.description,
+                withAlarm: input.withAlarm,
             });
             return row != null;
         },

@@ -1,0 +1,10 @@
+{
+  "name": "archive-alarm",
+  "version": "0.1.0",
+  "description": "Android system alarms (AlarmManager exact alarms with full-screen intent) for Archive. iOS/web are unsupported no-ops.",
+  "main": "src/index.ts",
+  "keywords": ["expo", "alarm", "alarmmanager"],
+  "peerDependencies": {
+    "expo": "*"
+  }
+}

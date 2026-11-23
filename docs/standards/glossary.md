@@ -55,6 +55,7 @@ core 是**通用能力接口层**：把 Expo 提供的三端（iOS/Android/Web�
 | `video-thumbnails` | **视频首帧缩略图生成**（getThumbnailAsync，time/quality 参数；产物常经 image-manipulator 缩边 ≤512 后落 file-storage）。web 无原生实现（官方 web stub 调用期抛错），运行时按平台分流，调用方须回退占位 | expo-video-thumbnails（native；web 官方 stub） |
 | `migration` | **通用迁移接口**（单个 zip 打包导出/导入：documents + files + 可选 cache；自研 store 模式 zip，防 zip-slip + CRC 校验，跨设备传输三端可用）。**zip 原语出口（2026-11-17 登记）**：createZip/readZip/ZipEntry 随目录出口开放（条目名白名单 `manifest.json` + `files/<key>`），供业务域组合自定义备份包（archive 全量备份消费面在 features 层） | 组合上三者 + zip.ts |
 | `notifications` | **通用通知接口**（权限/本地调度/push token/渠道/handler） | expo-notifications |
+| `alarm` | **系统闹钟接口**（2026-11-23 登记）：Android 真闹钟——`archive-alarm` 本地 Expo 模块（`src/modules/archive-alarm/`，AlarmManager 精确闹钟 setExactAndAllowWhileIdle + 到点全屏 intent 响铃通知 + BOOT_COMPLETED 持久化重排，注册表在 SharedPreferences；SCHEDULE_EXACT_ALARM 被拒降级非精确）。iOS/web 无第三方加闹钟 API = `unsupported`，门面绝不 throw（best-effort 增强口径，调用方照常落库）；iOS 强提醒走 `notifications` 链的 timeSensitive 升级。技术事实：第三方 app 无法往系统时钟 app 闹钟列表插条目（时钟 app 私有库），AlarmManager + 全屏呈现即「真闹钟」全部可行面 | archive-alarm 本地模块（native AlarmManager）；iOS/web = no-op |
 | `camera` | 相机权限与扫码纯函数（取景拍照走 CameraView 组件） | expo-camera |
 | `location` | 前台定位、地理编码（后台定位不支持 web，未纳入） | expo-location |
 | `audio` | 音频模式、播放器工厂、录音权限（录制器走 useAudioRecorder hook） | expo-audio |

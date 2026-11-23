@@ -18,6 +18,9 @@ import { notifications, type NotificationContentInput } from '@/core/notificatio
 // 时刻换算单一事实源（v0.4.4 起收口在 trip-item-logic 纯函数模块，node 测试
 // 直接覆盖）；本模块重导出保持既有消费面（trip-day-screen 等）不变。
 import { tripItemDueAt } from './trip-item-logic';
+// 系统闹钟门面（v0.4.4 用户指令 #9）：Android 真闹钟 / iOS·web unsupported
+// 自动 no-op——best-effort 增强，失败仅 warn 不阻塞数据面
+import { alarm } from '@/core/alarm';
 
 export { tripItemDueAt };
 import * as db from './db';
@@ -296,9 +299,10 @@ interface ArchiveStore {
      * 创建行程项（行程表页 + 表单卡）：title 必填非空、time 须合法 'HH:mm'、
      * date 须合法本地日期（错误进 error 通道返回 null，不 throw）。成功落库 +
      * 调度本地通知（确定性 identifier trip-item-<itemId>；权限被拒静默降级，
-     * 不阻塞创建）+ bump revision。
+     * 不阻塞创建）+ withAlarm 时注册系统闹钟（core/alarm 门面，Android 真闹钟
+     * /iOS·web unsupported 自动 no-op）+ bump revision。
      */
-    createTripItem(input: { tripId: string; date: string; time: string; title: string; description?: string }): Promise<TripItemRow | null>;
+    createTripItem(input: { tripId: string; date: string; time: string; title: string; description?: string; withAlarm?: boolean }): Promise<TripItemRow | null>;
     /**
      * 进入收尾（v0.4.4 状态机，用户指令 #8）：done 阶段（自动完成已过、尚未
      * 收尾）时把 completed_at 落库 → wrap 阶段（补图补视频窗口）。时间闸 =
@@ -1183,7 +1187,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
     // 刷新口径（见接口段注）：行程项不进 loadAll 状态，mutation 成功只 bump
     // revision，行程表页按 useArchiveRevision 局部重载。
 
-    async createTripItem({ tripId, date, time, title, description }) {
+    async createTripItem({ tripId, date, time, title, description, withAlarm }) {
         // 校验先行（错误进 error 通道，对齐 createEvent 口径）：标题必填非空、
         // 时间合法 'HH:mm'、日期合法本地日期；超长不设截断（备注为自由短文）
         const trimmedTitle = title.trim();
@@ -1240,6 +1244,16 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         if (!row) return null;
         // 通知调度（best-effort，fire-and-forget：内部全兜底，不阻塞也不进 error 通道）
         void scheduleTripItemNotification(row);
+        // 系统闹钟（用户指令 #9，创建时可选）：iOS/web 模块缺失自动 no-op，
+        // 调度失败仅 warn——闹钟是提醒增强，创建照常成功
+        if (withAlarm) {
+            void alarm.schedule({
+                id: row.id,
+                at: tripItemDueAt(row.local_date, row.time),
+                title: `${row.time} ${row.title}`,
+                body: row.description || row.title,
+            });
+        }
         set({ error: null, revision: get().revision + 1 });
         return row;
     },
@@ -1336,6 +1350,8 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         }
         // 通知取消（best-effort：行已软删，提醒不应再响；失败仅告警不回滚）
         void cancelTripItemNotification(id);
+        // 系统闹钟同拍取消（幂等 best-effort；未注册过 = 无操作）
+        void alarm.cancel(id);
         set({ error: null, revision: get().revision + 1 });
         return true;
     },
