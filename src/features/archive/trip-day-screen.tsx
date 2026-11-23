@@ -44,6 +44,8 @@ import {
     wheelOffsetForIndex,
     WHEEL_PAD_ROWS,
 } from './trip-item-form-logic';
+// 阶段机与 deck 排序（纯函数，node 测试直接覆盖；排序即优先级见模块头注）
+import { orderTripItems } from './trip-item-logic';
 import {
     formatDateParts,
     isTripLocked,
@@ -115,24 +117,6 @@ const ALARM_TICK_MS = 15_000;
 /** 行程项时刻 → epoch ms（本地时区；store 同源纯函数的轻量包装，读法统一）。 */
 function itemDueAt(item: db.TripItemRow): number {
     return tripItemDueAt(item.local_date, item.time);
-}
-
-/**
- * deck 排序（排序即优先级）：时间已到且 pending 的最早一项在前 → 未到时间的
- * pending（最早在前）→ 已完成/失败项收尾（最早在前）。稳定键 = time（同行程
- * 同日内无跨日，local_date 恒等不参与比较）。
- */
-function orderTripItems(items: db.TripItemRow[], now: number): db.TripItemRow[] {
-    const pending = items.filter((item) => item.status === 'pending');
-    const arrived = pending.filter((item) => itemDueAt(item) <= now).sort(byTime);
-    const future = pending.filter((item) => itemDueAt(item) > now).sort(byTime);
-    const settled = items.filter((item) => item.status !== 'pending').sort(byTime);
-    return [...arrived, ...future, ...settled];
-}
-
-function byTime(a: db.TripItemRow, b: db.TripItemRow): number {
-    if (a.time !== b.time) return a.time < b.time ? -1 : 1;
-    return a.created_at < b.created_at ? -1 : 1;
 }
 
 /**

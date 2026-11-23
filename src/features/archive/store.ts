@@ -15,6 +15,11 @@ import { videoThumbnails } from '@/core/video-thumbnails';
 // camera-overlay 直连 CameraView 同款先例（门面为主、参数级补充为辅）。
 import * as ExpoNotifications from 'expo-notifications';
 import { notifications, type NotificationContentInput } from '@/core/notifications';
+// 时刻换算单一事实源（v0.4.4 起收口在 trip-item-logic 纯函数模块，node 测试
+// 直接覆盖）；本模块重导出保持既有消费面（trip-day-screen 等）不变。
+import { tripItemDueAt } from './trip-item-logic';
+
+export { tripItemDueAt };
 import * as db from './db';
 import { PENDING_MEDIA_ID, TRIP_OPEN_ENDED } from './db';
 import type {
@@ -651,19 +656,6 @@ const TRIP_ITEM_NOTIFICATION_TITLE = '行程提醒';
 /** 行程项通知 identifier（确定性，约定见上注）。 */
 function tripItemNotificationId(itemId: string): string {
     return `${TRIP_ITEM_NOTIFICATION_PREFIX}${itemId}`;
-}
-
-/**
- * 行程项触发时刻（local_date + 'HH:mm' → epoch ms，本地时区）：
- * 本地日期口径铁律同 trip-logic（禁 UTC 组合判断「哪天」），时间闸与通知调度
- * 共用本单一事实源。输入合法性由 store 写入口保证（isValidTripItemTime /
- * isValidLocalDate），此处不重复校验。行程表页（deck 排序/应用内闹钟）经此
- * 导出复用同一口径，禁止屏层另写时刻组合。
- */
-export function tripItemDueAt(localDate: string, time: string): number {
-    const [year, month, day] = localDate.split('-').map(Number);
-    const [hour, minute] = time.split(':').map(Number);
-    return new Date(year, month - 1, day, hour, minute, 0, 0).getTime();
 }
 
 /** 'HH:mm' 合法性（24 小时制；创建入口的第一道闸，屏层表单复用同一导出）。 */

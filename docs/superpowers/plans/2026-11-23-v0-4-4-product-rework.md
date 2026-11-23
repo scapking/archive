@@ -112,7 +112,7 @@
   - `TRIP_ITEM_PHASE_LABEL: Record<TripItemPhase, string>` = `{ pending: '待进行', ongoing: '进行中', done: '完成', wrap: '收尾', terminal: '已结束' }`
   - `tripItemDoneAt(dueAt: number, nextDueAt: number | undefined): number` = `Math.min(dueAt + 30 * 60_000, nextDueAt ?? Infinity)`
   - `tripItemPhase(item, now, nextDueAt): TripItemPhase`
-  - `orderTripItems(items, now): TripItemRow[]` — ongoing first (earliest due), then future pending **time DESC**, then done/wrap by time ASC, terminal last by time ASC.
+  - `orderTripItems(items, now): TripItemRow[]` — ongoing first (earliest due), then future pending **time DESC**, then done/wrap **time DESC** (oldest card at the very bottom, per the user's 「旧的卡片在最后面」), terminal last, also time DESC.
 - Consumed by: Tasks 5, 10, 11.
 
 - [ ] **Step 1: Write the failing test** covering: before due = pending; due ≤ now < doneAt = ongoing; `nextDueAt` earlier than +30 min truncates done; past doneAt = done; `completed_at` set = wrap; `wrap_closed_at` set = terminal; legacy `status === 'failed'` = terminal; ordering puts ongoing first, future newest-first, settled oldest-last.
