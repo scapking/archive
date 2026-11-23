@@ -15,7 +15,7 @@ import {
     LucideCalendar,
     LucideChevronRight,
     LucideFlag,
-    LucideNotebookPen,
+    LucideListTodo,
     LucideSearch,
     LucideSettings,
 } from '@/core/icons';
@@ -295,7 +295,7 @@ export function MeScreen() {
                                     accessibilityRole="button"
                                     accessibilityLabel="计划"
                                 >
-                                    <LucideNotebookPen size={18} strokeWidth={1.9} color={palette.secondary} />
+                                    <LucideListTodo size={18} strokeWidth={1.9} color={palette.secondary} />
                                     <Text className="flex-1 text-[14px] font-medium text-ink-text dark:text-inkd-text">
                                         计划
                                     </Text>

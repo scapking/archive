@@ -19,7 +19,7 @@ import {
     BouncyPressable,
     createIcon,
     LucidePenLine,
-    LucideImagePlay,
+    LucideRepeat2,
     LucidePlus,
     LucideTrash,
     LucideType,
@@ -1858,7 +1858,7 @@ function BlockActionCard({
             ? [
                   {
                       key: 'convert-gif',
-                      icon: <LucideImagePlay size={18} strokeWidth={1.9} color={palette.secondary} />,
+                      icon: <LucideRepeat2 size={18} strokeWidth={1.9} color={palette.secondary} />,
                       label: '转成动图',
                       spinner: convertingGif,
                       disabled: convertingGif,

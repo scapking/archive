@@ -65,6 +65,14 @@ import Shield from 'lucide-react-native/icons/shield';
 import Clapperboard from 'lucide-react-native/icons/clapperboard';
 import PackageCheck from 'lucide-react-native/icons/package-check';
 import Archive from 'lucide-react-native/icons/archive';
+// v0.4.4 小图标美化（用户指令 #2「部分图标太丑」）：ListTodo = 计划列表行、
+// ListPlus = 新建计划、PanelLeftOpen/Close = 桌面侧栏展开/收起、Repeat2 = 转成
+// 动图。同 per-icon 深路径先例。
+import ListTodo from 'lucide-react-native/icons/list-todo';
+import ListPlus from 'lucide-react-native/icons/list-plus';
+import PanelLeftOpen from 'lucide-react-native/icons/panel-left-open';
+import PanelLeftClose from 'lucide-react-native/icons/panel-left-close';
+import Repeat2 from 'lucide-react-native/icons/repeat-2';
 
 import {
     __iconData as houseData,
@@ -146,6 +154,11 @@ export {
     Clapperboard as LucideClapperboard,
     PackageCheck as LucidePackageCheck,
     Archive as LucideArchive,
+    ListTodo as LucideListTodo,
+    ListPlus as LucideListPlus,
+    PanelLeftOpen as LucidePanelLeftOpen,
+    PanelLeftClose as LucidePanelLeftClose,
+    Repeat2 as LucideRepeat2,
 };
 
 export { MorphIcon, type MorphIconProps, type MorphHandle } from 'morphicons/react-native';

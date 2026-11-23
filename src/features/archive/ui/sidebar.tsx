@@ -1,7 +1,7 @@
 import { Pressable, Text, View } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LucideBack, LucidePenLine, LucideUser } from '@/core/icons';
+import { LucidePanelLeftClose, LucidePenLine, LucideUser } from '@/core/icons';
 import { usePalette } from './theme';
 
 const NAV_ITEMS = [
@@ -108,7 +108,7 @@ export function Sidebar({ onCollapse }: { onCollapse?: () => void } = {}) {
                         // h-11 = 44px 最小触摸目标（与导航项同规格）
                         className="mb-1 h-11 flex-row items-center gap-2.5 rounded-control px-2.5 active:opacity-80"
                     >
-                        <LucideBack size={16} strokeWidth={1.9} color={palette.secondary} />
+                        <LucidePanelLeftClose size={16} strokeWidth={1.9} color={palette.secondary} />
                         <Text className="text-[13px] text-ink-secondary dark:text-inkd-secondary">
                             收起侧栏
                         </Text>

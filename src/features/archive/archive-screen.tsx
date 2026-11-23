@@ -17,7 +17,7 @@ import {
     LucidePlay,
     LucidePlus,
     LucideRoute,
-    LucideStickyNote,
+    LucideListPlus,
     LucideTrash,
     LucideType,
 } from '@/core/icons';
@@ -648,7 +648,7 @@ export function ArchiveScreen() {
                                     }}
                                 />
                                 <ChooserRow
-                                    icon={<LucideStickyNote size={18} strokeWidth={1.9} color={palette.secondary} />}
+                                    icon={<LucideListPlus size={18} strokeWidth={1.9} color={palette.secondary} />}
                                     title="新建计划"
                                     onPress={() => {
                                         haptics.impact();

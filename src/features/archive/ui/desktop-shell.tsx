@@ -8,7 +8,7 @@ import {
     View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LucidePenLine, LucideChevronRight } from '@/core/icons';
+import { LucidePanelLeftOpen, LucidePenLine } from '@/core/icons';
 import { archiveConfig } from '@/config/archive';
 import { usePalette } from './theme';
 import { Sidebar } from './sidebar';
@@ -170,7 +170,7 @@ function ShellSlot({ collapsed }: { collapsed: boolean }) {
                         onPress={() => setCollapsed(false)}
                         className="h-11 w-11 items-center justify-center rounded-control active:opacity-80"
                     >
-                        <LucideChevronRight size={18} strokeWidth={1.9} color={palette.secondary} />
+                        <LucidePanelLeftOpen size={18} strokeWidth={1.9} color={palette.secondary} />
                     </Pressable>
                 </View>
                 {/* 侧栏（顶层）：固定 232 宽，折叠时整体左滑出槽外被裁切。
