@@ -187,4 +187,22 @@ export const ARCHIVE_MIGRATIONS: SchemaMigration[] = [
             'ALTER TABLE trip_media ADD COLUMN item_id TEXT',
         ],
     },
+    {
+        version: 10,
+        statements: [
+            // v10（行程项状态机，v0.4.4 用户指令 #8）：手动标记完成/失败退役，
+            // 阶段改为运行时派生（trip-item-logic：pending → ongoing → done →
+            // wrap → terminal），库里只补两根用户动作锚点列——completed_at
+            // （进入收尾）与 wrap_closed_at（结束收尾 = 终态）。TRIP_ITEMS_DDL
+            // 保持 v9 建表形状不动（duplicate column 教训，见 v9 注）。
+            'ALTER TABLE trip_items ADD COLUMN completed_at INTEGER',
+            'ALTER TABLE trip_items ADD COLUMN wrap_closed_at INTEGER',
+            // 历史行回填：done = 已完成（映射为「已进入收尾」——补图窗口打开，
+            // 与新口径的 done→收尾语义一致）；failed = 终态（收尾同时封死）。
+            // updated_at 即用户当初标记的时刻，作为锚点足够（派生阶段只看
+            // 非空，不读数值）。
+            "UPDATE trip_items SET completed_at = updated_at WHERE status = 'done' AND completed_at IS NULL",
+            "UPDATE trip_items SET completed_at = COALESCE(completed_at, updated_at), wrap_closed_at = updated_at WHERE status = 'failed' AND wrap_closed_at IS NULL",
+        ],
+    },
 ];

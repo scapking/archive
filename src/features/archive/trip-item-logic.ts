@@ -38,6 +38,8 @@ const DONE_WINDOW_MS = 30 * 60_000;
  * 本模块的测试与排序先以可选字段运行；TripItemRow 结构天然满足。
  */
 export interface TripItemPhaseInput {
+    /** 行 id（阶段表按 id 键控；TripItemRow 天然满足）。 */
+    id: string;
     status: TripItemStatus;
     local_date: string;
     time: string;
@@ -91,25 +93,35 @@ function compareByTimeAsc(a: TripItemPhaseInput, b: TripItemPhaseInput): number 
 }
 
 /**
- * deck 排序（排序即优先级，见头注）：输入按时间升序整理后逐项推导阶段
- * （doneAt 需要下一项时刻），再按阶段分段拼装——ongoing 升序（最早到点在
- * 前）、future/settled/terminal 各自倒序（最新在前，最旧垫底）。
+ * 逐项阶段表（id → phase）：排序与屏层卡面标签共用同一推导——doneAt 依赖
+ * 「下一项时刻」（同日时间升序的邻项），两处各自推导必然漂移，收口在这里。
  */
-export function orderTripItems<T extends TripItemPhaseInput>(items: T[], now: number): T[] {
+export function tripItemPhaseMap<T extends TripItemPhaseInput>(
+    items: T[],
+    now: number,
+): Map<string, TripItemPhase> {
     const asc = [...items].sort(compareByTimeAsc);
-    const phased = asc.map((item, index) => {
+    const map = new Map<string, TripItemPhase>();
+    asc.forEach((item, index) => {
         const next = asc[index + 1];
         const nextDueAt = next ? tripItemDueAt(next.local_date, next.time) : undefined;
-        return { item, phase: tripItemPhase(item, now, nextDueAt) };
+        map.set(item.id, tripItemPhase(item, now, nextDueAt));
     });
-    const pick = (...phases: TripItemPhase[]) =>
-        phased
-            .filter((entry) => phases.includes(entry.phase))
-            .map((entry) => entry.item);
-    return [
-        ...pick('ongoing'),
-        ...pick('pending').reverse(),
-        ...pick('done', 'wrap').reverse(),
-        ...pick('terminal').reverse(),
-    ];
+    return map;
+}
+
+/**
+ * deck 排序（排序即优先级，见头注）：先取逐项阶段表（doneAt 需要下一项
+ * 时刻），再按阶段分段拼装——ongoing 升序（最早到点在前）、future/settled/
+ * terminal 各自倒序（最新在前，最旧垫底）。
+ */
+export function orderTripItems<T extends TripItemPhaseInput>(items: T[], now: number): T[] {
+    const phases = tripItemPhaseMap(items, now);
+    const pick = (...wanted: TripItemPhase[]) =>
+        items.filter((item) => wanted.includes(phases.get(item.id ?? '') ?? 'pending'));
+    const ongoing = pick('ongoing').sort(compareByTimeAsc);
+    const future = pick('pending').sort(compareByTimeAsc).reverse();
+    const settled = pick('done', 'wrap').sort(compareByTimeAsc).reverse();
+    const terminal = pick('terminal').sort(compareByTimeAsc).reverse();
+    return [...ongoing, ...future, ...settled, ...terminal];
 }

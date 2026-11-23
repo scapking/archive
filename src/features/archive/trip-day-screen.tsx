@@ -20,10 +20,11 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { imagePicker } from '@/core/image-picker';
 import {
+    LucideArchive,
     LucideCheck,
     LucideClock,
-    LucideClose,
     LucideImage,
+    LucidePackageCheck,
     LucideTrash,
     LucideVideo,
 } from '@/core/icons';
@@ -45,7 +46,12 @@ import {
     WHEEL_PAD_ROWS,
 } from './trip-item-form-logic';
 // 阶段机与 deck 排序（纯函数，node 测试直接覆盖；排序即优先级见模块头注）
-import { orderTripItems } from './trip-item-logic';
+import {
+    orderTripItems,
+    TRIP_ITEM_PHASE_LABEL,
+    tripItemPhaseMap,
+    type TripItemPhase,
+} from './trip-item-logic';
 import {
     formatDateParts,
     isTripLocked,
@@ -85,9 +91,10 @@ import { DeadEndView } from './journal-edit-screen';
  *   semibold；描述（留言/备注）；有关联图片时显示首图封面（useFileUrlState
  *   三态，缺文件降级不渲染）。当前进行中的卡面用 accent 淡底（accent-bg，
  *   色彩只上数据纪律——蓝只上「当前」这一数据态，不上 chrome）；
- * - 长按前卡 → 操作卡（ActionMenuCard）：标记完成 / 标记失败 / 添加图片 /
- *   添加视频 / 删除此行程（时间闸在 store 层兜底；锁定行程 isTripLocked 时
- *   长按与 FAB 入口全部关断，整页只读）；
+ * - 长按前卡 → 操作卡（ActionMenuCard）：进入收尾（done）/ 结束收尾（wrap）/
+ *   添加图片 / 添加视频（done 与 wrap 都可补媒体，用户指令 #8）/ 删除此行程
+ *   ——手动「标记完成/失败」退役（v0.4.4），阶段由 trip-item-logic 派生；
+ *   锁定行程 isTripLocked 时长按与 FAB 入口全部关断，整页只读）；
  * - `+` FAB → 创建行程项表单卡（分步引导式，v0.4.2 用户指令「带交互的」：时间
  *   双滚轮 → 标题（自动聚焦）→ 备注可选可跳过；已完成步回显为可点行回改）→
  *   store.createTripItem（成功后自动调度本地通知，权限被拒静默降级）；
@@ -100,13 +107,6 @@ import { DeadEndView } from './journal-edit-screen';
  *   按 useArchiveRevision 局部重载（对齐事件/计划的刷新口径）；媒体挂
  *   trip_media 既有链路（item_id 关联），上传复用 attachTripMedia 管线。
  */
-
-/** 状态文案词表（eyebrow 用；pending/done/failed → 展示文案）。 */
-const TRIP_ITEM_STATUS_LABEL: Record<db.TripItemStatus, string> = {
-    pending: '待进行',
-    done: '已完成',
-    failed: '已失败',
-};
 
 /** deck 卡高（与首页 deck 同档 430；行程项卡体量适中，不放长卡）。 */
 const DECK_HEIGHT = 430;
@@ -125,10 +125,13 @@ function itemDueAt(item: db.TripItemRow): number {
  */
 const TripItemCardFace = memo(function TripItemCardFace({
     item,
+    phase,
     isCurrent,
     cover,
 }: {
     item: db.TripItemRow;
+    /** 派生阶段（tripItemPhaseMap，与 deck 排序同源）。 */
+    phase: TripItemPhase;
     /** 前卡（当前应进行的项）：eyebrow accent + 卡面 accent 淡底。 */
     isCurrent: boolean;
     /** 首图封面媒体行（无关联图片为 null，不渲染封面）。 */
@@ -137,29 +140,29 @@ const TripItemCardFace = memo(function TripItemCardFace({
     const coverState = useFileUrlState(cover?.file_key ?? null);
     const palette = usePalette();
 
-    // 渐变底三态（2026-11-19 用户指令「颜色渐变色」）：
-    // - 当前进行中 = 冷蓝 accent 渐变（README 唯一强调色 #2563EB→#3B82F6）+
-    //   白字家族（渐变上白字是唯一可读解，ink 文字 token 在蓝底上全部失效）；
-    // - 待进行 = surface→raised 弱渐变（ token 字，克制不抢当前项）；
-    // - 已完成 = surface→border 弱渐变（muted 字）；已失败 eyebrow 走 negative。
+    // 渐变底按阶段（v0.4.4 阶段机；2026-11-19 用户指令「颜色渐变色」延续）：
+    // - 进行中（isCurrent）= 深蓝坠入墨夜渐变 + 白字家族（渐变上白字是唯一
+    //   可读解，ink 文字 token 在蓝底上全部失效）；
+    // - 完成/收尾 = surface→border 弱渐变（muted 字，完成感）；
+    // - 待进行 = surface→raised 弱渐变（token 字，克制不抢当前项）；
+    // - 已结束（终态）= surface→border（muted 字）。
     // LinearGradient 内联 style（Animated/第三方组件 className web 静默丢弃坑）。
-    const isDone = item.status === 'done';
-    const isFailed = item.status === 'failed';
-    // 当前项 = 深蓝坠入墨夜（与 ink 墨色系同族的沉稳渐变，替换被否掉的
-    // 默认蓝），白字在深底上对比充足
+    const isSettled = phase === 'done' || phase === 'wrap' || phase === 'terminal';
     const gradientColors: [string, string] = isCurrent
         ? ['#1E40AF', '#111827']
-        : isDone
+        : isSettled
           ? [palette.surface, palette.border]
           : [palette.surface, palette.raised];
     const faceTone = isCurrent ? 'accent' : 'token';
     const eyebrowTone = isCurrent
         ? 'text-white/80'
-        : isDone
+        : phase === 'terminal'
           ? 'text-ink-muted dark:text-inkd-muted'
-          : isFailed
-            ? 'text-ink-negative dark:text-inkd-negative'
-            : 'text-ink-secondary dark:text-inkd-secondary';
+          : phase === 'wrap'
+            ? 'text-ink-accent dark:text-inkd-accent'
+            : isSettled
+              ? 'text-ink-muted dark:text-inkd-muted'
+              : 'text-ink-secondary dark:text-inkd-secondary';
     const titleTone = isCurrent ? 'text-white' : 'text-ink-text dark:text-inkd-text';
     const bodyTone = isCurrent ? 'text-white/85' : 'text-ink-secondary dark:text-inkd-secondary';
     const metaTone = isCurrent ? 'text-white/75' : 'text-ink-muted dark:text-inkd-muted';
@@ -170,7 +173,7 @@ const TripItemCardFace = memo(function TripItemCardFace({
                 className={`text-[12px] font-medium ${eyebrowTone}`}
                 style={{ fontVariant: ['tabular-nums'] }}
             >
-                {`${item.time} · ${TRIP_ITEM_STATUS_LABEL[item.status]}`}
+                {`${item.time} · ${TRIP_ITEM_PHASE_LABEL[phase]}`}
             </Text>
             <Text numberOfLines={2} className={`mt-2 text-[15px] font-semibold ${titleTone}`}>
                 {item.title}
@@ -564,7 +567,8 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
     const revision = useArchiveRevision();
     const storeError = useArchiveStore((s) => s.error);
     const createTripItem = useArchiveStore((s) => s.createTripItem);
-    const updateTripItemStatus = useArchiveStore((s) => s.updateTripItemStatus);
+    const startTripItemWrap = useArchiveStore((s) => s.startTripItemWrap);
+    const closeTripItemWrap = useArchiveStore((s) => s.closeTripItemWrap);
     const deleteTripItem = useArchiveStore((s) => s.deleteTripItem);
     const attachTripItemMedia = useArchiveStore((s) => s.attachTripItemMedia);
 
@@ -640,6 +644,14 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
     // deck 排序（排序即优先级，见 orderTripItems）；前卡 = items[0]
     const orderedItems = useMemo(() => orderTripItems(items, now), [items, now]);
 
+    // 逐项阶段表（与排序同一推导，tripItemPhaseMap 单源）：卡面 eyebrow、
+    // 操作卡行动作、应用内闹钟条件共用
+    const phaseById = useMemo(() => tripItemPhaseMap(items, now), [items, now]);
+    /** 操作卡目标项的阶段（行动作出牌依据）。 */
+    const actionPhase: TripItemPhase | null = actionItem
+        ? (phaseById.get(actionItem.id) ?? 'pending')
+        : null;
+
     // deck 重挂纪元：卡序签名变化（标记完成/失败前进、到点排序迁移、增删项）
     // 时整组重挂 → deck 前卡恒为 items[0]（当前应进行的项），不被内部翻卡指针
     // 带偏；纯数据重载（如媒体上传）签名不变，翻卡位置得以保留。
@@ -653,22 +665,21 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
         }
     }, [orderKey]);
 
-    // 应用内闹钟：某 pending 项时刻到达（≤ now）且未被本会话确认时，取最早一项
-    // 弹确认卡。任何覆盖层（表单/操作卡/已有闹钟）展开期间顺延，关掉后下一拍
-    // 继续；锁定行程整页只读，不再弹闹钟（终态行程无「该动手了」的语义）。
+    // 应用内闹钟：进行中（ongoing）且未被本会话确认的最早一项弹确认卡。任何
+    // 覆盖层（表单/操作卡/已有闹钟）展开期间顺延，关掉后下一拍继续；锁定行程
+    // 整页只读，不再弹闹钟（终态行程无「该动手了」的语义）。
     useEffect(() => {
         if (locked || alarmItem || createOpen || actionItem) return;
         const due = orderedItems.find(
             (item) =>
-                item.status === 'pending' &&
-                !dismissedAlarmIds.current.has(item.id) &&
-                itemDueAt(item) <= now,
+                phaseById.get(item.id) === 'ongoing' &&
+                !dismissedAlarmIds.current.has(item.id),
         );
         if (due) {
             haptics.impact('medium');
             setAlarmItem(due);
         }
-    }, [now, orderedItems, alarmItem, createOpen, actionItem, locked]);
+    }, [now, orderedItems, phaseById, alarmItem, createOpen, actionItem, locked]);
 
     /** 闹钟确认出口（按钮/scrim/Android 返回统一收口）：本次不再弹。 */
     const acknowledgeAlarm = useCallback(() => {
@@ -694,6 +705,7 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
                 node: (
                     <TripItemCardFace
                         item={item}
+                        phase={phaseById.get(item.id) ?? 'pending'}
                         isCurrent={index === 0}
                         cover={coverFor(item.id)}
                     />
@@ -704,9 +716,9 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
                           haptics.impact('medium');
                           setActionItem(item);
                       },
-                accessibilityLabel: `${item.time} ${item.title}，${TRIP_ITEM_STATUS_LABEL[item.status]}`,
+                accessibilityLabel: `${item.time} ${item.title}，${TRIP_ITEM_PHASE_LABEL[phaseById.get(item.id) ?? 'pending']}`,
             })),
-        [orderedItems, locked, coverFor],
+        [orderedItems, phaseById, locked, coverFor],
     );
 
     /** 创建表单提交通道：store 校验失败 resolve false（表单就地展示可重试）。 */
@@ -724,13 +736,20 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
         [createTripItem, tripId, date],
     );
 
-    /** 标记完成/失败（长按操作卡）：时间闸在 store 层兜底（未到点 error 通道）。 */
-    const runSetStatus = useCallback(
-        async (itemId: string, status: 'done' | 'failed') => {
+    /** 进入收尾/结束收尾（长按操作卡）：时间闸与幂等在 store 层兜底。 */
+    const runStartWrap = useCallback(
+        async (itemId: string) => {
             setActionItem(null);
-            await updateTripItemStatus(itemId, status);
+            await startTripItemWrap(itemId);
         },
-        [updateTripItemStatus],
+        [startTripItemWrap],
+    );
+    const runCloseWrap = useCallback(
+        async (itemId: string) => {
+            setActionItem(null);
+            await closeTripItemWrap(itemId);
+        },
+        [closeTripItemWrap],
     );
 
     /** 删除行程项（长按操作卡）：软删 + 摘媒体关联 + 取消通知（store 编排）。 */
@@ -887,26 +906,41 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
                 <ActionMenuCard
                     title="行程项"
                     rows={[
-                        {
-                            key: 'done',
-                            icon: <LucideCheck size={18} strokeWidth={1.9} />,
-                            title: '标记完成',
-                        },
-                        {
-                            key: 'failed',
-                            icon: <LucideClose size={18} strokeWidth={1.9} />,
-                            title: '标记失败',
-                        },
-                        {
-                            key: 'image',
-                            icon: <LucideImage size={18} strokeWidth={1.9} />,
-                            title: '添加图片',
-                        },
-                        {
-                            key: 'video',
-                            icon: <LucideVideo size={18} strokeWidth={1.9} />,
-                            title: '添加视频',
-                        },
+                        // 动作按阶段出牌（v0.4.4 阶段机）：done = 进入收尾；wrap =
+                        // 结束收尾；done 与 wrap 都可补图补视频（用户指令 #8）；终态
+                        // 只剩删除。手动「标记完成/失败」退役。
+                        ...(actionPhase === 'done'
+                            ? [
+                                  {
+                                      key: 'start-wrap',
+                                      icon: <LucidePackageCheck size={18} strokeWidth={1.9} />,
+                                      title: '进入收尾',
+                                  },
+                              ]
+                            : []),
+                        ...(actionPhase === 'wrap'
+                            ? [
+                                  {
+                                      key: 'close-wrap',
+                                      icon: <LucideArchive size={18} strokeWidth={1.9} />,
+                                      title: '结束收尾',
+                                  },
+                              ]
+                            : []),
+                        ...(actionPhase === 'done' || actionPhase === 'wrap'
+                            ? [
+                                  {
+                                      key: 'image',
+                                      icon: <LucideImage size={18} strokeWidth={1.9} />,
+                                      title: '添加图片',
+                                  },
+                                  {
+                                      key: 'video',
+                                      icon: <LucideVideo size={18} strokeWidth={1.9} />,
+                                      title: '添加视频',
+                                  },
+                              ]
+                            : []),
                         {
                             key: 'delete',
                             icon: <LucideTrash size={18} strokeWidth={1.9} />,
@@ -916,12 +950,12 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
                     ]}
                     onAction={(key) => {
                         if (!actionItem) return;
-                        if (key === 'done') {
-                            void runSetStatus(actionItem.id, 'done');
+                        if (key === 'start-wrap') {
+                            void runStartWrap(actionItem.id);
                             return;
                         }
-                        if (key === 'failed') {
-                            void runSetStatus(actionItem.id, 'failed');
+                        if (key === 'close-wrap') {
+                            void runCloseWrap(actionItem.id);
                             return;
                         }
                         if (key === 'image') {

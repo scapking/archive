@@ -627,9 +627,9 @@ export async function restoreBackupData(payload: BackupRestorePayload): Promise<
         for (const row of payload.tripItems) {
             if (!row.id) continue;
             const result = await db.run(
-                `INSERT OR IGNORE INTO trip_items (id, trip_id, local_date, time, title, description, status, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [row.id, row.trip_id, row.local_date, row.time, row.title, row.description, row.status, row.created_at, row.updated_at],
+                `INSERT OR IGNORE INTO trip_items (id, trip_id, local_date, time, title, description, status, completed_at, wrap_closed_at, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [row.id, row.trip_id, row.local_date, row.time, row.title, row.description, row.status, row.completed_at, row.wrap_closed_at, row.created_at, row.updated_at],
             );
             counts.tripItems += result.changes;
         }
@@ -1048,23 +1048,35 @@ export async function getTripItem(id: string): Promise<TripItemRow | null> {
 export async function insertTripItem(row: Omit<TripItemRow, 'deleted_at'>): Promise<void> {
     const db = await getDb();
     await db.run(
-        `INSERT INTO trip_items (id, trip_id, local_date, time, title, description, status, created_at, updated_at, deleted_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-        [row.id, row.trip_id, row.local_date, row.time, row.title, row.description, row.status, row.created_at, row.updated_at],
+        `INSERT INTO trip_items (id, trip_id, local_date, time, title, description, status, completed_at, wrap_closed_at, created_at, updated_at, deleted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        [row.id, row.trip_id, row.local_date, row.time, row.title, row.description, row.status, row.completed_at, row.wrap_closed_at, row.created_at, row.updated_at],
     );
 }
 
 /**
- * 行程项状态更新（store.updateTripItemStatus 编排）：时间闸（未到点拒标
- * done/failed）与合法值校验在 store 层，这里只落列值 + updated_at。
+ * 行程项「进入收尾」（store.startTripItemWrap 编排）：completed_at = now
+ * （幂等：已非空则 COALESCE 保持原值）。前置校验（阶段/锁定）在 store 层，
+ * 这里只落列值 + updated_at。
  */
-export async function updateTripItemStatus(id: string, status: TripItemStatus): Promise<void> {
+export async function startTripItemWrap(id: string, at: number): Promise<void> {
     const db = await getDb();
-    await db.run('UPDATE trip_items SET status = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL', [
-        status,
-        Date.now(),
-        id,
-    ]);
+    await db.run(
+        'UPDATE trip_items SET completed_at = COALESCE(completed_at, ?), updated_at = ? WHERE id = ? AND deleted_at IS NULL',
+        [at, at, id],
+    );
+}
+
+/**
+ * 行程项「结束收尾」（store.closeTripItemWrap 编排）：wrap_closed_at = now
+ * = 终态；completed_at 同拍兜底（防御路径上先收尾后结束的空窗）。
+ */
+export async function closeTripItemWrap(id: string, at: number): Promise<void> {
+    const db = await getDb();
+    await db.run(
+        'UPDATE trip_items SET completed_at = COALESCE(completed_at, ?), wrap_closed_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL',
+        [at, at, at, id],
+    );
 }
 
 /**

@@ -300,12 +300,17 @@ interface ArchiveStore {
      */
     createTripItem(input: { tripId: string; date: string; time: string; title: string; description?: string }): Promise<TripItemRow | null>;
     /**
-     * 行程项状态更新：标记 done/failed 受**时间闸**约束——行程项时刻
-     * （local_date + time）未到时拒绝，error 文案「时间还没到，还不能标记完成」；
-     * done/failed 可改回 pending（回退不受时间闸约束）。通知随状态取消（终态）/
-     * 重排（回退 pending）。同状态幂等成功（不 bump revision）。
+     * 进入收尾（v0.4.4 状态机，用户指令 #8）：done 阶段（自动完成已过、尚未
+     * 收尾）时把 completed_at 落库 → wrap 阶段（补图补视频窗口）。时间闸 =
+     * 时刻未到拒绝；已收尾幂等成功。true = 成功。
      */
-    updateTripItemStatus(id: string, status: TripItemStatus): Promise<boolean>;
+    startTripItemWrap(id: string): Promise<boolean>;
+    /**
+     * 结束收尾：wrap 阶段把 wrap_closed_at 落库 = terminal 终态（只读）。
+     * 未收尾直接结束也放行（completed_at 同拍兜底——用户在 done 卡直接点
+     * 「结束收尾」的防御路径）。true = 成功。
+     */
+    closeTripItemWrap(id: string): Promise<boolean>;
     /**
      * 删除行程项：软删 + 摘 item_id 媒体关联（媒体行保留，记录留档）+ 取消通知。
      * true = 成功。
@@ -1219,6 +1224,8 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 title: trimmedTitle,
                 description: (description ?? '').trim(),
                 status: 'pending',
+                completed_at: null,
+                wrap_closed_at: null,
                 created_at: now,
                 updated_at: now,
                 deleted_at: null,
@@ -1237,12 +1244,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         return row;
     },
 
-    async updateTripItemStatus(id, status) {
-        // 合法值校验（TripItemStatus 约束在应用层，见 schema 注）：非法值整体拒绝
-        if (status !== 'pending' && status !== 'done' && status !== 'failed') {
-            set({ error: `行程项状态不合法：${String(status)}` });
-            return false;
-        }
+    async startTripItemWrap(id) {
         try {
             const item = await db.getTripItem(id);
             if (!item) {
@@ -1258,22 +1260,51 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 set({ error: '行程已结束，内容锁定' });
                 return false;
             }
-            // 幂等：状态未变直接成功（不 bump revision，无谓重载）
-            if (item.status === status) return true;
-            // 时间闸（产品口径）：行程项时刻（local_date + time）还没到时拒绝标记
-            // done/failed——「计划」语义下完成只能发生在时刻之后；回退 pending
-            // 不受闸约束（误标后随时可撤回）
-            if (status !== 'pending' && tripItemDueAt(item.local_date, item.time) > Date.now()) {
-                set({ error: '时间还没到，还不能标记完成' });
+            if ((item.wrap_closed_at ?? null) != null || item.status === 'failed') {
+                set({ error: '行程项已结束' });
                 return false;
             }
-            await db.updateTripItemStatus(id, status);
-            // 通知随状态收口（best-effort fire-and-forget）：回退 pending = 重排
-            // （按原时刻重新调度）；终态 = 取消。item 原值即重排所需全部字段
-            if (status === 'pending') void scheduleTripItemNotification(item);
-            else void cancelTripItemNotification(id);
+            // 幂等：已进入收尾直接成功（不 bump revision）
+            if ((item.completed_at ?? null) != null) return true;
+            // 时间闸：时刻未到不允许收尾（UI 只在 done 阶段出该行，这里兜底）
+            if (tripItemDueAt(item.local_date, item.time) > Date.now()) {
+                set({ error: '时间还没到，还不能收尾' });
+                return false;
+            }
+            await db.startTripItemWrap(id, Date.now());
         } catch (error) {
-            set({ error: `行程项状态更新失败：${toMessage(error)}` });
+            set({ error: `收尾操作失败：${toMessage(error)}` });
+            return false;
+        }
+        set({ error: null, revision: get().revision + 1 });
+        return true;
+    },
+
+    async closeTripItemWrap(id) {
+        try {
+            const item = await db.getTripItem(id);
+            if (!item) {
+                set({ error: '行程项不存在或已删除' });
+                return false;
+            }
+            const trip = await db.getTrip(item.trip_id);
+            if (!trip) {
+                set({ error: '行程不存在或已删除' });
+                return false;
+            }
+            if (isTripLocked(trip)) {
+                set({ error: '行程已结束，内容锁定' });
+                return false;
+            }
+            if (item.status === 'failed') {
+                set({ error: '行程项已结束' });
+                return false;
+            }
+            // 幂等：已终态直接成功（不 bump revision）
+            if ((item.wrap_closed_at ?? null) != null) return true;
+            await db.closeTripItemWrap(id, Date.now());
+        } catch (error) {
+            set({ error: `结束收尾失败：${toMessage(error)}` });
             return false;
         }
         set({ error: null, revision: get().revision + 1 });

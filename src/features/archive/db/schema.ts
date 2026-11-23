@@ -418,7 +418,13 @@ export type TripItemStatus = 'pending' | 'done' | 'failed';
  *   与 local_date 组成完整触发时刻（本地时区，通知调度与时间闸共用）；
  * - title：必填非空（store 写入口校验，同 createEvent 标题口径）；
  * - description：留言/备注（NOT NULL DEFAULT ''，未填落空串，展示层无需兜底）；
- * - status：见 TripItemStatus。
+ * - status：见 TripItemStatus（v10 起只写 'pending'；done/failed 是历史兼容
+ *   值，运行时阶段由 trip-item-logic 派生——pending/ongoing/done/wrap/terminal，
+ *   不依赖后台写库）；
+ * - completed_at：进入收尾的时刻（v10，NULL = 未收尾；用户在 done 阶段点
+ *   「进入收尾」落库）；
+ * - wrap_closed_at：结束收尾的时刻（v10，NULL = 收尾未结束；点「结束收尾」
+ *   落库 = 终态）。
  */
 export interface TripItemRow {
     id: string;
@@ -428,6 +434,8 @@ export interface TripItemRow {
     title: string;
     description: string; // 留言/备注，NOT NULL DEFAULT ''
     status: TripItemStatus;
+    completed_at: number | null; // v10
+    wrap_closed_at: number | null; // v10
     created_at: number;
     updated_at: number;
     deleted_at: number | null;

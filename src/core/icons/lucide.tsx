@@ -63,6 +63,8 @@ import Wallpaper from 'lucide-react-native/icons/wallpaper';
 import Film from 'lucide-react-native/icons/film';
 import Shield from 'lucide-react-native/icons/shield';
 import Clapperboard from 'lucide-react-native/icons/clapperboard';
+import PackageCheck from 'lucide-react-native/icons/package-check';
+import Archive from 'lucide-react-native/icons/archive';
 
 import {
     __iconData as houseData,
@@ -142,6 +144,8 @@ export {
     Film as LucideFilm,
     Shield as LucideShield,
     Clapperboard as LucideClapperboard,
+    PackageCheck as LucidePackageCheck,
+    Archive as LucideArchive,
 };
 
 export { MorphIcon, type MorphIconProps, type MorphHandle } from 'morphicons/react-native';
