@@ -1,3 +1,4 @@
+import { AppState, Platform } from 'react-native';
 import { create } from 'zustand';
 import { crypto } from '@/core/crypto';
 import {
@@ -17,10 +18,16 @@ import * as ExpoNotifications from 'expo-notifications';
 import { notifications, type NotificationContentInput } from '@/core/notifications';
 // 时刻换算单一事实源（v0.4.4 起收口在 trip-item-logic 纯函数模块，node 测试
 // 直接覆盖）；本模块重导出保持既有消费面（trip-day-screen 等）不变。
-import { tripItemDueAt } from './trip-item-logic';
+import {
+    TRIP_ITEM_PHASE_LABEL,
+    tripItemDueAt,
+    tripItemPhaseMap,
+} from './trip-item-logic';
 // 系统闹钟门面（v0.4.4 用户指令 #9）：Android 真闹钟 / iOS·web unsupported
 // 自动 no-op——best-effort 增强，失败仅 warn 不阻塞数据面
 import { alarm } from '@/core/alarm';
+// 桌面 widget 门面（v0.4.4 用户指令 #7）：快照推送 best-effort，iOS/web no-op
+import { widget } from '@/core/widget';
 
 export { tripItemDueAt };
 import * as db from './db';
@@ -731,6 +738,66 @@ async function scheduleTripItemNotification(
     }
 }
 
+// ─── 桌面 widget 快照（v0.4.4 用户指令 #7）───────────────────────────────
+
+/**
+ * 快照编排（用户裁决：**自动选最新行程 + 其行程项列表**，不是固定题式工具）：
+ * 行程取进行中（planning/ongoing，按 start_date 最新）一趟；行程项取「今天 +
+ * 未来」按时间升序最多 4 条，阶段词表随行带出。无进行中行程 = 空快照
+ * （widget 显空态文案，不再显示上一趟）。fire-and-forget：失败仅 warn。
+ */
+async function pushWidgetSnapshot(): Promise<void> {
+    if (!widget.isSupported()) return;
+    try {
+        const trips = await db.listTrips();
+        const active = trips.find((trip) => !isTripLocked(trip));
+        if (!active) {
+            await widget.push({ tripId: '', tripTitle: '', items: [] });
+            return;
+        }
+        const today = todayLocal();
+        const all = await db.listTripItemsByTrip(active.id);
+        const upcoming = all
+            .filter((item) => item.local_date >= today)
+            .sort((a, b) => {
+                if (a.local_date !== b.local_date) return a.local_date < b.local_date ? -1 : 1;
+                return a.time < b.time ? -1 : 1;
+            })
+            .slice(0, 4);
+        const phases = tripItemPhaseMap(upcoming, Date.now());
+        await widget.push({
+            tripId: active.id,
+            tripTitle: tripDisplayTitle(active.title),
+            items: upcoming.map((item) => ({
+                time: item.time,
+                title: item.title,
+                phase: TRIP_ITEM_PHASE_LABEL[phases.get(item.id) ?? 'pending'],
+            })),
+        });
+    } catch (error) {
+        console.warn('[archive-widget] 快照编排失败（不影响数据面）:', error);
+    }
+}
+
+let widgetRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 防抖 1s：同一拍内的多个 mutation（连点/批量）只推一次快照。 */
+function queueWidgetRefresh(): void {
+    if (!widget.isSupported()) return;
+    if (widgetRefreshTimer != null) clearTimeout(widgetRefreshTimer);
+    widgetRefreshTimer = setTimeout(() => {
+        widgetRefreshTimer = null;
+        void pushWidgetSnapshot();
+    }, 1000);
+}
+
+// 回前台刷新（新一天/相对阶段漂移的兜底；store 模块单例生命周期 == app 会话）
+if (Platform.OS === 'android') {
+    AppState.addEventListener('change', (state) => {
+        if (state === 'active') queueWidgetRefresh();
+    });
+}
+
 /** 取消行程项通知（幂等 best-effort：identifier 无对应调度视为成功；失败仅告警）。 */
 async function cancelTripItemNotification(itemId: string): Promise<void> {
     try {
@@ -894,6 +961,8 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             // 降级语义：数据可重试加载，界面上以 error 文案提示（R3 ②）
             set({ ready: true, error: `数据加载失败：${toMessage(error)}` });
         }
+        // 桌面 widget 快照（best-effort）：行程集合变化 = 「最新行程」选择变化
+        queueWidgetRefresh();
     },
 
     deck(): DeckData {
@@ -1255,6 +1324,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             });
         }
         set({ error: null, revision: get().revision + 1 });
+        queueWidgetRefresh();
         return row;
     },
 
@@ -1291,6 +1361,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             return false;
         }
         set({ error: null, revision: get().revision + 1 });
+        queueWidgetRefresh();
         return true;
     },
 
@@ -1322,6 +1393,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             return false;
         }
         set({ error: null, revision: get().revision + 1 });
+        queueWidgetRefresh();
         return true;
     },
 
@@ -1353,6 +1425,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         // 系统闹钟同拍取消（幂等 best-effort；未注册过 = 无操作）
         void alarm.cancel(id);
         set({ error: null, revision: get().revision + 1 });
+        queueWidgetRefresh();
         return true;
     },
 

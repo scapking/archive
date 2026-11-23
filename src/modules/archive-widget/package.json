@@ -1,0 +1,10 @@
+{
+  "name": "archive-widget",
+  "version": "0.1.0",
+  "description": "Android home-screen AppWidget for Archive trips. iOS (WidgetKit extension) ships separately; web is a no-op.",
+  "main": "src/index.ts",
+  "keywords": ["expo", "widget", "appwidget"],
+  "peerDependencies": {
+    "expo": "*"
+  }
+}

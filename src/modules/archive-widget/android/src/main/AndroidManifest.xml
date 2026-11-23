@@ -1,0 +1,17 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- 桌面 widget：launcher（外部宿主）绑定，必须导出；
+             数据刷新 = JS 侧 push（显式更新），updatePeriodMillis 30min 兜底重渲 -->
+        <receiver
+            android:name="archive.widget.ArchiveWidgetProvider"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/archive_widget_info" />
+        </receiver>
+    </application>
+</manifest>
