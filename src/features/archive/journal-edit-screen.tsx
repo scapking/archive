@@ -1218,14 +1218,15 @@ export function JournalEditScreen({
                         ) : null}
                     </View>
                     {/* 日期行（#3 恢复第六轮前排版）：30 报头阶 + 右侧状态位。
-                        计划模式状态位整体退场：「进行中/已收笔」是日记的收笔语义
-                        （24:00 自动收笔/手动完成），计划 status 恒 'open'，渲染它
-                        是误导（v8）；日期（创建日）保留，左缘基线不受影响 */}
-                    <View className="flex-row items-baseline justify-between">
-                        <Text className="text-[30px] font-semibold tracking-wide text-ink-text dark:text-inkd-text">
-                            {monthDay}
-                        </Text>
-                        {isPlan ? null : (
+                        计划模式（v0.4.4 用户指令「去除日记相关的日期信息」）整行
+                        退场：报头日期（创建日）与「进行中/已收笔」状态位都是日记
+                        语义（一天一篇 + 收笔机），计划不继承——计划头 = 题行 +
+                        字数行；日期行与安慰话只在日记档渲染，左缘基线不变 */}
+                    {isPlan ? null : (
+                        <View className="flex-row items-baseline justify-between">
+                            <Text className="text-[30px] font-semibold tracking-wide text-ink-text dark:text-inkd-text">
+                                {monthDay}
+                            </Text>
                             <Text
                                 className={`text-[11px] font-medium ${
                                     editable
@@ -1235,16 +1236,20 @@ export function JournalEditScreen({
                             >
                                 {editable ? '进行中' : '已收笔'}
                             </Text>
-                        )}
-                    </View>
-                    {/* meta 行（#3）：随机安慰话 + 字数/保存状态（tabular-nums 房规） */}
+                        </View>
+                    )}
+                    {/* meta 行（#3）：随机安慰话 + 字数/保存状态（tabular-nums 房规）。
+                        安慰话是日记档的情绪装饰，计划档退场（同日期行口径），
+                        字数/保存状态保留 */}
                     <View className="mt-0.5 flex-row items-baseline justify-between">
-                        <Text
-                            numberOfLines={1}
-                            className="text-[13px] text-ink-secondary dark:text-inkd-secondary"
-                        >
-                            {comfortQuote}
-                        </Text>
+                        {isPlan ? <View className="flex-1" /> : (
+                            <Text
+                                numberOfLines={1}
+                                className="text-[13px] text-ink-secondary dark:text-inkd-secondary"
+                            >
+                                {comfortQuote}
+                            </Text>
+                        )}
                         <Text
                             className="ml-3 shrink-0 text-[11px] text-ink-muted dark:text-inkd-muted"
                             style={{ fontVariant: ['tabular-nums'] }}
