@@ -334,7 +334,9 @@ function DeckCardLayer({
             ],
             opacity: values.depth.interpolate({
                 inputRange: [0, 1, DECK_HIDDEN],
-                outputRange: [1, 0.45, 0],
+                // v0.4.4：背卡透明度下限 0.45 → 0.92（用户反馈「堆叠卡看不清」
+                // ——0.45 把卡洗进页面底色）；隐藏层位仍淡出到 0
+                outputRange: [1, 0.92, 0],
             }),
         }),
         [values],
@@ -353,12 +355,22 @@ function DeckCardLayer({
                     style={{ flex: 1 }}
                     accessibilityLabel={depth === 0 ? (item.accessibilityLabel ?? '当前卡片') : '下一张卡片'}
                 >
-                    {/* 卡容器（deck 统一绘制 surface 圆角壳——调用方卡面不再自带
-                        卡壳）+ **页码为卡容器的最后一个子元素**（2026-11-19 用户
-                        指令「卡片容器的一部分，不是悬浮窗口」：页码嵌在卡底内部
+                    {/* 卡容器（deck 统一绘制圆角壳——调用方卡面不再自带卡壳）+
+                        **页码为卡容器的最后一个子元素**（2026-11-19 用户指令
+                        「卡片容器的一部分，不是悬浮窗口」：页码嵌在卡底内部
                         居中，裸数字随卡面同底色，非覆盖层）；pointerEvents none
-                        不挡卡面触摸 */}
-                    <View className="h-full w-full flex-1 flex-col overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface">
+                        不挡卡面触摸。**对比度（v0.4.4 用户反馈「深浅色下堆叠卡
+                        看不清」）**：前卡 surface、背卡 raised（亮一档/暗一档，
+                        与页面 base 拉开），每卡再叠一圈 ink-border hairline
+                        环（卡面渐变盖不住它——环画在卡面之上，近色卡叠放时的
+                        恒定轮廓线，照片「卡纸装裱」同语义） */}
+                    <View
+                        className={`h-full w-full flex-1 flex-col overflow-hidden rounded-card ${
+                            depth === 0
+                                ? 'bg-ink-surface dark:bg-inkd-surface'
+                                : 'bg-ink-raised dark:bg-inkd-raised'
+                        }`}
+                    >
                         {/* 卡面铺满整卡（flex-1 占满壳）——渐变类卡面的颜色自然
                             延伸到卡底，页码叠加其上同属一块渐变（2026-11-20 用户
                             指令「整个容器一致颜色，页码包裹在渐变里」）。
@@ -377,6 +389,13 @@ function DeckCardLayer({
                                 </View>
                             )}
                         </View>
+                        {/* hairline 轮廓环（画在卡面之上，pointerEvents none）：
+                            深浅色下与页面底色都有 ≥1.2 对比（tests/deck-contrast
+                            把关 token），是堆叠边「看得见」的机制件 */}
+                        <View
+                            pointerEvents="none"
+                            className="absolute inset-0 rounded-card border border-ink-border dark:border-inkd-border"
+                        />
                         {/* 页码 = 卡底内侧居中叠加（非独立行）：色调随卡面
                             pageLabelTone（渐变白 / 素面 muted），pointerEvents
                             none 不挡卡面触摸 */}
