@@ -5,8 +5,9 @@ import { requireOptionalNativeModule } from 'expo-modules-core';
  * 桌面 widget 门面（v0.4.4，用户指令 #7）：
  *
  * - Android = 真 AppWidget（archive-widget 本地模块，RemoteViews 静态行）；
- * - iOS = WidgetKit 扩展（App Group 快照，见 targets/archive-widget；本门面
- *   在 iOS 上经 AsyncStorage App Group 回退通道推送，无扩展构建时 no-op）；
+ * - iOS = WidgetKit 扩展（with-archive-widget-ios 插件注入 target）；本门面
+ *   经 archive-widget 的 iOS 模块把快照写进共享 App Group UserDefaults，扩展
+ *   30min 时间线从同一 suite 读取；
  * - web = no-op。
  *
  * 数据契约（用户裁决）：**自动选最新行程 + 其行程项列表**——快照由 store 层
@@ -31,9 +32,10 @@ export interface WidgetSnapshot {
 
 type ArchiveWidgetNative = { push(snapshotJson: string): Promise<void> };
 
-const native = Platform.OS === 'android'
-    ? requireOptionalNativeModule<ArchiveWidgetNative>('ArchiveWidget')
-    : null;
+// Android/iOS 都有原生模块（iOS = App Group UserDefaults 桥）；web = no-op
+const native = Platform.OS === 'web'
+    ? null
+    : requireOptionalNativeModule<ArchiveWidgetNative>('ArchiveWidget');
 
 export const widget = {
     /** 平台是否具备 widget 推送能力。 */

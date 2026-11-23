@@ -100,6 +100,7 @@
       "expo-image",
       "expo-video",
       "expo-sharing",
+      "./plugins/with-archive-widget-ios",
       [
         "expo-media-library",
         {

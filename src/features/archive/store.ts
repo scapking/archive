@@ -726,6 +726,11 @@ async function scheduleTripItemNotification(
                 subtitle: trip ? tripDisplayTitle(trip.title) : undefined,
                 body,
                 sound: true,
+                // iOS 强提醒（用户指令 #9/#11：timeSensitive 档穿透专注模式
+                // 摘要；Android 忽略该字段）。平台事实：iOS 无第三方加系统
+                // 闹钟 API，timeSensitive 本地通知即「强提醒」的全部可行面
+                // （静音键仍可静音，Critical Alerts 需 Apple 特批资质）
+                interruptionLevel: 'timeSensitive',
             } satisfies NotificationContentInput,
             trigger: {
                 type: ExpoNotifications.SchedulableTriggerInputTypes.DATE,
