@@ -11,11 +11,14 @@ import {
 
 const MIN = 60_000;
 
+let seq = 0;
+
 function item(overrides: Partial<TripItemPhaseInput> & { time: string }): TripItemPhaseInput {
+    seq += 1;
     return {
+        id: `item-${seq}`,
         status: 'pending',
         local_date: '2026-11-24',
-        title: 'T',
         completed_at: null,
         wrap_closed_at: null,
         ...overrides,
