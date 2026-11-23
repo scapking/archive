@@ -89,7 +89,7 @@ import { EventStatusChip } from './ui/event-card';
 import { EventSettingsCard } from './ui/event-settings-card';
 
 /**
- * 事件详情编辑页（/events/[id]，笔记编辑式 + 工单状态头 + 设置卡）：
+ * 事件详情编辑页（/events/[id]，计划编辑式 + 工单状态头 + 设置卡）：
  *
  * - **状态头（工单语言，展示 + 编辑入口）**：标题行（**只读展示**——标题编辑
  *   收进设置卡，编辑后经 refreshMeta 权威回读即时刷新）+ 设置钮（LucideSettings，
@@ -115,7 +115,7 @@ import { EventSettingsCard } from './ui/event-settings-card';
  *   插 pending 占位即返回，attachEventMedia 落盘+落库为后台任务（pendingUploadsRef
  *   注册表，多任务并行；taskId = 占位 id → 占位卡进度百分比，journal 同口径）；
  *   收敛后 resolvePendingBlock 原位回填，失败仅回滚本占位 + store.error；
- * - **+ 菜单与笔记编辑完全一致**（共享 ui/insert-menu 的 InsertMenu，actions
+ * - **+ 菜单与计划编辑完全一致**（共享 ui/insert-menu 的 InsertMenu，actions
  *   过滤词表；journal 行序 = 事件行序）：相册图片 / 相册视频 / 录音 / 拍照 /
  *   拍视频 / 添加输入框——事件版无「完成收笔」（事件无收笔语义，状态切换在
  *   设置卡）、无「新建事件」（journal 版专属行）；全局录制会话进行中时同款
@@ -1461,7 +1461,7 @@ const CanvasDismissLayer = memo(function CanvasDismissLayer({
  * 编辑器核心块操作（上移/下移/删除——删到空补可落笔段，journal-logic removeBlock
  * 口径）+ 堆叠锚块分档（deck prop 非 null 时，与 journal-edit BlockActionCard
  * **同词表 / 同图标 / 同行结构**——日记与事件的媒体块行为一致，用户
- * 口径「作用是全部笔记编辑。和事件操作」）：
+ * 口径「作用是全部计划编辑。和事件操作」）：
  * - 「上移/下移」= **整组移动**（组首/组尾连续段同进退，journal-logic
  *   .moveBlockRun；禁用态按组界判定而非锚块下标）；
  * - 「指定删除」：进入堆叠勾选模式（白名单 = 组内成员，组外媒体照常可查看，

@@ -392,7 +392,7 @@ export default function RootLayout() {
             <StatusBar style={theme === 'dark' ? 'light' : 'dark'} />
             {/* Web Desktop 全局壳（desktop-shell.tsx 头注）：仅 web 宽屏包出
                 flex-row 侧栏槽位 + flex-1 内容区，Stack 渲染在内容区内——所有
-                push 屏（笔记编辑/事件/行程/搜索）不再覆盖侧栏；native 与窄屏
+                push 屏（计划编辑/事件/行程/搜索）不再覆盖侧栏；native 与窄屏
                 children 原样直出，导航层级零插入（无嵌套 Stack），last-route
                 恢复 / E2E 自愈 / 录制会话宿主机制不受影响。web 端 viewer 的
                 全窗覆盖由 ViewerPortal(body portal) 自保证，与壳正交。 */}
@@ -410,24 +410,24 @@ export default function RootLayout() {
                     <Stack.Screen name="write" options={{ presentation: 'modal' }} />
                     <Stack.Screen name="trip/[id]/write/[date]" options={{ presentation: 'modal' }} />
                     <Stack.Screen name="journal/[id]" options={{ presentation: 'modal' }} />
-                    {/* 独立笔记（v8）：创建表单与编辑器都对齐 write/journal 的 modal
+                    {/* 独立计划（v8）：创建表单与编辑器都对齐 write/journal 的 modal
                         口径——编辑/创建类流程（表单成功后 replace 进编辑器的连续动线） */}
-                    <Stack.Screen name="note/new" options={{ presentation: 'modal' }} />
-                    <Stack.Screen name="note/[id]" options={{ presentation: 'modal' }} />
+                    <Stack.Screen name="plan/new" options={{ presentation: 'modal' }} />
+                    <Stack.Screen name="plan/[id]" options={{ presentation: 'modal' }} />
                     {/* 搜索（DEV.md #5）：card 而非 modal——它是内容型目的地页（日历 + 长结果
                         列表滚动、键盘输入），需要整页高度与系统返回手势；modal 留给编辑/创建类
                         流程（write / journal / trip form），与本 Stack 既有分工一致 */}
                     <Stack.Screen name="search" />
                     {/* 设置页（新1）：同 search 的内容型目的地页口径（card，整页滚动） */}
                     <Stack.Screen name="settings" />
-                    {/* 笔记堆 / 行程堆（v8）：同 search 的内容型目的地页口径（card） */}
-                    <Stack.Screen name="notes" />
+                    {/* 计划堆 / 行程堆（v8）：同 search 的内容型目的地页口径（card） */}
+                    <Stack.Screen name="plans" />
                     <Stack.Screen name="trips" />
                     {/* 搜索结果独立页（spec 路径参数 = 'all' 或编码 JSON 规格） */}
                     <Stack.Screen name="search-results/[spec]" />
                     {/* 行程表页（v9）：内容型目的地页，card 口径 */}
                     <Stack.Screen name="trip/[id]/day/[date]" />
-                    {/* 笔记与行程堆叠库（v8）：Me 页「笔记」入口的内容型目的地页
+                    {/* 计划与行程堆叠库（v8）：Me 页「计划」入口的内容型目的地页
                         （横滑翻卡浏览），同 search/settings 的 card 口径——modal 留给
                         编辑/创建类流程 */}
                     {/* 全屏媒体查看器（transparentModal）：root Stack 级窗口容器，位于 (tabs)

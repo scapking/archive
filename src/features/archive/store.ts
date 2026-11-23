@@ -46,7 +46,7 @@ import {
     newBlockId,
     newParagraphBlock,
     normalizeJournalTitle,
-    NOTE_DESCRIPTION_MAX,
+    PLAN_DESCRIPTION_MAX,
     parseBlocks,
     serializeBlocks,
     streakFromDates,
@@ -197,7 +197,7 @@ export interface TripCard extends Trip {
  *   媒体上传日，排除打开即自动建行的空页）；
  * - totalWords / curve 仍为日记字数口径（事件行程无字数，曲线不动）；
  * - eventCounts / noteCount（2026-11-20 用户指令新增）：事件三态计数（open =
- *   进行中 / done = 完成 / failed = 失败）与独立笔记总数（不分 open/closed），
+ *   进行中 / done = 完成 / failed = 失败）与独立计划总数（不分 open/closed），
  *   Me 指标卡 KPI 用；历史行程数不从 db 另取——store.trips 已有全量行程卡，
  *   UI 按 status === 'finished' 派生（与进行中行程同款派生口径）。
  */
@@ -286,7 +286,7 @@ interface ArchiveStore {
     // ─── 行程项（v9：trip_items，行程表页）────────────────────────────────────
     // 刷新口径：行程项不进 loadAll 的 store 状态（trips/metrics 与行程项无关），
     // mutation 成功只 bump revision——行程表页由屏层按 useArchiveRevision 局部
-    // 重载（对齐事件/笔记的取径）。
+    // 重载（对齐事件/计划的取径）。
     /**
      * 创建行程项（行程表页 + 表单卡）：title 必填非空、time 须合法 'HH:mm'、
      * date 须合法本地日期（错误进 error 通道返回 null，不 throw）。成功落库 +
@@ -321,36 +321,36 @@ interface ArchiveStore {
     ): Promise<string | null>;
     /** 行程搜索（DEV.md #5）：标题+描述 LIKE，range 为行程区间与 [from, to] 相交。 */
     searchTrips(keyword: string, range?: { from?: string; to?: string }): Promise<TripCard[]>;
-    /** 笔记搜索（DEV.md #5 扩展）：正文/标题 LIKE + local_date ∈ [from, to]。
-     *  v8 起独立笔记同样被搜到（不筛 kind，期望行为）。 */
+    /** 计划搜索（DEV.md #5 扩展）：正文/标题 LIKE + local_date ∈ [from, to]。
+     *  v8 起独立计划同样被搜到（不筛 kind，期望行为）。 */
     searchJournals(keyword: string, range?: { from?: string; to?: string }): Promise<JournalRow[]>;
-    // ─── 独立笔记（v8：journals.kind = 'note'，复用日记容器管线）──────────────
-    // 刷新口径与 events 相同：笔记不进 loadAll 的 store 状态（trips/metrics 与
-    // 笔记无关），mutation 成功只 bump revision——笔记列表由屏层按
-    // useDataRevision 局部重载（读取走 db.listNotes）。
-    // 复用既有 mutation，无需为笔记新增对应入口：正文保存走 saveJournalBlocks
+    // ─── 独立计划（v8：journals.kind = 'note'，复用日记容器管线）──────────────
+    // 刷新口径与 events 相同：计划不进 loadAll 的 store 状态（trips/metrics 与
+    // 计划无关），mutation 成功只 bump revision——计划列表由屏层按
+    // useDataRevision 局部重载（读取走 db.listPlans）。
+    // 复用既有 mutation，无需为计划新增对应入口：正文保存走 saveJournalBlocks
     // （块模型/占位过滤/媒体引用对账全量同构）、插图/录音走 attachJournalMedia、
-    // 删除走 deleteJournal（级联媒体行 + 文件清理，笔记无行程级联分支）、标题
-    // 走 updateJournalTitle（笔记 status 恒 'open'，isEditable 闸天然放行）。
+    // 删除走 deleteJournal（级联媒体行 + 文件清理，计划无行程级联分支）、标题
+    // 走 updateJournalTitle（计划 status 恒 'open'，isEditable 闸天然放行）。
 
     /**
-     * 新建独立笔记（显式建页动作，像建行程/事件一样走表单；同日可建任意多篇）：
+     * 新建独立计划（显式建页动作，像建行程/事件一样走表单；同日可建任意多篇）：
      * 标题与描述均选填。校验先行（错误进 error 通道返回 null）：title trim 后
-     * ≤ JOURNAL_TITLE_MAX、description trim 后 ≤ NOTE_DESCRIPTION_MAX，超长
+     * ≤ JOURNAL_TITLE_MAX、description trim 后 ≤ PLAN_DESCRIPTION_MAX，超长
      * 整体拒绝不走截断（对齐事件标题口径；trim 后空串合法 = 未命名/无描述）。
      * 成功返回新行（deleted_at = null）并 bump revision（不 loadAll）。
      */
-    createNote(input: { title: string; description: string }): Promise<JournalRow | null>;
+    createPlan(input: { title: string; description: string }): Promise<JournalRow | null>;
 
     /**
-     * 独立笔记元信息更新（标题/描述，均可选）：title null = 清除；字符串经
+     * 独立计划元信息更新（标题/描述，均可选）：title null = 清除；字符串经
      * normalizeJournalTitle（空串归一为 null = 未命名，超长钳制——对齐
-     * updateJournalTitle 口径）；description trim 后超 NOTE_DESCRIPTION_MAX
+     * updateJournalTitle 口径）；description trim 后超 PLAN_DESCRIPTION_MAX
      * 整体拒绝（与创建同口径），空串合法。仅接受 kind = 'note' 的行（日记的
      * 标题清除语义走 updateJournalTitle，日记无 description，防误写）。
      * true = 成功（bump revision，不 loadAll）。
      */
-    updateNoteMeta(id: string, patch: { title?: string | null; description?: string }): Promise<boolean>;
+    updatePlanMeta(id: string, patch: { title?: string | null; description?: string }): Promise<boolean>;
     /**
      * 建事件（v6，类似工单）：标题必填，其余可选；正文 blocks 以单空文本段初始化；
      * 状态恒从 'open' 起。GPS 注入不在 store（UI 层经 core/location 取好后传参）。
@@ -445,7 +445,7 @@ interface ArchiveStore {
     completeJournal(journalId: string): Promise<void>;
     /** 重开当天的收笔页（仅当天；历史页不可重开）。 */
     reopenJournal(journalId: string): Promise<void>;
-    /** 笔记标题（v4，DEV.md #6）：空串 = 清除；已收笔（closed）不可改（#7 只读语义）。 */
+    /** 计划标题（v4，DEV.md #6）：空串 = 清除；已收笔（closed）不可改（#7 只读语义）。 */
     updateJournalTitle(journalId: string, title: string): Promise<boolean>;
     /** 删单篇日记：级联删其媒体行 + 文件（同 deleteTrip 的不留孤儿口径）。 */
     deleteJournal(journalId: string): Promise<boolean>;
@@ -466,7 +466,7 @@ interface ArchiveStore {
      * journal 当前 blocks（DB 权威值）→ 尾部追加真实媒体块（复用既有
      * parse/serialize 语义）→ 立即落库 + revision bump。幂等：mediaId 已被
      * 引用时直接成功（owner 屏在 DB 写入前经 persist 事件合并进本地态并抢先
-     * 保存的场景，不产生重复块）。已收笔（closed）/ 已删除的笔记拒绝（#7
+     * 保存的场景，不产生重复块）。已收笔（closed）/ 已删除的计划拒绝（#7
      * 只读语义 + 归属目标失效兜底）。true = 追加成功（含幂等命中）。
      */
     appendMediaBlockToJournal(journalId: string, media: { mediaId: string; kind: JournalMediaKind; durationMs?: number }): Promise<boolean>;
@@ -1365,7 +1365,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             return [];
         }
         const trimmed = keyword.trim();
-        // 空 keyword 且无范围 = 全量浏览（日记 + 笔记两类、含已收笔——历史在
+        // 空 keyword 且无范围 = 全量浏览（日记 + 计划两类、含已收笔——历史在
         // 搜索可见；2026-11-19 用户指令）
         if (!trimmed && !range?.from && !range?.to) {
             return db.listAllJournals();
@@ -1373,55 +1373,55 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         try {
             return await db.searchJournals(trimmed, { from: range?.from, to: range?.to });
         } catch (error) {
-            set({ error: `笔记搜索失败：${toMessage(error)}` });
+            set({ error: `计划搜索失败：${toMessage(error)}` });
             return [];
         }
     },
 
-    // ─── 独立笔记（v8）────────────────────────────────────────────────────────
-    // 刷新口径与 events 相同：笔记不进 loadAll 的 store 状态（trips/metrics 与
-    // 笔记无关），mutation 成功只 bump revision——列表由屏层按 useDataRevision
+    // ─── 独立计划（v8）────────────────────────────────────────────────────────
+    // 刷新口径与 events 相同：计划不进 loadAll 的 store 状态（trips/metrics 与
+    // 计划无关），mutation 成功只 bump revision——列表由屏层按 useDataRevision
     // 局部重载。正文保存/插图/录音/删除/标题复用既有 mutation（见接口注释），
     // 这里只补「创建」与「元信息更新」两个无对应入口的动作。
 
-    async createNote(input) {
+    async createPlan(input) {
         // 校验先行（超长整体拒绝不走截断，对齐事件标题口径）；标题/描述均选填，
-        // trim 后空串合法（未命名笔记 / 无描述，展示层兜底）
+        // trim 后空串合法（未命名计划 / 无描述，展示层兜底）
         const title = input.title.trim();
         if (title.length > JOURNAL_TITLE_MAX) {
-            set({ error: `笔记标题最多 ${JOURNAL_TITLE_MAX} 个字` });
+            set({ error: `计划标题最多 ${JOURNAL_TITLE_MAX} 个字` });
             return null;
         }
         const description = input.description.trim();
-        if (description.length > NOTE_DESCRIPTION_MAX) {
-            set({ error: `笔记描述最多 ${NOTE_DESCRIPTION_MAX} 个字` });
+        if (description.length > PLAN_DESCRIPTION_MAX) {
+            set({ error: `计划描述最多 ${PLAN_DESCRIPTION_MAX} 个字` });
             return null;
         }
-        // 行构造（含 id 生成）在 db.createNote 内：随机源异常原样上抛，这里的
+        // 行构造（含 id 生成）在 db.createPlan 内：随机源异常原样上抛，这里的
         // try 保证失败走 error 通道而非 unhandled rejection（对齐 createTrip
         // 的注释口径——调用方 void 调用无人接）
         let row: JournalRow | null = null;
         try {
-            row = await db.createNote({ title, description });
+            row = await db.createPlan({ title, description });
         } catch (error) {
-            set({ error: `笔记创建失败：${toMessage(error)}` });
+            set({ error: `计划创建失败：${toMessage(error)}` });
             return null;
         }
         set({ error: null, revision: get().revision + 1 });
         return row;
     },
 
-    async updateNoteMeta(id, patch) {
+    async updatePlanMeta(id, patch) {
         try {
             const note = await db.getJournal(id);
             if (!note) {
-                set({ error: '笔记不存在或已删除' });
+                set({ error: '计划不存在或已删除' });
                 return false;
             }
-            // kind 预检：本入口是笔记专用（标题单独编辑走 updateJournalTitle，
+            // kind 预检：本入口是计划专用（标题单独编辑走 updateJournalTitle，
             // 日记无 description 语义）——防误把日记 id 传进来写 description
             if (note.kind !== 'note') {
-                set({ error: '目标不是独立笔记' });
+                set({ error: '目标不是独立计划' });
                 return false;
             }
             // title：null = 清除；字符串经 normalizeJournalTitle（空串归一为 null
@@ -1437,18 +1437,18 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             let description: string | undefined;
             if (patch.description !== undefined) {
                 const trimmed = patch.description.trim();
-                if (trimmed.length > NOTE_DESCRIPTION_MAX) {
-                    set({ error: `笔记描述最多 ${NOTE_DESCRIPTION_MAX} 个字` });
+                if (trimmed.length > PLAN_DESCRIPTION_MAX) {
+                    set({ error: `计划描述最多 ${PLAN_DESCRIPTION_MAX} 个字` });
                     return false;
                 }
                 description = trimmed;
             }
-            await db.updateNoteMeta(id, {
+            await db.updatePlanMeta(id, {
                 ...(title !== undefined ? { title } : {}),
                 ...(description !== undefined ? { description } : {}),
             });
         } catch (error) {
-            set({ error: `笔记保存失败：${toMessage(error)}` });
+            set({ error: `计划保存失败：${toMessage(error)}` });
             return false;
         }
         set({ error: null, revision: get().revision + 1 });
@@ -1798,7 +1798,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
     },
 
     /** 取或建某归属日的日记（日常 null / 行程内某天）；open 状态才可写。
-     *  独立笔记（v8）不经此路径——显式新建走 createNote，笔记无归属日语义。 */
+     *  独立计划（v8）不经此路径——显式新建走 createPlan，计划无归属日语义。 */
     async ensureJournal(tripId: string | null, date: string) {
         try {
             const existing = await db.getJournalByDate(tripId, date);
@@ -1809,7 +1809,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 trip_id: tripId,
                 local_date: date,
                 title: null, // 新页默认未命名（v4 标题可空）
-                kind: 'daily', // 日记实体（v8）：ensureJournal 只建日记，笔记走 createNote
+                kind: 'daily', // 日记实体（v8）：ensureJournal 只建日记，计划走 createPlan
                 description: '', // 日记无描述语义（v8 列默认值，显式落 ''）
                 blocks: serializeBlocks([newParagraphBlock()]),
                 status: 'open',
@@ -1873,7 +1873,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             }
         } catch (error) {
             // 对账链路失败（查询/软删异常）不阻塞保存结果：正文已落库，文案上浮可重试
-            set({ error: `笔记已保存，但孤儿媒体清理失败：${toMessage(error)}`, savingJournal: false });
+            set({ error: `计划已保存，但孤儿媒体清理失败：${toMessage(error)}`, savingJournal: false });
             return true;
         }
         set({
@@ -1882,7 +1882,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             savingJournal: false,
             ...(fileFailures.length > 0
                 ? {
-                      error: `笔记已保存，但 ${fileFailures.length} 个媒体文件清理失败：${fileFailures[0].message}`,
+                      error: `计划已保存，但 ${fileFailures.length} 个媒体文件清理失败：${fileFailures[0].message}`,
                   }
                 : {}),
         });
@@ -1915,11 +1915,11 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             // 锁定预检（#7）：closed = 只读，标题与正文同口径不可改（UI 侧入口先挡，这里兜底）
             const journal = await db.getJournal(journalId);
             if (!journal) {
-                set({ error: '笔记不存在或已删除' });
+                set({ error: '计划不存在或已删除' });
                 return false;
             }
             if (!isEditable(journal.status)) {
-                set({ error: '已收笔的笔记不可修改' });
+                set({ error: '已收笔的计划不可修改' });
                 return false;
             }
             await db.updateJournalTitle(journalId, normalizeJournalTitle(title));
@@ -1942,11 +1942,11 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 error: null,
                 revision: get().revision + 1,
                 ...(failures.length > 0
-                    ? { error: `笔记已删除，但 ${failures.length} 个媒体文件清理失败：${failures[0].message}` }
+                    ? { error: `计划已删除，但 ${failures.length} 个媒体文件清理失败：${failures[0].message}` }
                     : {}),
             });
         } catch (error) {
-            set({ error: `笔记删除失败：${toMessage(error)}` });
+            set({ error: `计划删除失败：${toMessage(error)}` });
             return false;
         }
         await get().loadAll();
@@ -2028,12 +2028,12 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             // 已卸载，本地 blocksRef 不可信）
             const row = await db.getJournal(journalId);
             if (!row) {
-                set({ error: '笔记不存在或已删除，录音没有落点。' });
+                set({ error: '计划不存在或已删除，录音没有落点。' });
                 return false;
             }
-            // #7 只读语义兜底：发起后笔记被收笔（手动/24:00 自动）→ 拒绝追加
+            // #7 只读语义兜底：发起后计划被收笔（手动/24:00 自动）→ 拒绝追加
             if (!isEditable(row.status)) {
-                set({ error: '这篇笔记已收笔，录音素材未能保存。' });
+                set({ error: '这篇计划已收笔，录音素材未能保存。' });
                 return false;
             }
             const blocks = parseBlocks(row.blocks);

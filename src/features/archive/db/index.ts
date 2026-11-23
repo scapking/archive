@@ -1,11 +1,11 @@
 import { openDatabase } from '@/core/database';
-// v8 createNote 的行 id 生成走 core 随机源（web 非安全上下文有 getRandomValues 兜底，
+// v8 createPlan 的行 id 生成走 core 随机源（web 非安全上下文有 getRandomValues 兜底，
 // 异常原样上抛由 store 层转 error 通道）
 import { crypto } from '@/core/crypto';
 import { ARCHIVE_MIGRATIONS } from './migrations';
 // PENDING_MEDIA_ID 本模块消毒逻辑自用（下方同时 re-export 供域内其他层取用）
 import { PENDING_MEDIA_ID } from './schema';
-// v8 独立笔记：初始正文复用日记块模型纯函数、local_date 的「当天」口径复用
+// v8 独立计划：初始正文复用日记块模型纯函数、local_date 的「当天」口径复用
 // trip-logic。db（SQL 层）→ 纯函数模块是向下依赖；由此形成的模块环（唯一环边
 // 是 trip-logic → './db' 取 TRIP_OPEN_ENDED 常量的 v5 遗留引用）上所有跨模块取值
 // 都在函数体内（调用期求值），各模块体只做常量/函数定义、无顶层跨模块求值，
@@ -218,14 +218,14 @@ export async function tripStats(): Promise<Map<string, TripStats>> {
     return map;
 }
 
-// ─── journals（v8 起为日记 + 独立笔记双实体容器，kind 列区分；本段 daily 专属
+// ─── journals（v8 起为日记 + 独立计划双实体容器，kind 列区分；本段 daily 专属
 // ─── 取径已逐一过滤，按 id/关键词的共用出口不筛 kind）──────────────────────────
 
 export async function getJournalByDate(tripId: string | null, localDate: string): Promise<JournalRow | null> {
     const db = await getDb();
-    // v8 kind 过滤（daily 取页路径专属）：独立笔记的 trip_id 同样为 NULL、local_date
+    // v8 kind 过滤（daily 取页路径专属）：独立计划的 trip_id 同样为 NULL、local_date
     // 同样可能落在今天——不筛 kind 的话打开 /write 的 LIMIT 1 可能命中当天新建的
-    // 笔记行，日记页被张冠李戴（笔记无「一天一篇」语义，不经本入口，走 createNote）。
+    // 计划行，日记页被张冠李戴（计划无「一天一篇」语义，不经本入口，走 createPlan）。
     const row = await db.getFirst<JournalRow>(
         "SELECT * FROM journals WHERE deleted_at IS NULL AND kind = 'daily' AND trip_id IS ? AND local_date = ? LIMIT 1",
         [tripId, localDate],
@@ -258,7 +258,7 @@ export async function updateJournalBlocks(id: string, blocks: string, wordCount:
     ]);
 }
 
-/** 笔记标题（v4，DEV.md #6）：null = 清除标题（未命名态）。 */
+/** 计划标题（v4，DEV.md #6）：null = 清除标题（未命名态）。 */
 export async function updateJournalTitle(id: string, title: string | null): Promise<void> {
     const db = await getDb();
     await db.run('UPDATE journals SET title = ?, updated_at = ? WHERE id = ?', [title, Date.now(), id]);
@@ -266,12 +266,12 @@ export async function updateJournalTitle(id: string, title: string | null): Prom
 
 /**
  * 手动收笔（日记专属语义，v8 起带 kind 过滤）：收笔/重开是「一天一篇」日记的
- * 状态机，独立笔记 status 恒 'open'、永不该被打成 closed 只读。kind 过滤后
- * 对笔记的误调用 UPDATE 命中 0 行静默不生效——笔记保持 open 是正确状态，
- * 优于无过滤时把笔记误收笔（不可逆地破坏只读语义的预期）。
+ * 状态机，独立计划 status 恒 'open'、永不该被打成 closed 只读。kind 过滤后
+ * 对计划的误调用 UPDATE 命中 0 行静默不生效——计划保持 open 是正确状态，
+ * 优于无过滤时把计划误收笔（不可逆地破坏只读语义的预期）。
  */
-/** 完成日记/笔记（2026-11-19 产品变更：笔记也可「完成」——closed 后离开
-    首页 deck 与笔记堆，仅在搜索可见）。 */
+/** 完成日记/计划（2026-11-19 产品变更：计划也可「完成」——closed 后离开
+    首页 deck 与计划堆，仅在搜索可见）。 */
 export async function completeJournal(id: string): Promise<void> {
     const db = await getDb();
     await db.run("UPDATE journals SET status = 'closed', completed_at = ?, updated_at = ? WHERE id = ?", [
@@ -299,8 +299,8 @@ export async function getJournal(id: string): Promise<JournalRow | null> {
 
 /**
  * 本地时区 24:00 自动收笔：所有 open 且日期早于今天的**日记**（kind = 'daily'）收口。
- * v8 关键正确性点：独立笔记的 local_date 只是创建日、status 恒 'open'——不筛 kind
- * 会把昨天建的笔记也「收笔」成只读，违背笔记不受收笔语义约束的产品定义。
+ * v8 关键正确性点：独立计划的 local_date 只是创建日、status 恒 'open'——不筛 kind
+ * 会把昨天建的计划也「收笔」成只读，违背计划不受收笔语义约束的产品定义。
  */
 export async function closeStaleOpenJournals(today: string): Promise<number> {
     const db = await getDb();
@@ -320,8 +320,8 @@ export async function listJournalsByTrip(tripId: string): Promise<JournalRow[]> 
     );
 }
 
-/** 日常日记（无行程）最近列表（v8 起带 kind 过滤：笔记 trip_id 同为 NULL，
- *  不筛会混入日常日记时间线——笔记列表走 listNotes，两条列表互不混入）。 */
+/** 日常日记（无行程）最近列表（v8 起带 kind 过滤：计划 trip_id 同为 NULL，
+ *  不筛会混入日常日记时间线——计划列表走 listPlans，两条列表互不混入）。 */
 export async function listDailyJournals(limit = 60): Promise<JournalRow[]> {
     const db = await getDb();
     return db.getAll<JournalRow>(
@@ -330,15 +330,15 @@ export async function listDailyJournals(limit = 60): Promise<JournalRow[]> {
     );
 }
 
-// ─── 独立笔记（v8：journals.kind = 'note'，复用日记容器与媒体/块管线）───────
-// 复用面：getJournal / updateJournalBlocks / updateJournalTitle（笔记 status 恒
+// ─── 独立计划（v8：journals.kind = 'note'，复用日记容器与媒体/块管线）───────
+// 复用面：getJournal / updateJournalBlocks / updateJournalTitle（计划 status 恒
 // 'open'，isEditable 闸天然放行）/ softDeleteJournalCascade / mediaByJournalIds /
-// searchJournals（按 id/关键词查询不筛 kind——笔记可被搜索，期望行为）均对
+// searchJournals（按 id/关键词查询不筛 kind——计划可被搜索，期望行为）均对
 // note 行同样适用，无需按 kind 复制一套出口。
 
 /**
- * 新建独立笔记（store.createNote 编排）：kind 'note'，trip_id 恒 null（笔记不从属
- * 行程），local_date = 创建当天（todayLocal，仅展示/排序用——笔记无「归属日」
+ * 新建独立计划（store.createPlan 编排）：kind 'note'，trip_id 恒 null（计划不从属
+ * 行程），local_date = 创建当天（todayLocal，仅展示/排序用——计划无「归属日」
  * 语义，不受同日唯一索引与 24:00 自动收笔约束）。title/description 由调用方
  * 校验后传入，此处 trim 后直落（title 可为空串 = 未命名，展示层兜底）。
  * 正文初始化为单个空文本段（复用日记块模型，编辑器至少留一个可落笔段）。
@@ -347,9 +347,9 @@ export async function listDailyJournals(limit = 60): Promise<JournalRow[]> {
  * randomUUID 自带 web 非安全上下文兜底，异常原样上抛由 store 层 try 转 error
  * 通道——与 createTrip/createEvent 的 error 口径一致）；blocks 初始化复用
  * journal-logic 纯函数（依赖方向见文件头 import 注）。直接 INSERT 不带
- * OR IGNORE：笔记被同日唯一索引排除（部分索引只圈 daily），无冲突可撞。
+ * OR IGNORE：计划被同日唯一索引排除（部分索引只圈 daily），无冲突可撞。
  */
-export async function createNote(input: { title: string; description: string }): Promise<JournalRow> {
+export async function createPlan(input: { title: string; description: string }): Promise<JournalRow> {
     const db = await getDb();
     const now = Date.now();
     const row: JournalRow = {
@@ -388,8 +388,8 @@ export async function createNote(input: { title: string; description: string }):
     return row;
 }
 
-/** 独立笔记列表（updated_at DESC = 最近活动在前，对齐 listEvents 排序口径）。 */
-export async function listNotes(limit = 200): Promise<JournalRow[]> {
+/** 独立计划列表（updated_at DESC = 最近活动在前，对齐 listEvents 排序口径）。 */
+export async function listPlans(limit = 200): Promise<JournalRow[]> {
     const db = await getDb();
     return db.getAll<JournalRow>(
         "SELECT * FROM journals WHERE deleted_at IS NULL AND kind = 'note' ORDER BY updated_at DESC LIMIT ?",
@@ -397,7 +397,7 @@ export async function listNotes(limit = 200): Promise<JournalRow[]> {
     );
 }
 
-/** 独立笔记总数（Me 指标卡用；不分 open/closed——「笔记数量」是库存口径）。 */
+/** 独立计划总数（Me 指标卡用；不分 open/closed——「计划数量」是库存口径）。 */
 export async function noteCount(): Promise<number> {
     const db = await getDb();
     const row = await db.getFirst<{ n: number }>(
@@ -407,12 +407,12 @@ export async function noteCount(): Promise<number> {
 }
 
 /**
- * 独立笔记元信息更新（store.updateNoteMeta 编排）：title null = 清除为未命名
+ * 独立计划元信息更新（store.updatePlanMeta 编排）：title null = 清除为未命名
  * （对齐 updateJournalTitle 的可空语义）；任一写入都 bump updated_at。
- * 「目标必须是笔记」的 kind 校验由 store 层预检（db 认列值、业务校验在 store，
+ * 「目标必须是计划」的 kind 校验由 store 层预检（db 认列值、业务校验在 store，
  * 分层同 updateJournalTitle 的 isEditable 预检）。
  */
-export async function updateNoteMeta(
+export async function updatePlanMeta(
     id: string,
     patch: { title?: string | null; description?: string },
 ): Promise<void> {
@@ -573,7 +573,7 @@ export async function restoreBackupData(payload: BackupRestorePayload): Promise<
                     row.title,
                     // v8 前的备份包行里没有 kind/description 字段（JSON 运行时缺位，
                     // 类型上不可见）——按当时的行语义补默认（v8 前全部是日记）；
-                    // 新包原样保真，笔记恢复后仍是笔记（同日多篇不撞收窄后的唯一索引）
+                    // 新包原样保真，计划恢复后仍是计划（同日多篇不撞收窄后的唯一索引）
                     row.kind ?? 'daily',
                     row.description ?? '',
                     row.blocks,
@@ -761,8 +761,8 @@ function sanitizeBlocksJson(blocks: string): string {
     }
 }
 
-/** me 页 30 天写作曲线：按日的字数总和（日记口径，v8 起带 kind 过滤——笔记
- *  字数不计入，me 页指标的「日记」语义保持不变，笔记指标待产品定义后另立）。 */
+/** me 页 30 天写作曲线：按日的字数总和（日记口径，v8 起带 kind 过滤——计划
+ *  字数不计入，me 页指标的「日记」语义保持不变，计划指标待产品定义后另立）。 */
 export async function wordCountByDate(sinceDate: string): Promise<Map<string, number>> {
     const db = await getDb();
     const rows = await db.getAll<{ local_date: string; total: number }>(
@@ -774,8 +774,8 @@ export async function wordCountByDate(sinceDate: string): Promise<Map<string, nu
 
 /**
  * 有日记的日期集合（search 页日历打点专用，装饰性数据；streak 口径走
- * activityDates 不走这里）。v8 起不筛 kind：笔记与日记同为可搜索内容
- * （searchJournals 不筛 kind），打点口径与搜索结果保持一致——当天建了笔记同样点亮。
+ * activityDates 不走这里）。v8 起不筛 kind：计划与日记同为可搜索内容
+ * （searchJournals 不筛 kind），打点口径与搜索结果保持一致——当天建了计划同样点亮。
  */
 export async function journalDates(limitDays = 400): Promise<Set<string>> {
     const db = await getDb();
@@ -787,7 +787,7 @@ export async function journalDates(limitDays = 400): Promise<Set<string>> {
 }
 
 /** 累计字数（me 页 KPI「累计字数」）：全部未软删日记的字数总和（空页 word_count=0
- *  自然贡献 0；v8 起带 kind 过滤，笔记字数不计入——口径同 wordCountByDate）。 */
+ *  自然贡献 0；v8 起带 kind 过滤，计划字数不计入——口径同 wordCountByDate）。 */
 export async function journalTotalWords(): Promise<number> {
     const db = await getDb();
     const row = await db.getFirst<{ words: number }>(
@@ -807,8 +807,8 @@ export async function journalTotalWords(): Promise<number> {
  *    打开日记页时即自动建行（空段落 + word_count 0），旧口径 `WHERE deleted_at
  *    IS NULL` 把「打开但没写」的日子也计入 → journalDays/streak 被打开行为灌水
  *    （每天进一次首页 streak 就 +1）——2026-11 用户反馈「写过的日记天数有逻辑
- *    bug」的本体，此处修掉。v8 起另带 kind = 'daily' 过滤：独立笔记不计入本并集
- *    （KPI 名目是「写过日记」，笔记指标待产品定义后另立，口径同 wordCountByDate）。
+ *    bug」的本体，此处修掉。v8 起另带 kind = 'daily' 过滤：独立计划不计入本并集
+ *    （KPI 名目是「写过日记」，计划指标待产品定义后另立，口径同 wordCountByDate）。
  * ②③ 事件创建日/更新日：updated_at 全部为用户编辑触碰（createEvent /
  *    updateEventBlocks / updateEventMeta，见 store 事件编排），无系统触碰路径；
  *    软删行排除。

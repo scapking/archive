@@ -94,7 +94,7 @@ import {
 } from './ui';
 
 /**
- * 笔记模式的 + 选择器行词表（v8）：全行裁「完成收笔」——笔记 status 恒 'open'，
+ * 计划模式的 + 选择器行词表（v8）：全行裁「完成收笔」——计划 status 恒 'open'，
  * 无收笔/24:00 语义（schema.ts JournalKind 注）。InsertMenu 的 actions 过滤
  * 机制（事件编辑器同款接线面）收敛在词表一个常量上：过滤不重排，行序仍由
  * 组件内 allRows 决定；complete 确认步随行退场不可达，runInsert 的 'complete'
@@ -174,13 +174,13 @@ const ListChecksIcon = createIcon(
  * 连续日记编辑器（行程/日常通用）——三种入口：不传参 = 今天日常；
  * tripId+date = 行程某天；journalId = 直达某篇。
  *
- * **笔记模式（v8 独立笔记复用本编辑器，单一实现源）**：/note/[id] 路由以
- * journalId 挂载笔记行，屏内按 journal.kind === 'note' 分流（不设独立 prop
+ * **计划模式（v8 独立计划复用本编辑器，单一实现源）**：/plan/[id] 路由以
+ * journalId 挂载计划行，屏内按 journal.kind === 'note' 分流（不设独立 prop
  * ——行类型即模式事实源，错传日记 id 也天然回落日记行为；journalId 载入路径
- * 本就跳过 ensureTodayJournal，笔记侧零改动）：笔记 status 恒 'open'、无收笔
+ * 本就跳过 ensureTodayJournal，计划侧零改动）：计划 status 恒 'open'、无收笔
  * 语义——+ 选择器按 NOTE_INSERT_ACTIONS 裁「完成收笔」行、屏头「进行中/已
- * 收笔」状态位不渲染、录制归属标签无标题时落「未命名笔记」而非「M月D日 日记」
- * ；重命名（updateJournalTitle 对 open 笔记有效）/正文/媒体/录音按 journalId
+ * 收笔」状态位不渲染、录制归属标签无标题时落「未命名计划」而非「M月D日 日记」
+ * ；重命名（updateJournalTitle 对 open 计划有效）/正文/媒体/录音按 journalId
  * 天然可用。日常（daily）路径行为零变化。
  *
  * 沉浸化交互承诺（#1/#6/#7，DEV.md）：
@@ -194,7 +194,7 @@ const ListChecksIcon = createIcon(
  *   本屏只负责发起（startCaptureSession 带 **ownerJournalId**——发起时编辑
  *   上下文的 journal id，ensureJournal 已保证写前有 id）与状态展示。会话
  *   不随本屏离开而中止（后台继续，任意页面可经悬浮 chip / + 菜单状态行
- *   重开）；停止产物经 DB 级 appendMediaBlockToJournal **固定落回发起笔记**
+ *   重开）；停止产物经 DB 级 appendMediaBlockToJournal **固定落回发起计划**
  *   ——无论停止发生在哪个页面、本屏是否在栈下；owner 屏挂载时经 persist
  *   事件把产物块合并进本地 blocksRef（applyBlocks 到达序合并，随后的保存
  *   天然携带，零丢写）；非 owner 屏的 + 菜单显示状态行可「继续」，但其
@@ -382,7 +382,7 @@ export function JournalEditScreen({
 
     // 卸载兜底 flush：防抖窗口（≤800ms）内 safeBack/dismiss 退出时补存最后一次
     // 正文，否则静默丢失；fire-and-forget 但必须 catch（卸载后无界面）。
-    //（标题不在编辑器落库——编辑入口在首页笔记卡重命名卡，见文件头注）
+    //（标题不在编辑器落库——编辑入口在首页计划卡重命名卡，见文件头注）
     useEffect(() => {
         return () => {
             const row = journalRef.current;
@@ -438,13 +438,13 @@ export function JournalEditScreen({
     selectModeRef.current = selectMode;
 
     const editable = journal ? isEditable(journal.status) : false;
-    // 笔记模式判定（v8）：行 kind 即模式事实源（见文件头笔记模式段）。载入前
+    // 计划模式判定（v8）：行 kind 即模式事实源（见文件头计划模式段）。载入前
     // 恒 false 无竞态面——+ 菜单由 FAB（editable 门控）打开、屏头分支在
     // journal 就绪后才渲染，两处消费都发生在判定为真值之后
-    const isNote = journal?.kind === 'note';
+    const isPlan = journal?.kind === 'note';
     const saving = store((s) => s.savingJournal);
     // 全局录制会话状态投影（+ 菜单状态行「录音中 0:32 · 继续」）：owner 本尊
-    // 与非 owner 屏都展示（任意页面可重开），停止产物一律归发起笔记
+    // 与非 owner 屏都展示（任意页面可重开），停止产物一律归发起计划
     //（ownerJournalId）；本屏的 blocks/pendingUploads 与会话零交互
     const sessionKind = useRecordingSessionStore((s) => s.kind);
     const sessionPhase = useRecordingSessionStore((s) => s.phase);
@@ -755,13 +755,13 @@ export function JournalEditScreen({
     };
 
     /** 归属提示名（发起会话时冻结）：有标题用标题；无标题按实体种类回退——
-     *  日记落「M月D日 日记」，笔记落「未命名笔记」（笔记无「当天一页」语义，
-     *  日期口径不属于它，v8；与卡片列表的「未命名笔记」兜底同文案）。 */
+     *  日记落「M月D日 日记」，计划落「未命名计划」（计划无「当天一页」语义，
+     *  日期口径不属于它，v8；与卡片列表的「未命名计划」兜底同文案）。 */
     const captureOwnerLabel = () => {
         const current = journalRef.current;
         const label = current?.title?.trim();
         if (label) return label;
-        return current?.kind === 'note' ? '未命名笔记' : `${monthDay} 日记`;
+        return current?.kind === 'note' ? '未命名计划' : `${monthDay} 日记`;
     };
 
     /**
@@ -774,7 +774,7 @@ export function JournalEditScreen({
     const complete = async () => {
         const row = journalRef.current;
         if (!row) return;
-        // owner 路径：只有本篇发起的会话才停（别的笔记发起的录制与本篇收笔无关）
+        // owner 路径：只有本篇发起的会话才停（别的计划发起的录制与本篇收笔无关）
         const session = useRecordingSessionStore.getState();
         if (session.kind && session.ownerJournalId === row.id) {
             const outcome = await stopCaptureSession();
@@ -818,7 +818,7 @@ export function JournalEditScreen({
                     store.setState({
                         error:
                             existing.kind === 'audio'
-                                ? '已有录音在进行中（素材将保存到发起的笔记）。'
+                                ? '已有录音在进行中（素材将保存到发起的计划）。'
                                 : '相机使用中，先处理拍摄再来录音。',
                     });
                     return;
@@ -956,7 +956,7 @@ export function JournalEditScreen({
     };
 
     // 离开编辑屏（返回钮/硬件返回）：**录制会话不再随离开中止**（跨页面后台
-    // 继续是全局会话的一等语义——产物归属发起笔记，用户可从任意页面经 chip /
+    // 继续是全局会话的一等语义——产物归属发起计划，用户可从任意页面经 chip /
     // + 菜单状态行停止）；多选中 = 先退出选择态。Android 返回键在此收口
     //（全局覆盖层各自的 handler 在其展开时优先响应）。
     const handleLeave = useCallback(() => {
@@ -1110,7 +1110,7 @@ export function JournalEditScreen({
 
     // + 菜单状态行数据（全局会话进行中且本屏可编辑时展示）：「● 录音中 0:32 ·
     // 继续」点按重开全局覆盖层（无缝恢复）；副标按 owner 身份分流——归属
-    // 铁律可视化：非 owner 屏明示「素材将保存到发起的笔记」
+    // 铁律可视化：非 owner 屏明示「素材将保存到发起的计划」
     const activeCapture = (() => {
         if (!sessionKind || !editable) return null;
         const label =
@@ -1124,7 +1124,7 @@ export function JournalEditScreen({
             hint:
                 sessionOwnerJournalId === journal?.id
                     ? '点按回到录制界面，停止后保存到本篇'
-                    : '点按回到录制界面，素材将保存到发起的笔记',
+                    : '点按回到录制界面，素材将保存到发起的计划',
             onResume: () => {
                 setMenuOpen(false);
                 restoreCaptureOverlay();
@@ -1218,14 +1218,14 @@ export function JournalEditScreen({
                         ) : null}
                     </View>
                     {/* 日期行（#3 恢复第六轮前排版）：30 报头阶 + 右侧状态位。
-                        笔记模式状态位整体退场：「进行中/已收笔」是日记的收笔语义
-                        （24:00 自动收笔/手动完成），笔记 status 恒 'open'，渲染它
+                        计划模式状态位整体退场：「进行中/已收笔」是日记的收笔语义
+                        （24:00 自动收笔/手动完成），计划 status 恒 'open'，渲染它
                         是误导（v8）；日期（创建日）保留，左缘基线不受影响 */}
                     <View className="flex-row items-baseline justify-between">
                         <Text className="text-[30px] font-semibold tracking-wide text-ink-text dark:text-inkd-text">
                             {monthDay}
                         </Text>
-                        {isNote ? null : (
+                        {isPlan ? null : (
                             <Text
                                 className={`text-[11px] font-medium ${
                                     editable
@@ -1419,7 +1419,7 @@ export function JournalEditScreen({
 
             {/* 录音/拍摄会话已上收根层级（app/_layout 的 RecordingSessionHost）：
                 覆盖层/隐形保活槽/悬浮 chip 全局渲染，任意页面可重开；停止产物经
-                DB 级 appendMediaBlockToJournal 落回发起笔记（ownerJournalId），
+                DB 级 appendMediaBlockToJournal 落回发起计划（ownerJournalId），
                 owner 屏经 persist 事件合并进本地 blocksRef（见订阅 effect） */}
 
             {/* 块操作卡（#1/#9 + 自定义合并堆叠入口 + 堆叠批量/指定删除与整组
@@ -1455,7 +1455,7 @@ export function JournalEditScreen({
                     onClose={() => setActionBlockId(null)}
                 />
             ) : null}
-            {/* 标题重命名卡（屏头编辑钮 → 与首页笔记卡长按卡同语义，共享组件
+            {/* 标题重命名卡（屏头编辑钮 → 与首页计划卡长按卡同语义，共享组件
                 ui/rename-card；条件渲染 scrim，禁 RN Modal）。落库通道经 onSave
                 注入（store.updateJournalTitle，不回退）；onClose 一律回读刷新 */}
             {renameOpen && journal ? (
@@ -1481,9 +1481,9 @@ export function JournalEditScreen({
             {menuOpen ? (
                 <InsertMenu
                     onClose={() => setMenuOpen(false)}
-                    // 笔记模式裁「完成收笔」行（词表见 NOTE_INSERT_ACTIONS 注）；
+                    // 计划模式裁「完成收笔」行（词表见 NOTE_INSERT_ACTIONS 注）；
                     // 日常模式传 undefined = 全行，行为零变化
-                    actions={isNote ? NOTE_INSERT_ACTIONS : undefined}
+                    actions={isPlan ? NOTE_INSERT_ACTIONS : undefined}
                     activeCapture={activeCapture}
                     onAction={(action) =>
                         void runInsert(action).catch((caught) => {

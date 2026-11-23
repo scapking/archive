@@ -165,7 +165,7 @@ export const EDITOR_RHYTHM = {
 const MIN_PARAGRAPH_HEIGHT = BODY_LINE_HEIGHT * 2;
 
 /** 从未写过的空段最小高度（#2「追加输入框特别小和丑」修复）：空段的
- *  「落笔大盒」不再按「是否整篇唯一段」分档——凡是没写过字的空段（空笔记
+ *  「落笔大盒」不再按「是否整篇唯一段」分档——凡是没写过字的空段（空计划
  *  首段 / + 添加输入框段）一律同一 72dp 落笔体量 + 同一套字号/占位/间距，
  *  消灭「第一个输入框正常、追加输入框特别小」的形态分裂。写过即降到两行
  *  固定底（written 锁存，内容多则自然生长、删空不回弹大盒）。
@@ -640,11 +640,11 @@ const CONTINUE_PLACEHOLDER = '继续写…';
 
 /**
  * 统一文本块（#3「输入框存在差异，改成统一大小组件」）：全屏所有段落——
- * 空笔记落笔区、续写段、+ 添加输入框段——唯一的 TextInput 实现。字号/行高/
+ * 空计划落笔区、续写段、+ 添加输入框段——唯一的 TextInput 实现。字号/行高/
  * 内边距/最小高度/占位符/自动增高/三端输入适配全部内聚（平台 props 与高度
  * 派生统一取自 field-input.tsx 的导出常量/helper——单点收口，画布不套容器
  * 盒），差异只允许经 props 显式表达：
- * - firstBlock：只决定占位文案（空笔记引导句 vs「继续写…」），不再决定高度；
+ * - firstBlock：只决定占位文案（空计划引导句 vs「继续写…」），不再决定高度；
  * - 高度档位由「是否写过字」驱动（#2 修复）：从未写过的空段（首段/+ 添加
  *   输入框段）一律 72dp 落笔体量，写过降到两行固定底贴合内容（written 锁存，
  *   内容多则自然生长、删空回两行底不回弹大盒）——「第一个输入框正常、追加
@@ -667,7 +667,7 @@ function TextBlock({
     /** 「+ 添加输入框」后的自动聚焦（屏层 focusTextId 驱动，变化即聚焦）；
      *  媒体插入已不自动建段，不再经此通道聚焦。 */
     autoFocus?: boolean;
-    /** 落笔区位：整篇唯一段（空笔记）为 true——只切换占位文案档位。 */
+    /** 落笔区位：整篇唯一段（空计划）为 true——只切换占位文案档位。 */
     firstBlock?: boolean;
     /** 画布协作句柄：聚焦时创建「最佳位置」定位器（三端平台判定内聚）。 */
     canvas?: EditorCanvasHandle;
@@ -681,7 +681,7 @@ function TextBlock({
 }) {
     const palette = usePalette();
     const inputRef = useRef<React.ComponentRef<typeof TextInput>>(null);
-    // 写过标记（锁存）：挂载时已有内容（重开旧笔记）即为内容段；此后一旦
+    // 写过标记（锁存）：挂载时已有内容（重开旧计划）即为内容段；此后一旦
     // 写过就保持内容段档位——删空回两行固定底，不回弹 72dp 大盒（编辑中抖动源）
     const [written, setWritten] = useState(value.length > 0);
     // 本段最小高度：未写过的空段 = 72dp 落笔体量（只读态不设，阅读页空段
@@ -2721,7 +2721,7 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(funct
     const isPending = (block: JournalBlock) =>
         block.t === 'media' && block.mediaId === PENDING_MEDIA_ID;
 
-    // 空笔记（唯一一段）= 落笔区（TextBlock 的 firstBlock 位），其余段落两行固定底起
+    // 空计划（唯一一段）= 落笔区（TextBlock 的 firstBlock 位），其余段落两行固定底起
     const isFreshNote = blocks.length === 1;
 
     /** 打开块操作卡前的统一动作：收键盘（键盘态浮层以收起后的窗口布局为准，

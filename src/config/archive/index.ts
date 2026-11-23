@@ -17,7 +17,7 @@ export const archiveConfig = createConfigStore(
         'project.client.heartbeat': '',
         // 主题偏好：system（跟随系统）/ light（灰白）/ dark
         'ui.theme': 'system',
-        // 笔记媒体块对齐（单张与堆叠共用）：left（靠左，默认）/ center / right
+        // 计划媒体块对齐（单张与堆叠共用）：left（靠左，默认）/ center / right
         'ui.mediaAlign': 'left',
         // Web Desktop 全局侧栏折叠态（ui/desktop-shell 消费）：false = 默认展开
         // 常驻；true = 折叠为 48dp 窄条把手。纯展示偏好，随 config 持久化。

@@ -12,20 +12,20 @@ import { CloseButton } from './ui';
 
 /**
  * 堆叠库（v8，/notes 与 /trips 两个路由壳共用本屏，kind 区分——2026-11-19
- * 用户指令「笔记就是笔记，不是笔记和行程」：每类入口只翻自己那一类卡）：
- * 笔记堆 = 进行中的独立笔记；行程堆 = 进行中（planning + ongoing）的行程——
+ * 用户指令「计划就是计划，不是计划和行程」：每类入口只翻自己那一类卡）：
+ * 计划堆 = 进行中的独立计划；行程堆 = 进行中（planning + ongoing）的行程——
  * 已完成的进搜索（2026-11-19 用户指令「历史的都放在搜索」）。点前卡进内容
- * （笔记 → 编辑器，行程 → 详情）。顶部返回，无筛选无搜索（职责在 Me 搜索卡）。
+ * （计划 → 编辑器，行程 → 详情）。顶部返回，无筛选无搜索（职责在 Me 搜索卡）。
  *
- * 数据刷新对齐 trip-detail 的自持界面取径：笔记读 db.listNotes()，用
- * useArchiveRevision() 驱动重载（笔记 mutation 只 bump revision）；行程读
+ * 数据刷新对齐 trip-detail 的自持界面取径：计划读 db.listPlans()，用
+ * useArchiveRevision() 驱动重载（计划 mutation 只 bump revision）；行程读
  * store.trips（任一版本前进即重跑 loadAll，行程卡统计不滞留旧值）。
  *
  * 卡面从简（2026-11-19 用户指令）：只给标题 + 一行 meta（身份信息），不渲染
- * 笔记内容/行程详情；卡高由 CardPile 按竖版相纸比例自适应（长卡居中）。
+ * 计划内容/行程详情；卡高由 CardPile 按竖版相纸比例自适应（长卡居中）。
  */
 
-/** 库类型（路由壳注入）：note = 笔记堆 / trip = 行程堆。 */
+/** 库类型（路由壳注入）：note = 计划堆 / trip = 行程堆。 */
 export type LibraryKind = 'note' | 'trip';
 
 export function LibraryScreen({ kind }: { kind: LibraryKind }) {
@@ -47,14 +47,14 @@ export function LibraryScreen({ kind }: { kind: LibraryKind }) {
         if (revision > 0) void loadAll();
     }, [revision, loadAll]);
 
-    // 笔记列表（updated_at DESC，kind = 'note'）：revision 驱动重载。
-    // null = 首载未完成 → LoadingView；[] = 已查（无笔记或失败，失败经
+    // 计划列表（updated_at DESC，kind = 'note'）：revision 驱动重载。
+    // null = 首载未完成 → LoadingView；[] = 已查（无计划或失败，失败经
     // store.error 上浮，下一次 revision 自动重试）。行程堆不读库。
     const [notes, setNotes] = useState<JournalRow[] | null>(kind === 'note' ? null : []);
     useEffect(() => {
         if (kind !== 'note') return;
         let active = true;
-        db.listNotes()
+        db.listPlans()
             .then((rows) => {
                 if (active) setNotes(rows);
             })
@@ -62,7 +62,7 @@ export function LibraryScreen({ kind }: { kind: LibraryKind }) {
                 if (active) {
                     setNotes([]);
                     useArchiveStore.setState({
-                        error: `笔记列表读取失败：${caught instanceof Error ? caught.message : String(caught)}`,
+                        error: `计划列表读取失败：${caught instanceof Error ? caught.message : String(caught)}`,
                     });
                 }
             });
@@ -118,12 +118,12 @@ export function LibraryScreen({ kind }: { kind: LibraryKind }) {
                 ),
             }));
         }
-        // 笔记堆只显 open（完成的进搜索）
+        // 计划堆只显 open（完成的进搜索）
         return (notes ?? [])
             .filter((note) => note.status === 'open')
             .map((note): DeckItem => ({
             key: `note-${note.id}`,
-            onPress: () => router.push({ pathname: '/note/[id]', params: { id: note.id } } as never),
+            onPress: () => router.push({ pathname: '/plan/[id]', params: { id: note.id } } as never),
             // 卡面内容（卡壳与页码由 deck 统一绘制）：eyebrow 类型行 → 题 → 描述 → meta 行
             node: (
                 <View className="flex-1 flex-col px-6 py-5">
@@ -132,14 +132,14 @@ export function LibraryScreen({ kind }: { kind: LibraryKind }) {
                         className="text-[11px] text-ink-muted dark:text-inkd-muted"
                         style={{ fontVariant: ['tabular-nums'] }}
                     >
-                        {'笔记 · '}
+                        {'计划 · '}
                         {`更新于 ${formatEventDateTime(note.updated_at)}`}
                     </Text>
                     <Text
                         numberOfLines={2}
                         className="mt-1 text-[15px] font-semibold text-ink-text dark:text-inkd-text"
                     >
-                        {note.title?.trim() || '未命名笔记'}
+                        {note.title?.trim() || '未命名计划'}
                     </Text>
                     {note.description?.trim() ? (
                         <Text
@@ -174,7 +174,7 @@ export function LibraryScreen({ kind }: { kind: LibraryKind }) {
                             numberOfLines={1}
                             className="ml-2.5 min-w-0 flex-1 text-[20px] font-semibold text-ink-text dark:text-inkd-text"
                         >
-                            {kind === 'note' ? '笔记' : '行程'}
+                            {kind === 'note' ? '计划' : '行程'}
                         </Text>
                     </View>
                     {error ? (

@@ -228,7 +228,7 @@ async function buildDocumentHtml(): Promise<string> {
             const words = wordCount(parseBlocks(journal.blocks));
             return [
                 `<h2>${head}</h2>`,
-                `<p class="meta">${escapeHtml(journal.local_date)} · ${journal.trip_id ? '行程笔记' : '日记'} · ${words} 字</p>`,
+                `<p class="meta">${escapeHtml(journal.local_date)} · ${journal.trip_id ? '行程计划' : '日记'} · ${words} 字</p>`,
                 textLines,
             ]
                 .filter(Boolean)

@@ -6,7 +6,7 @@ import { safeBack } from './safe-back';
 /**
  * 屏头（app-screens：无 hero）：屏题 20px（字号阶第二档），副行放「发现」而非口号。
  *
- * 屏头统一规格（用户反馈「新建行程/搜索顶部与笔记编辑、行程详情不一致」，
+ * 屏头统一规格（用户反馈「新建行程/搜索顶部与计划编辑、行程详情不一致」，
  * 四屏屏头统一轮）：容器 `px-6 pt-2` + 主行 `h-11` + 返回钮 CloseButton 44
  * 圆形触感底盒 + 屏题 20px semibold——与 journal-edit / trip-detail 的内联
  * 屏头逐 dp 同规格（几何带 = insets.top + pt-2(8) + h-11(44)，四屏相等）。

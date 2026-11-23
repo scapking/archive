@@ -88,7 +88,7 @@ import { DeadEndView } from './journal-edit-screen';
  *   下一项到点再弹。任何覆盖层展开期间闹钟顺延（scrim 互斥，关闭后下一拍
  *   继续检查）；
  * - 数据面：行程项不进 store.loadAll 状态，mutation 成功 bump revision，本屏
- *   按 useArchiveRevision 局部重载（对齐事件/笔记的刷新口径）；媒体挂
+ *   按 useArchiveRevision 局部重载（对齐事件/计划的刷新口径）；媒体挂
  *   trip_media 既有链路（item_id 关联），上传复用 attachTripMedia 管线。
  */
 

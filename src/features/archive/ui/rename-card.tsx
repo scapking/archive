@@ -10,7 +10,7 @@ import { JOURNAL_TITLE_MAX } from '../journal-logic';
 
 /**
  * 日记标题重命名卡（共享组件）——原 journal-edit-screen 的 TitleRenameCard
- * （屏头编辑钮入口）与 archive-screen 的 JournalRenameCard（首页笔记卡长按
+ * （屏头编辑钮入口）与 archive-screen 的 JournalRenameCard（首页计划卡长按
  * 入口）逐行等价的重复实现在此收口；两处入口同一语义与设计语言（卡头
  * CloseButton + 无边框 inline 输入 raised/surface 焦点亮度一档变化 + 保存/
  * 取消成对动作 + scrim/Android 返回键出口）。
@@ -90,7 +90,7 @@ export function RenameCard({
                         显式动作语义，卡头 X = 逃生口，二者职责不同） */}
                     <View className="flex-row items-center justify-between">
                         <Text className="text-[15px] font-semibold text-ink-text dark:text-inkd-text">
-                            重命名笔记
+                            重命名计划
                         </Text>
                         {/* 44 视觉盒：左邻题文字非按压体，右缘贴卡内边距，无重叠核算项 */}
                         <CloseButton onPress={onClose} />
@@ -120,7 +120,7 @@ export function RenameCard({
                             returnKeyType="done"
                             // 与 store 落库钳制同源（normalizeJournalTitle / JOURNAL_TITLE_MAX）
                             maxLength={JOURNAL_TITLE_MAX}
-                            accessibilityLabel="笔记标题"
+                            accessibilityLabel="计划标题"
                         />
                     </View>
                     {saveFailed && errorText ? (

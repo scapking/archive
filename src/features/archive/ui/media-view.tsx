@@ -290,7 +290,7 @@ function MediaStatusHint({ icon, label }: { icon: React.ReactNode; label: string
 }
 
 /**
- * 块操作手势解析（媒体卡 / 首页笔记卡共用）：native/web 触屏 → 长按；web 桌面
+ * 块操作手势解析（媒体卡 / 首页计划卡共用）：native/web 触屏 → 长按；web 桌面
  * → 双击消歧。返回接进 BouncyPressable / Pressable 的 onPress / onLongPress
  * 与卸载清理。
  */

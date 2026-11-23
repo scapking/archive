@@ -116,7 +116,7 @@ export function useThemePref(): [ThemePref, (pref: ThemePref) => void] {
 }
 
 /**
- * 笔记媒体块对齐偏好（单张与堆叠共用，日记/事件编辑器同源消费）：
+ * 计划媒体块对齐偏好（单张与堆叠共用，日记/事件编辑器同源消费）：
  * left（靠左，默认）/ center（居中）/ right（靠右）。纯展示偏好，无生效副作用
  * （区别于 useThemePref 的 colorScheme.set）——消费方在渲染处直接读值。
  */

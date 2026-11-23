@@ -36,7 +36,7 @@ import { camera } from '@/core/camera';
  *     抬高 14dp（insets.bottom + 34；用户口径「太贴边，操作不便」）——
  *     模式切换行、相册兜底、取消丢弃钮已全部删除：**模式由 + 菜单入口的
  *     initialMode 唯一决定**（拍照入口=纯拍照、拍视频入口=纯视频，相机内
- *     不提供切换，F1 模式切换竞态随功能删除）；丢弃走「停止落库后笔记内
+ *     不提供切换，F1 模式切换竞态随功能删除）；丢弃走「停止落库后计划内
  *     删除」，相机画面更纯净；frontend-design「spend boldness in one
  *     place」收口到极致。快门 absolute 居中保证「真居中」不依赖左右配平。
  *   控件规格统一：44dp 圆形 white/10 触感底（命中 ≥44）、图标 20/stroke
@@ -166,7 +166,7 @@ export function CameraCaptureOverlay({
      *  整体释放，快门/翻转经 stopPendingRef 逻辑闸住——无 spinner/禁用态
      *  编排（关窗即反馈；护栏兜底下窗口有界）。 */
     stopPending: boolean;
-    /** 归属提示（owner 笔记展示名，录制中展示「停止后保存到 X」）。 */
+    /** 归属提示（owner 计划展示名，录制中展示「停止后保存到 X」）。 */
     ownerHint: string | null;
     /** 向全局会话登记硬件句柄（ref 绑定的原生停录/取消句柄；卸载时登记 null）。
      *  停止编排已上收会话层——本组件不持有停止等待逻辑（停止链路头注）。 */
@@ -640,7 +640,7 @@ export function CameraCaptureOverlay({
                                     {/* 录制状态（是状态不是控件，pointerEvents none——
                                         顶部零交互面）：REC 红点 + 计时（系统相机 REC
                                         位）+ 归属提示（#归属铁律可视化：停止产物固定
-                                        落回发起笔记）px-16 让开屏缘与右上关闭钮，
+                                        落回发起计划）px-16 让开屏缘与右上关闭钮，
                                         numberOfLines=1。呼吸红点（三卡同款唯一数据
                                         色）+ 计时（tabular-nums 房规） */}
                                     {recording ? (

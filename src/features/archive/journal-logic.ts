@@ -151,7 +151,7 @@ export function wordCount(blocks: JournalBlock[]): number {
     return blocks.reduce((sum, block) => (block.t === 'p' ? sum + block.text.length : sum), 0);
 }
 
-// ─── 笔记标题（v4，DEV.md #6）────────────────────────────────────────────────
+// ─── 计划标题（v4，DEV.md #6）────────────────────────────────────────────────
 
 /** 标题长度上限（输入框 maxLength 与此同源；store 落库前钳制，防绕过 UI 直写）。 */
 export const JOURNAL_TITLE_MAX = 60;
@@ -167,12 +167,12 @@ export function normalizeJournalTitle(title: string): string | null {
 }
 
 /**
- * 独立笔记（v8，journals.kind = 'note'）描述长度上限：定位类似行程 description
+ * 独立计划（v8，journals.kind = 'note'）描述长度上限：定位类似行程 description
  * 的摘要行（正文细节在 blocks）。创建与更新均「超长整体拒绝不走截断」（对齐
  * 事件标题的校验口径——表单里用户明确输入的独立字段，静默截断会造成「以为存
  * 上了」的错觉；UI maxLength 与此同源，这里是绕过 UI 直写的第二道闸）。
  */
-export const NOTE_DESCRIPTION_MAX = 500;
+export const PLAN_DESCRIPTION_MAX = 500;
 
 /** 是否可继续写：只有 open 状态的日记可编辑（手动完成 / 24:00 自动收笔后只读）。 */
 export function isEditable(status: JournalStatus): boolean {

@@ -72,7 +72,7 @@ import { EventSettingsCard } from './ui/event-settings-card';
  *  （GestureDetector 宿主 View）分离，手势命中坐标不被动画 transform 偏移；
  *   连滑竞态：stopAnimation + setValue 打断在跑动画重设起点 + fetch 层序号
  *   守卫，最终态恒一致；
- * - **搜索职责已迁出**（合并至 /search 事件结果区，与笔记/行程同口径）：本页
+ * - **搜索职责已迁出**（合并至 /search 事件结果区，与计划/行程同口径）：本页
  *   只剩状态筛选维度，无关键词检索面（页头以留白收敛，不加线不加新元素）；
  * - **可靠性口径**（沿用 me/search 页成规）：300ms 防抖 + 请求序号守卫（慢的
  *   旧 in-flight 响应不得覆盖新结果）；revision 驱动的重载走同一防抖通道

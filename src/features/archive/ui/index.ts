@@ -6,7 +6,7 @@ export { BlockEditor, EditorToolbar } from './editor';
 // PENDING_MEDIA_ID 的事实源在 db/schema.ts：editor 与本 barrel 都只是 re-export
 // （v5 require cycle 修复终态），ui 层不再有任何自定义字面量定义点。
 export { PENDING_MEDIA_ID } from '../db';
-// ActionMenuCard：长按操作菜单卡共享组件（首页行程卡/笔记卡菜单、Me 导出菜单
+// ActionMenuCard：长按操作菜单卡共享组件（首页行程卡/计划卡菜单、Me 导出菜单
 // 同语言收口；DayActionCard/chooser 的通用化）。依赖面 = react-native +
 // core/icons + ./close-button + ./editor-icons + ./theme，不回头依赖 store/ui，无环。
 export { ActionMenuCard, type ActionMenuRow } from './action-menu-card';
@@ -32,7 +32,7 @@ export {
 export { InsertMenu, type InsertAction } from './insert-menu';
 export { LineChart } from './line-chart';
 export { LoadingView } from './loading-view';
-// useBlockActionGestures：长按/双击消歧手势解析（媒体块与首页笔记卡共用，
+// useBlockActionGestures：长按/双击消歧手势解析（媒体块与首页计划卡共用，
 // prefersDoubleClickActions 是它的 pointer: fine 探测口径）
 export {
     MediaImage,
@@ -46,7 +46,7 @@ export { PrimaryButton } from './primary-button';
 export { ProgressBar, ProgressLabel } from './progress';
 export { RecordingOverlay, isRecordingSupported, type RecordingResult } from './recorder-overlay';
 // RenameCard：日记标题重命名卡共享组件（journal-edit 屏头编辑钮 / archive 首页
-// 笔记卡长按两入口收口）。依赖面 = react-native + core/icons + ./close-button +
+// 计划卡长按两入口收口）。依赖面 = react-native + core/icons + ./close-button +
 // ./theme + ../journal-logic（JOURNAL_TITLE_MAX，纯逻辑叶模块），均不回头依赖
 // store/ui，无环。
 export { RenameCard } from './rename-card';

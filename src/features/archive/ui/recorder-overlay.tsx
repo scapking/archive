@@ -309,7 +309,7 @@ export function RecordingOverlay({
      *  （RN Animated opacity/transform）+ 交互整体释放——不做 spinner/在途文
      *  案停留（用户口径：关窗即返回，保存后台自动完成），落库结果由横幅反馈。 */
     stopping?: boolean;
-    /** 归属提示（owner 笔记展示名；归属铁律的可视化——跨页面停止时用户能
+    /** 归属提示（owner 计划展示名；归属铁律的可视化——跨页面停止时用户能
      *  看到产物去向）。null = 不展示。 */
     ownerHint?: string | null;
     /** 收起覆盖层（录音继续后台执行，chip 承接）。 */
@@ -401,7 +401,7 @@ export function RecordingOverlay({
                         {formatAudioTime(elapsedSec)}
                     </Text>
 
-                    {/* 归属提示（#归属铁律可视化）：停止产物固定落回发起笔记 */}
+                    {/* 归属提示（#归属铁律可视化）：停止产物固定落回发起计划 */}
                     {ownerHint ? (
                         <Text className="mt-2 text-center text-[12px] text-white/50">
                             {`停止后保存到「${ownerHint}」`}

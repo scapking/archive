@@ -17,7 +17,7 @@ import { Sidebar } from './sidebar';
  * Web Desktop 全局壳（2026-11-11 侧边栏常驻改造）：
  *
  * 背景：侧栏原本只挂在 (tabs) 布局里（≥1024 隐藏底部标签栏 + 左侧栏），
- * root Stack push 的屏（笔记编辑 /trip/[id]/write/[date]、事件新建 /events/new、
+ * root Stack push 的屏（计划编辑 /trip/[id]/write/[date]、事件新建 /events/new、
  * 行程详情 /trip/[id]、搜索等）整窗覆盖，侧栏消失。本模块把侧栏提升为根布局
  * 层的常驻 chrome——app/_layout 渲染 <DesktopShell><Stack/></DesktopShell>，
  * 宽屏下 Stack 落在侧栏右侧 flex-1 容器内，任何 push 都不再盖住侧栏；

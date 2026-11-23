@@ -32,18 +32,18 @@ import { LineChart, LoadingView, usePalette } from './ui';
  * - 身份行：纯文本标题行（无头像/UID），连续天数只在此出现一次——KPI 不再
  *   重复渲染同语义数值（去重后 3 格收单行）；
  * - 指标：3 格 KPI 单行 + 曲线并作一张 surface 卡（连续天数已在身份行，KPI
- *   去重后由 2×2 收单行）。2026-11-20 迭代终态：事件三态/笔记数/历史行程数
+ *   去重后由 2×2 收单行）。2026-11-20 迭代终态：事件三态/计划数/历史行程数
  *   **不进指标卡**（8 格三行被否「太密集」、3 格 + 弱化明细行被否「太丑」，
  *   两案均退役），改挂「我的内容」对应行尾（iOS 设置行尾值范式，见内容卡
  *   注）——指标卡保持原版三格体量。**去线自然化（2026-11 用户反馈
  *   「线条划分怪怪的」）**：KPI 格间竖线、KPI 与曲线段横线全部拆除，卡内
  *   分区靠留白不靠线（Apple Journal 卡片节奏，同 event-card 口径）——格间
  *   24px（px-3×2）留白、曲线段与 KPI 段 24px（py-3×2）纵向节奏；
- * - 内容：搜索 / 事件 / 笔记 / 行程行并作**一张** rounded-card surface 卡
- *   （2026-11 用户反馈「合并为一个卡片」口径延续；笔记行 → /notes、行程行 → /trips
+ * - 内容：搜索 / 事件 / 计划 / 行程行并作**一张** rounded-card surface 卡
+ *   （2026-11 用户反馈「合并为一个卡片」口径延续；计划行 → /notes、行程行 → /trips
  *   堆叠库（各自只翻自己的卡），卡片本身只显示名字不预览内容）。**行尾弱化
  *   计数（2026-11-20）**：事件行尾「进行 X · 完成 Y · 失败 Z」（状态词与事件
- *   筛选两字词表同源）、笔记行尾「N 篇」、行程行尾「进行 X · 历史 Y」——
+ *   筛选两字词表同源）、计划行尾「N 篇」、行程行尾「进行 X · 历史 Y」——
  *   数据 = metrics.eventCounts / metrics.noteCount / store.trips 派生，数字
  *   跟着入口走，不在指标卡另立格子。卡内行与行**零线条**：
  *   行间分隔完全交给留白与行内 padding 节奏（入口行 h-12 单行），无任何
@@ -168,8 +168,8 @@ export function MeScreen() {
     const loadAll = useArchiveStore((s) => s.loadAll);
     const revision = useArchiveRevision();
 
-    // 指标保鲜（2026-11-20 新增事件/笔记 KPI 后必须诚实）：Me 常驻栈内不卸载，
-    // revision 型 mutation 前进即重跑 loadAll（事件三态/笔记数/行程派生计数不
+    // 指标保鲜（2026-11-20 新增事件/计划 KPI 后必须诚实）：Me 常驻栈内不卸载，
+    // revision 型 mutation 前进即重跑 loadAll（事件三态/计划数/行程派生计数不
     // 滞留旧值）；revision = 0 启动基线由上一 effect 独占（library-screen 同款
     // 双 effect 取径）。
     useEffect(() => {
@@ -211,7 +211,7 @@ export function MeScreen() {
                 >
                     {/* 指标卡：3 格 KPI 单行 + 30 天曲线并作一张 surface 卡（连续天数
                         已在身份行，KPI 去重后收单行）。2026-11-20 迭代终态：事件三态/
-                        笔记数/历史行程数**不进指标卡**（8 格三行被否「太密集」、弱化
+                        计划数/历史行程数**不进指标卡**（8 格三行被否「太密集」、弱化
                         明细行被否「太丑」），改挂「我的内容」对应行尾（iOS 设置行尾
                         值范式——数字跟着入口走，见内容卡注）。**无任何内部分隔线**：
                         KPI 格间靠两侧 px-3 留白相加（24px），曲线段与 KPI 段靠 py-3×2
@@ -252,10 +252,10 @@ export function MeScreen() {
                         </Enter>
                     </View>
 
-                    {/* 我的内容：一张卡（搜索 / 事件 / 笔记 / 行程，卡内零线条——行间
+                    {/* 我的内容：一张卡（搜索 / 事件 / 计划 / 行程，卡内零线条——行间
                         靠 py 节奏与 px-4 统一左缘自然过渡，无 hairline）。卡壳不做整体
                         动画：行作为内容单元交错淡入，卡面作为安静的「底」先立住。
-                        typedRoutes：'/search'、'/events'、'/notes'、'/trips'、'/settings' 尚未进
+                        typedRoutes：'/search'、'/events'、'/plans'、'/trips'、'/settings' 尚未进
                         .expo/types 路由联合（本组不跑 Metro，字面量由 metro 启动时生成）
                         ——`as never` 是最小妥协（never 可赋给任何联合，不产生 any 的
                         误拓宽），类型生成后可直接删除断言。 */}
@@ -271,10 +271,10 @@ export function MeScreen() {
                                     icon={<LucideSearch size={18} strokeWidth={1.9} color={palette.secondary} />}
                                     label="搜索"
                                     onPress={() => router.push('/search' as never)}
-                                    accessibilityLabel="搜索笔记与行程"
+                                    accessibilityLabel="搜索计划与行程"
                                 />
                             </Enter>
-                            {/* 行尾计数（2026-11-20 终态：事件三态/笔记数/行程两态挂
+                            {/* 行尾计数（2026-11-20 终态：事件三态/计划数/行程两态挂
                                 对应入口行尾——数字跟着入口走，不占指标卡版面） */}
                             <Enter delay={280 + ENTER_STAGGER}>
                                 <ContentEntryRow
@@ -285,19 +285,19 @@ export function MeScreen() {
                                     accessibilityLabel="事件"
                                 />
                             </Enter>
-                            {/* 笔记行 → /notes 笔记堆（只翻独立笔记卡；卡片只显示
-                                「笔记」二字不预览内容；2026-11-19 用户指令删除
+                            {/* 计划行 → /notes 计划堆（只翻独立计划卡；卡片只显示
+                                「计划」二字不预览内容；2026-11-19 用户指令删除
                                 「日记」行——日记入口在首页 /write） */}
                             <Enter delay={280 + ENTER_STAGGER * 2}>
                                 <Pressable
-                                    onPress={() => router.push('/notes' as never)}
+                                    onPress={() => router.push('/plans' as never)}
                                     className="flex-row items-center gap-3 px-4 py-3.5 active:bg-ink-raised dark:active:bg-inkd-raised"
                                     accessibilityRole="button"
-                                    accessibilityLabel="笔记"
+                                    accessibilityLabel="计划"
                                 >
                                     <LucideNotebookPen size={18} strokeWidth={1.9} color={palette.secondary} />
                                     <Text className="flex-1 text-[14px] font-medium text-ink-text dark:text-inkd-text">
-                                        笔记
+                                        计划
                                     </Text>
                                     <Text
                                         numberOfLines={1}
@@ -310,8 +310,8 @@ export function MeScreen() {
                                 </Pressable>
                             </Enter>
                             {/* 行程行（2026-11-19 用户指令澄清）：卡片恒显「行程」二字
-                                不展开内容，点按 → /library 堆叠库（笔记与行程翻卡，
-                                点卡进笔记编辑/行程详情） */}
+                                不展开内容，点按 → /library 堆叠库（计划与行程翻卡，
+                                点卡进计划编辑/行程详情） */}
                             <Enter delay={280 + ENTER_STAGGER * 3}>
                                 <Pressable
                                     onPress={() => router.push('/trips' as never)}

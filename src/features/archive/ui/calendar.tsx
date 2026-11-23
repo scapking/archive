@@ -9,7 +9,7 @@ import { usePalette } from './theme';
  * 双主题走 ink/inkd token，颜色只上数据——
  *
  * 标记口径（打点，accent 强度分档）：
- * - 笔记日：accent 实心点（强，日记是主内容）；
+ * - 计划日：accent 实心点（强，日记是主内容）；
  * - 行程日：accent 40% 透明点（弱，行程是区间背景信息）；
  * - 双有：两枚点并排。选中片的底色接近黑/白（主行动口径），此时点切换为
  *   accent-bright 保对比度（仍是 accent 家族，不引入新色相）。
@@ -26,7 +26,7 @@ import { usePalette } from './theme';
  * Date（铁律：本地日期字符串为准，禁止 UTC 时间戳判断「哪天」）。
  */
 
-/** 单日标记：该日是否有笔记 / 是否落在行程区间内。 */
+/** 单日标记：该日是否有计划 / 是否落在行程区间内。 */
 export interface CalendarDayMark {
     journal: boolean;
     trip: boolean;
@@ -105,7 +105,7 @@ const DayCell = memo(function DayCell({
                 onPress={() => onPress(date)}
                 accessibilityRole="button"
                 accessibilityState={{ selected }}
-                accessibilityLabel={`${date}${mark?.journal ? '，有笔记' : ''}${mark?.trip ? '，有行程' : ''}`}
+                accessibilityLabel={`${date}${mark?.journal ? '，有计划' : ''}${mark?.trip ? '，有行程' : ''}`}
                 // 条件类铁律：两侧变量集合恒等（bg-* 同槽位；active: 变体两侧同串）
                 className={
                     selected

@@ -84,7 +84,7 @@ export const ARCHIVE_MIGRATIONS: SchemaMigration[] = [
         version: 4,
         statements: [
             // v4（DEV.md #4/#6/#7）：
-            // ① journals.title 笔记标题：可空（NULL = 未命名），存量行 ALTER 后自动为 NULL，
+            // ① journals.title 计划标题：可空（NULL = 未命名），存量行 ALTER 后自动为 NULL，
             //    无需回填；列表/搜索侧对 NULL 回退到日期与正文预览（UI 层决策）。
             'ALTER TABLE journals ADD COLUMN title TEXT',
             // ② trip_media 行程内媒体：行程独立容器化后，图/视频/录音直接挂行程。
@@ -143,22 +143,22 @@ export const ARCHIVE_MIGRATIONS: SchemaMigration[] = [
     {
         version: 8,
         statements: [
-            // v8（独立笔记实体）：复用 journals 表承载「日记」与「独立笔记」两类容器，
+            // v8（独立计划实体）：复用 journals 表承载「日记」与「独立计划」两类容器，
             // 新增 kind 列区分——journal_media 引用、块编辑器、保存链路、搜索、删除
             // 级联全部原样复用，单独建表 = 整套媒体/块管线重复实现。
             // kind：'daily' = 日记（原语义：一天一篇、24:00 自动收笔，含行程内日记），
-            // 'note' = 独立笔记（用户显式新建、同日任意多篇、status 恒 'open'）。
+            // 'note' = 独立计划（用户显式新建、同日任意多篇、status 恒 'open'）。
             // NOT NULL + DEFAULT 'daily'：存量行 ALTER 后全部落 'daily'（v8 前表里
             // 只存在日记），无需数据回填。JOURNALS_DDL 常量保持 v2 建表形状不动
             // （v7 教训：全新装先跑旧 DDL 再跑本迁移 ALTER，DDL 提前带新列会
             // duplicate column 崩迁移链）。
             "ALTER TABLE journals ADD COLUMN kind TEXT NOT NULL DEFAULT 'daily'",
-            // 独立笔记的短描述（选填，类似行程 description）：NOT NULL DEFAULT ''，
+            // 独立计划的短描述（选填，类似行程 description）：NOT NULL DEFAULT ''，
             // daily 行恒为 ''（日记无描述语义），无需回填。
             "ALTER TABLE journals ADD COLUMN description TEXT NOT NULL DEFAULT ''",
             // 同日唯一索引收窄到日记：原索引（v3）对 (COALESCE(trip_id,''), local_date)
-            // 全量唯一，而「一天一篇」是日记的产品语义不是笔记的——不收窄则同日第二篇
-            // 笔记 INSERT 直接撞索引建不出来。先 DROP 再重建（部分索引加 kind 过滤），
+            // 全量唯一，而「一天一篇」是日记的产品语义不是计划的——不收窄则同日第二篇
+            // 计划 INSERT 直接撞索引建不出来。先 DROP 再重建（部分索引加 kind 过滤），
             // v3 的两条语义不变：COALESCE 归一 NULL trip_id（日常日记拦得住）、软删行
             // 不占唯一名额。收窄只放宽约束：存量数据本就满足更严的旧索引，必然满足
             // 新索引，无需 v3 那样的重复行清史。

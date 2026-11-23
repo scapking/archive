@@ -15,7 +15,7 @@ import { DateInput, isDateInputComplete, LoadingView, ScreenHeader, usePalette }
  * （结果 deck 与卡面随迁，本页不再渲染任何结果态）。
  *
  * 三种检索输入的合并语义（结果屏按规格消费）：
- * - 关键词：标题/正文（笔记）、标题/描述（行程）、标题/描述/对象/处理人（事件）LIKE；
+ * - 关键词：标题/正文（计划）、标题/描述（行程）、标题/描述/对象/处理人（事件）LIKE；
  * - 时间范围分段（全部/近7天/近30天/自定义）：约束搜索窗口；
  * - 日历选中日：比范围更具体的「单日窗口」{ from: d, to: d }，点日期即跳结果
  *   屏（关键词可与之叠加）；再点同日 = 反选，仅清高亮不跳转。
@@ -61,7 +61,7 @@ export function SearchScreen() {
     const [inputFocused, setInputFocused] = useState(false);
 
     // ─── 日历打点数据 ────────────────────────────────────────────────────────
-    // 笔记打点：db.journalDates（最近 400 个有笔记的日期，装饰性数据足够）；
+    // 计划打点：db.journalDates（最近 400 个有计划的日期，装饰性数据足够）；
     // 行程打点：store.trips 区间派生（store 响应式，增删行程自动跟手）。
     const [journalDates, setJournalDates] = useState<Set<string>>(() => new Set());
     useEffect(() => {
@@ -199,7 +199,7 @@ export function SearchScreen() {
                         <LucideSearch size={16} strokeWidth={1.9} color={palette.muted} />
                         <TextInput
                             className="h-full min-w-0 flex-1 text-[15px] text-ink-text dark:text-inkd-text"
-                            placeholder="搜索日记、笔记、行程与事件"
+                            placeholder="搜索日记、计划、行程与事件"
                             placeholderTextColor={palette.muted}
                             value={query}
                             onChangeText={setQuery}
@@ -279,7 +279,7 @@ export function SearchScreen() {
                         </View>
                     ) : null}
 
-                    {/* 日历：打点 = 有笔记（强 accent）/ 行程日（弱 accent）；点选日期
+                    {/* 日历：打点 = 有计划（强 accent）/ 行程日（弱 accent）；点选日期
                         即带单日窗口跳结果屏（再点同日反选仅清高亮）。卡体无边框
                         （#13 收敛：surface-on-base tone 分层，同 me 曲线卡） */}
                     <View className="mt-3 rounded-card bg-ink-surface p-3 dark:bg-inkd-surface">
@@ -300,7 +300,7 @@ export function SearchScreen() {
                             输入关键词、选好范围，或点日历里的日期
                         </Text>
                         <Text className="mt-1.5 text-center text-[13px] leading-5 text-ink-muted dark:text-inkd-muted">
-                            点键盘「搜索」或点日历日期，在结果页翻看日记、笔记、行程与事件
+                            点键盘「搜索」或点日历日期，在结果页翻看日记、计划、行程与事件
                         </Text>
                     </View>
                 </ScrollView>

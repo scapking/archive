@@ -8,7 +8,7 @@
  * - v1 的碎片流（entries/photos）为灰度前形态，v2 直接弃用（发布前 schema 重置）。
  *
  * v4 追加（DEV.md #4/#6/#7，迁移见 migrations.ts）：
- * - journals.title：笔记标题（可空）；
+ * - journals.title：计划标题（可空）；
  * - trip_media：行程内媒体（行程独立容器化后媒体直接挂行程）；
  * - trips 持续性：end_date 支持 TRIP_OPEN_ENDED 哨兵（零 DDL，语义见常量注释）。
  *
@@ -31,16 +31,16 @@
  *   联系方式字段（工单语义：能直接拨/能直接发），可被搜索（db.searchEvents
  *   六通道 LIKE）。
  *
- * v8 追加（独立笔记实体）：
+ * v8 追加（独立计划实体）：
  * - journals 复用为两类实体的容器，kind 列区分：'daily' = 一天一篇的日记
  *   （原语义：同日唯一、24:00 自动收笔，status 可 open/closed；含行程内日记），
- *   'note' = 独立笔记（用户显式新建、同日任意多篇、不受同日唯一/收笔约束，
+ *   'note' = 独立计划（用户显式新建、同日任意多篇、不受同日唯一/收笔约束，
  *   status 恒 'open'，local_date 仅记录创建日供展示/排序）。复用建表而非单独
  *   建表的原因：journal_media 引用、块编辑器、保存链路、搜索、删除级联全部
  *   原样复用，单独建表 = 整套媒体/块管线重复实现；
- * - journals.description：独立笔记的短描述（选填，类似行程 description；
+ * - journals.description：独立计划的短描述（选填，类似行程 description；
  *   NOT NULL DEFAULT ''，daily 行恒为 ''）；
- * - 同日唯一索引收窄到 kind = 'daily'（v3 的全量唯一会拦住同日第二篇笔记，
+ * - 同日唯一索引收窄到 kind = 'daily'（v3 的全量唯一会拦住同日第二篇计划，
  *   迁移细节见 migrations.ts v8）。两列均 ALTER 追加，JOURNALS_DDL 常量保持
  *   v2 建表形状不动（v7 教训：全新装先跑旧 DDL 再跑 v8 ALTER，DDL 提前带
  *   新列会 duplicate column 崩迁移链）。
@@ -76,15 +76,15 @@ export const PENDING_MEDIA_ID = '__pending__';
 export const TRIP_OPEN_ENDED = 'open';
 
 /** 日记状态：open = 可继续写；closed = 已收笔（手动完成或跨日自动）。
- *  独立笔记（v8）不受收笔语义约束，status 恒 'open'。 */
+ *  独立计划（v8）不受收笔语义约束，status 恒 'open'。 */
 export type JournalStatus = 'open' | 'closed';
 
 /**
- * journals 行的实体种类（v8）：journals 表同时承载「日记」与「独立笔记」两类
+ * journals 行的实体种类（v8）：journals 表同时承载「日记」与「独立计划」两类
  * 容器（媒体/块/保存/搜索/删除管线全量复用，复用理由见文件头 v8 段）：
  * - daily：一天一篇的日记（原语义，含行程内日记）——受同日唯一索引约束、
  *   参与本地时区 24:00 自动收笔；
- * - note：独立笔记——用户显式新建（像建行程一样走表单，不随日期自动建页），
+ * - note：独立计划——用户显式新建（像建行程一样走表单，不随日期自动建页），
  *   同日任意多篇，不参与收笔语义；local_date 仅记录创建日（展示/排序用，
  *   无「归属日」约束）。
  * 「一天一篇」「24:00 自动收笔」等 daily 专属判定一律带 kind 过滤（db 层各
@@ -129,13 +129,13 @@ export interface TripRow {
 
 export interface JournalRow {
     id: string;
-    trip_id: string | null; // null = 日常日记 / 独立笔记（note 恒 null，不从属行程）
+    trip_id: string | null; // null = 日常日记 / 独立计划（note 恒 null，不从属行程）
     local_date: string; // YYYY-MM-DD（note = 创建日，仅展示/排序用）
-    /** 笔记标题（v4，DEV.md #6）：可空，null = 未命名（列表回退到日期/预览）。 */
+    /** 计划标题（v4，DEV.md #6）：可空，null = 未命名（列表回退到日期/预览）。 */
     title: string | null;
     /** 实体种类（v8）：语义见 JournalKind；存量行经 v8 ALTER 默认全部 'daily'。 */
     kind: JournalKind;
-    /** 独立笔记短描述（v8，选填，类似行程 description）：NOT NULL DEFAULT ''，
+    /** 独立计划短描述（v8，选填，类似行程 description）：NOT NULL DEFAULT ''，
      *  daily 行恒为 ''（日记无描述语义）；空串与 null title 同由展示层兜底。 */
     description: string;
     blocks: string; // JSON: JournalBlock[]
@@ -191,7 +191,7 @@ export const TRIPS_DDL = `CREATE TABLE IF NOT EXISTS trips (
 // 同日唯一约束不在建表 DDL 内（表达式索引建不进 CREATE TABLE），由迁移保证：
 // v3 建 idx_journals_trip_date_unique ON journals(COALESCE(trip_id, ''), local_date)
 // WHERE deleted_at IS NULL——NULL trip_id 归一、软删行不占名额；v8 收窄为
-// WHERE deleted_at IS NULL AND kind = 'daily'（「一天一篇」是日记语义，独立笔记
+// WHERE deleted_at IS NULL AND kind = 'daily'（「一天一篇」是日记语义，独立计划
 // 同日任意多篇；只放宽约束，存量数据天然满足，无需清史）。详见 migrations.ts v3/v8。
 export const JOURNALS_DDL = `CREATE TABLE IF NOT EXISTS journals (
     id TEXT PRIMARY KEY NOT NULL,

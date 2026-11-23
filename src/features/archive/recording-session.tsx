@@ -22,10 +22,10 @@ import {
  * 两条铁律：
  * 1. **跨页面后台录制**：状态与控制器全部挂根层级（app/_layout.tsx 渲染
  *    <RecordingSessionHost />，位于 <Stack> 之后的兄弟节点 = 全部屏之上），
- *    录音/录像不依赖任何屏的存活——从 A 笔记发起后切到任意页面（B 笔记 /
+ *    录音/录像不依赖任何屏的存活——从 A 计划发起后切到任意页面（B 计划 /
  *    tab 页 / viewer）录制继续；展开覆盖层与收起悬浮 chip 都在根层级条件
  *    渲染，任意页面可重开无缝恢复（状态一直在会话层，重开零重启动）。
- * 2. **归属铁律**：会话绑定发起时的编辑上下文 owner（v6.1 泛化：journal 笔记
+ * 2. **归属铁律**：会话绑定发起时的编辑上下文 owner（v6.1 泛化：journal 计划
  *    或 event 工单，见 CaptureOwner）；停止产物走 persistCaptureProduct →
  *    store.attachJournalMedia / attachEventMedia（媒体行）→
  *    store.appendMediaBlockToJournal / appendMediaBlockToEvent（DB 级块追加，
@@ -72,7 +72,7 @@ import {
  * 不知道有无产物）完成后**立即终结 UI 会话**（卡片 ~160ms 淡出关闭、chip
  * 消失，无 spinner 停留）；**落库段转后台**（无进度增量护栏——连续 30s 无进度
  *  拍点才判超时，web 大文件流式落盘不再被固定总时长误杀；任务注册进会话级
- * 后台落库注册表，收敛时成功静默（媒体块出现在笔记即反馈，2026-11-09 用户
+ * 后台落库注册表，收敛时成功静默（媒体块出现在计划即反馈，2026-11-09 用户
  * 口径）/失败文案上浮）。后台落库
  * 期间允许立即开新会话（落库是 IO+DB、录制是相机/麦克风，零资源冲突；
  * persisting 相位只作收笔等待痕迹，不渲染任何 UI）。「完成收笔」经
@@ -92,7 +92,7 @@ export type CaptureKind = 'audio' | 'video';
 
 /**
  * 录制会话归属（v6.1 泛化，拍照/录像/录音接入事件工单的前提）：
- * - { kind: 'journal', id } = 笔记（journal-edit-screen 发起，旧口径）；
+ * - { kind: 'journal', id } = 计划（journal-edit-screen 发起，旧口径）；
  * - { kind: 'event', id } = 事件工单（event-detail-screen 发起）。
  * 停止产物按 kind 分派落库链（attach/append 的 journal/event 双侧）；
  * persist 事件与 zustand 状态上的 ownerJournalId 为 journal 归属的兼容投影
@@ -130,7 +130,7 @@ interface RecordingSessionState {
     /**
      * ownerJournalId（兼容投影，journal-edit-screen 未迁移消费面专用——
      * persist 订阅 / + 菜单归属提示 / 收笔 owner 判定三处读它）：journal 归属
-     * = 该笔记 id；事件归属 = null（旧消费点的 `=== 本篇 id` 判定天然为
+     * = 该计划 id；事件归属 = null（旧消费点的 `=== 本篇 id` 判定天然为
      * false，归属铁律不被破坏）。新消费点一律读 owner。
      */
     ownerJournalId: string | null;
@@ -229,7 +229,7 @@ export interface RecordingSessionPersistEvent {
     owner: CaptureOwner;
     /**
      * ownerJournalId（兼容投影，journal-edit-screen 未迁移消费面专用）：
-     * journal 归属 = 该笔记 id（旧消费点 `event.ownerJournalId !== row.id`
+     * journal 归属 = 该计划 id（旧消费点 `event.ownerJournalId !== row.id`
      * 判定照常成立）；事件归属 = null（旧判定天然 false，不误合并）。
      */
     ownerJournalId: string | null;
@@ -306,7 +306,7 @@ function isSessionSettling(phase: CapturePhase): boolean {
  * 消失（宿主按相位不渲染采集 UI，CameraView/录音机随卸载释放——产物已
  * 到手，卸载即停不再伤及录制）；kind/ownerJournalId/startedAt 仅作落库期
  * 痕迹保留——「完成收笔」据此路由进 stopCaptureSession 的等待分支（防
- * 「停后立即收笔」以旧快照封存笔记的丢块竞态），新会话可立即发起
+ * 「停后立即收笔」以旧快照封存计划的丢块竞态），新会话可立即发起
  * （startCaptureSession 对 persisting 放行，begin 原子顶替痕迹）。
  */
 function enterPersistingPhase(): void {
@@ -323,7 +323,7 @@ function enterPersistingPhase(): void {
  * 发起会话（屏层 + 菜单入口）：已有会话 → 拒绝并给 reason（可见反馈）；
  * **persisting（后台落库期）放行**——落库是 IO+DB、新录制是相机/麦克风，
  * 零资源冲突，begin() 原子顶替痕迹，旧会话的后台任务经注册表独立收敛
- * （token 防串）。owner 必须是发起时编辑上下文的归属（journal 笔记或事件
+ * （token 防串）。owner 必须是发起时编辑上下文的归属（journal 计划或事件
  * 工单，见 CaptureOwner；journal-edit-screen 传裸 id 走 journal 归属兼容），
  * 编辑屏经 ensureJournal / 详情页 event 行就绪保证写前有 id，此处兜底空 id
  * 拒绝。
@@ -337,7 +337,7 @@ export function startCaptureSession(
     if (!normalizedOwner.id) {
         return {
             ok: false,
-            reason: normalizedOwner.kind === 'event' ? '事件尚未就绪，稍后再试。' : '笔记尚未就绪，稍后再试。',
+            reason: normalizedOwner.kind === 'event' ? '事件尚未就绪，稍后再试。' : '计划尚未就绪，稍后再试。',
         };
     }
     const state = useRecordingSessionStore.getState();
@@ -372,7 +372,7 @@ const SALVAGE_WINDOW_MS = 15000;
  * PERSIST_STALL_TIMEOUT_MS 无任何进度拍（进度回调/任务收敛均刷新活跃时刻）
  * 才判超时。理由：web 端大视频流式落盘合法耗时可达分钟级（旧 30s 固定护栏
  * 会对健康的慢任务弹假「保存超时」）；本地存储/DB 真挂死时同样先收场任务
- * 并给明确口径（落库链仍在后台继续，完成后媒体自然出现在笔记中，失败由
+ * 并给明确口径（落库链仍在后台继续，完成后媒体自然出现在计划中，失败由
  * store 具体文案上浮）。
  */
 const PERSIST_STALL_TIMEOUT_MS = 30000;
@@ -545,7 +545,7 @@ async function persistMediaToOwner(input: {
     // 先本地合并（owner 屏）、后 DB 追加：此后屏幕保存快照必含媒体块（头注口径）
     emitPersist({
         owner,
-        // 兼容投影：journal 归属 = 笔记 id，事件归属 = null（旧消费点判定天然 false）
+        // 兼容投影：journal 归属 = 计划 id，事件归属 = null（旧消费点判定天然 false）
         ownerJournalId: ownerJournalIdCompat(owner),
         mediaId,
         kind: input.mediaKind,
@@ -572,7 +572,7 @@ async function persistMediaToOwner(input: {
 /**
  * 迟到产物抢救入库（护栏超时后素材才落地）：按原归属走落库核心，**不触碰
  * 会话状态**（会话已被护栏收场，槽位可能被新会话占用）；成功静默（2026-11-09
- * 用户口径：「已补充保存」不再写横幅——素材出现在笔记即反馈），失败横幅明确
+ * 用户口径：「已补充保存」不再写横幅——素材出现在计划即反馈），失败横幅明确
  * 反馈（store 已给出更具体的失败文案时不覆盖）。
  */
 async function salvageLateProduct(input: {
@@ -592,7 +592,7 @@ async function salvageLateProduct(input: {
         height: null,
         durationMs: input.durationMs,
     });
-    // 成功静默（2026-11-09 用户口径）：媒体块出现在笔记即反馈，不再写横幅；
+    // 成功静默（2026-11-09 用户口径）：媒体块出现在计划即反馈，不再写横幅；
     // 失败仍保留红字（store 侧已有更具体文案时不覆盖）
     if (outcome.ok) return;
     if (useArchiveStore.getState().error === errorBefore) {
@@ -635,7 +635,7 @@ function hasInflightPersists(owner: CaptureOwner): boolean {
 
 /**
  * 等待同归属后台落库全部收敛（allSettled——单任务失败互不影响）：任一失败
- * 即回传该失败结果（收笔链据此中止，避免丢产物封存笔记）；全部成功回传
+ * 即回传该失败结果（收笔链据此中止，避免丢产物封存计划）；全部成功回传
  * ok。任务 promise 已在注册处 catch 归一，rejected 分支纯防御。
  */
 async function waitForOwnerPersists(
@@ -662,7 +662,7 @@ async function waitForOwnerPersists(
  * 核心 + 无进度增量护栏（见 PERSIST_STALL_TIMEOUT_MS 注——挂死兜底：先给
  * 「保存超时」口径收场任务，底层链继续跑）+ 进度注册
  * （taskId 进 store.mediaUploadProgress，会话保存横幅按 capture: 前缀聚合
- * 百分比）+ 结果反馈（成功静默——媒体块出现在笔记即反馈，2026-11-09 用户
+ * 百分比）+ 结果反馈（成功静默——媒体块出现在计划即反馈，2026-11-09 用户
  * 口径；失败 = 保存失败文案，store 侧 attach/append 已给出更具体错误时不
  * 覆盖）。任务收敛自摘除并触发 UI 收尾协调（tryCloseUiSession）。
  */
@@ -706,14 +706,14 @@ function persistCaptureProduct(
                 }),
             ]);
             if (raced === 'timeout') {
-                surfaceSessionError('素材保存超时，仍在后台继续保存，请稍后在笔记中确认。');
-                // 护栏后的孤儿链：仍可能成功落库——成功静默（媒体块出现在笔记
+                surfaceSessionError('素材保存超时，仍在后台继续保存，请稍后在计划中确认。');
+                // 护栏后的孤儿链：仍可能成功落库——成功静默（媒体块出现在计划
                 // 即反馈，2026-11-09 用户口径），失败由 store 侧 attach/append
                 // 文案上浮；仅防 unhandled rejection
                 void underlying.catch(() => undefined);
-                return { ok: false, message: '素材保存超时，请稍后在笔记中确认。' };
+                return { ok: false, message: '素材保存超时，请稍后在计划中确认。' };
             }
-            // 成功静默（2026-11-09 用户口径）：不再写「已保存到笔记」系横幅，
+            // 成功静默（2026-11-09 用户口径）：不再写「已保存到计划」系横幅，
             // 媒体块出现即反馈；失败横幅保留（store 侧 attach/append 已给出
             // 更具体文案时不覆盖）
             if (!raced.ok && useArchiveStore.getState().error === errorBefore) {
@@ -1224,7 +1224,7 @@ function chipBottomInset(pathname: string, bottomInset: number): number {
  * 与悬浮 chip 同位同语言；phase 回 idle（任务收敛）或进度注册表摘除即消失，
  * 不做退场动画）。百分比 = capture: 前缀任务的平均进度（100ms 节流帧，
  * store.aggregateSaveProgress）；web 无总量时任务不进注册表 → 横幅不出现
- * （诚实降级：无可靠总量不伪造百分比，任务结果反馈 = 媒体块出现在笔记
+ * （诚实降级：无可靠总量不伪造百分比，任务结果反馈 = 媒体块出现在计划
  * （成功静默）/失败横幅）。
  */
 function PersistProgressChip({ bottomInset }: { bottomInset: number }) {

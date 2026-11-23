@@ -147,7 +147,7 @@ function DeleteTripControl({
 }
 
 /**
- * 行程表单（新建 / 编辑双模式，DEV.md #4 工作台口径的「创建像笔记一样轻量」）。
+ * 行程表单（新建 / 编辑双模式，DEV.md #4 工作台口径的「创建像计划一样轻量」）。
  *
  * 极简化口径（用户需求「较少不必要的描述、减少步骤」）：
  * - 无分区标题：名称/日期/描述字段全部自说明（placeholder、分段标签、入口文案
@@ -390,7 +390,7 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                 滚动容器**之外**。修前它嵌在 ScrollView 内且 contentContainer
                 自带 paddingHorizontal 24，与 ScreenHeader 容器自带的 px-6(24)
                 **双计**，返回钮/屏题左缘 = 48dp（其他三屏均为 24dp），即用户
-                反馈「屏头返回键与行程/笔记不对称」的根因；且屏头随内容滚动
+                反馈「屏头返回键与行程/计划不对称」的根因；且屏头随内容滚动
                 （其他三屏固定）。修后逐项对齐：几何带 = insets.top + pt-2(8) +
                 h-11(44) 与四屏相等；返回钮 = CloseButton 'back' 44 圆形触感底
                 盒（hitSlop 0，命中 = 视觉盒）、左缘 24 与表单字段同列对齐；

@@ -19,10 +19,10 @@ import { LoadingView, ScreenHeader } from './ui';
  * 结果口径（与拆分前的 /search 页内结果区完全一致）：
  * - 三通道并行：store.searchJournals / searchTrips / searchEvents；空关键词 =
  *   全量、全状态（store 已实现该口径，2026-11-19 用户指令「默认搜索全部的，
- *   不管什么状态」）；时间范围 { from, to } 只对日记/笔记/行程通道生效——
+ *   不管什么状态」）；时间范围 { from, to } 只对日记/计划/行程通道生效——
  *   事件（工单域）无日期窗口语义（db.searchEvents 无范围参数），仅按关键词查；
  * - 结果呈现 = 混合多卡 deck（自 search-screen 原样迁入：deckItems 构建 +
- *   SearchFace 卡面，搬走非复制）：日记 → 笔记 → 行程 → 事件，类型 eyebrow
+ *   SearchFace 卡面，搬走非复制）：日记 → 计划 → 行程 → 事件，类型 eyebrow
  *   区分，点前卡进内容；长卡 height 520（/notes、/trips 同款）；卡面全状态
  *   可见（搜索不限完成状态）；
  * - 可靠性口径（沿用拆分前成规）：请求序号守卫（慢的旧 in-flight 响应不得
@@ -90,11 +90,11 @@ export function SearchResultsScreen({ spec }: { spec: SearchSpec }) {
         if (spec.from && spec.to) parts.push(`${spec.from} ~ ${spec.to}`);
         else if (spec.from) parts.push(`${spec.from} 起`);
         else if (spec.to) parts.push(`${spec.to} 止`);
-        if (parts.length === 0) return '全部日记、笔记、行程与事件（不限关键词、时间与状态）';
+        if (parts.length === 0) return '全部日记、计划、行程与事件（不限关键词、时间与状态）';
         return `${parts.join(' · ')} · 全状态可见`;
     }, [spec]);
 
-    // 日记/笔记拆组（kind 列单一事实源）。**挂在三态渲染之前**（本页无 early
+    // 日记/计划拆组（kind 列单一事实源）。**挂在三态渲染之前**（本页无 early
     // return，位置对齐 hooks 纪律以防后续加入门禁时翻车——library 同款教训）；
     // results 未就绪按空集处理（此时渲染不到结果区）。
     const dailyResults = useMemo(
@@ -106,14 +106,14 @@ export function SearchResultsScreen({ spec }: { spec: SearchSpec }) {
         [results],
     );
 
-    // 结果行跳转（自 search-screen 原样迁入）：日记与笔记共用 journals 表
+    // 结果行跳转（自 search-screen 原样迁入）：日记与计划共用 journals 表
     // （kind 列区分），路由壳不同：日记 → /journal/[id]（日记模式编辑器），
-    // 笔记 → /note/[id]（笔记模式编辑器，无收笔语义）
+    // 计划 → /plan/[id]（计划模式编辑器，无收笔语义）
     const openJournal = useCallback(
         (id: string, kind: 'daily' | 'note') =>
             router.push(
                 kind === 'note'
-                    ? ({ pathname: '/note/[id]', params: { id } } as never)
+                    ? ({ pathname: '/plan/[id]', params: { id } } as never)
                     : { pathname: '/journal/[id]', params: { id } },
             ),
         [router],
@@ -129,7 +129,7 @@ export function SearchResultsScreen({ spec }: { spec: SearchSpec }) {
         [router],
     );
 
-    // 结果 → 混合多卡 deck 项（日记 → 笔记 → 行程 → 事件；顺序与首页 deck
+    // 结果 → 混合多卡 deck 项（日记 → 计划 → 行程 → 事件；顺序与首页 deck
     // 同口径，自 search-screen 原样迁入）。
     const deckItems = useMemo<DeckItem[]>(() => {
         const items: DeckItem[] = [];
@@ -156,7 +156,7 @@ export function SearchResultsScreen({ spec }: { spec: SearchSpec }) {
                 onPress: () => openJournal(row.id, 'note'),
                 node: (
                     <SearchFace
-                        type="笔记"
+                        type="计划"
                         status={row.status === 'open' ? '进行中' : '已收笔'}
                         title={row.title?.trim() || previewText(parseBlocks(row.blocks), 40) || '[媒体]'}
                         body={row.description?.trim() ? row.description : undefined}
@@ -221,7 +221,7 @@ export function SearchResultsScreen({ spec }: { spec: SearchSpec }) {
                     ) : !hasResults ? (
                         <View className="items-center px-6 py-12">
                             <Text className="text-[15px] font-medium text-ink-text dark:text-inkd-text">
-                                没有匹配的日记、笔记、行程或事件
+                                没有匹配的日记、计划、行程或事件
                             </Text>
                             <Text className="mt-1.5 text-center text-[13px] leading-5 text-ink-muted dark:text-inkd-muted">
                                 回搜索页换个关键词，或放宽时间范围再试
@@ -262,7 +262,7 @@ function SearchFace({
     body,
     meta,
 }: {
-    type: '日记' | '笔记' | '行程' | '事件';
+    type: '日记' | '计划' | '行程' | '事件';
     status?: string;
     title: string;
     body?: string;

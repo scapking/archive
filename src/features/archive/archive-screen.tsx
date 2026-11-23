@@ -58,29 +58,29 @@ import {
 
 /**
  * Archive 首页：**动态多卡堆叠**（2026-11-19 用户指令「有多少都在那个卡片
- * 显示，不再固定两张」）——日记（今天）/ 行程 / 事件 / 笔记四类实体的活跃项
+ * 显示，不再固定两张」）——日记（今天）/ 行程 / 事件 / 计划四类实体的活跃项
  * 全部进同一个图片堆（ui/card-pile 共享组件），左右滑动翻看，点前卡进内容
- * （卡序 = 用户优先级指令：日记 > 行程 > 事件 > 笔记）。
+ * （卡序 = 用户优先级指令：日记 > 行程 > 事件 > 计划）。
  * **卡片 UI 样式 = 原 deck 卡样式原样保留**（2026-11-19 用户澄清「没说改变
  * 首页的卡片 ui 样式，只是增加多几个卡片」）：日记/行程卡沿用原 JournalCard /
- * TripCard（封面、状态片、进度条全套），笔记/事件卡按同一卡面语言新增
+ * TripCard（封面、状态片、进度条全套），计划/事件卡按同一卡面语言新增
  * （eyebrow / 标题 / 描述 / meta 行，见 NoteDeckCard / EventDeckCard）。
  *
  * - **进入口径（完成态不显示，用户指令）**：日记 = 今天不存在或 open（已收笔
- *   不显示）；笔记 = 全部（无完成态）；行程 = planning + ongoing（finished
+ *   不显示）；计划 = 全部（无完成态）；行程 = planning + ongoing（finished
  *   不显示）；事件 = 仅 open（done/failed 不显示）；
  * - **类型标识（用户指令「卡片要有标识好区分」）**：每张卡 eyebrow 行带类型
- *   前缀（日记/笔记/行程/事件）——日记与笔记是两个实体（journals.kind 列），
+ *   前缀（日记/计划/行程/事件）——日记与计划是两个实体（journals.kind 列），
  *   靠 eyebrow 一眼分辨；
  * - **长按菜单**（原 useBlockActionGestures 手势保留在前卡内部；堆的
  *   PanResponder 方向锁只认领水平拖拽，纯点按/长按从不认领，两套手势并存）：
  *   日记卡 → 日记菜单（重命名/完成收笔/删除）；行程卡 → 行程菜单（按卡所属
- *   行程）；笔记/事件卡不加菜单；
- * - 点卡：日记 → /write；笔记 → /note/[id]；行程 → /trip/[id]；事件 →
+ *   行程）；计划/事件卡不加菜单；
+ * - 点卡：日记 → /write；计划 → /plan/[id]；行程 → /trip/[id]；事件 →
  *   /events/[id]。
  *
  * 数据刷新：trip 通道 = store.trips（任一版本前进即重跑 loadAll，既有口径）；
- * 笔记/事件通道 = db 直读 + revision 重载（同 library 自持界面取径）；
+ * 计划/事件通道 = db 直读 + revision 重载（同 library 自持界面取径）；
  * todayJournal = getJournalByDate 既有 effect；行程封面 = 每张行程卡内部
  * useTripCover（原 deckTrip 单查升级为按卡查询，同值短路防重渲）。
  */
@@ -113,7 +113,7 @@ function tripMenuRows(trip: DeckTrip, confirmDelete: boolean): ActionMenuRow[] {
 
 /**
  * 日记菜单行（R3，措辞归位 2026-11-19：这堆卡是**日记**——每天一篇的
- * /write 页，不是独立笔记，菜单词表全部用「日记」）：重命名/完成收笔仅
+ * /write 页，不是独立计划，菜单词表全部用「日记」）：重命名/完成收笔仅
  * open 态；删除行二次确认 = title 换文案。
  */
 function diaryMenuRows(journal: JournalRow, confirmDelete: boolean): ActionMenuRow[] {
@@ -189,10 +189,10 @@ export function ArchiveScreen() {
     const [journalMenu, setJournalMenu] = useState<{ confirmDelete: boolean } | null>(null);
     // 事件菜单卡（事件卡长按入口）：eventId；标记完成/失败即离堆（open 过滤）
     const [eventMenu, setEventMenu] = useState<string | null>(null);
-    // 笔记菜单卡（笔记卡长按入口）：noteId；重命名复用 RenameCard（updateJournalTitle
-    // 对 open 笔记有效）、删除复用 deleteJournal（级联删媒体）
-    const [noteMenu, setNoteMenu] = useState<{ id: string; confirmDelete: boolean } | null>(null);
-    // 笔记/事件列表（deck 卡数据通道）：null = 首载未完成；revision 驱动重载
+    // 计划菜单卡（计划卡长按入口）：noteId；重命名复用 RenameCard（updateJournalTitle
+    // 对 open 计划有效）、删除复用 deleteJournal（级联删媒体）
+    const [planMenu, setNoteMenu] = useState<{ id: string; confirmDelete: boolean } | null>(null);
+    // 计划/事件列表（deck 卡数据通道）：null = 首载未完成；revision 驱动重载
     const [notes, setNotes] = useState<JournalRow[] | null>(null);
     const [openEvents, setOpenEvents] = useState<EventRow[] | null>(null);
 
@@ -237,11 +237,11 @@ export function ArchiveScreen() {
         if (revision > 0 || dataRevision > 0) void loadAll();
     }, [revision, dataRevision, loadAll]);
 
-    // 笔记 + 事件（deck 卡数据）：revision 重载（同 library 自持界面取径）。
+    // 计划 + 事件（deck 卡数据）：revision 重载（同 library 自持界面取径）。
     // 事件仅 open（done/failed 不进 deck——用户指令「完成的不显示」）。
     useEffect(() => {
         let active = true;
-        db.listNotes()
+        db.listPlans()
             .then((rows) => {
                 if (active) setNotes(rows);
             })
@@ -249,7 +249,7 @@ export function ArchiveScreen() {
                 if (active) {
                     setNotes([]);
                     useArchiveStore.setState({
-                        error: `笔记列表读取失败：${caught instanceof Error ? caught.message : String(caught)}`,
+                        error: `计划列表读取失败：${caught instanceof Error ? caught.message : String(caught)}`,
                     });
                 }
             });
@@ -279,8 +279,8 @@ export function ArchiveScreen() {
     const today = todayLocal();
     const journalLabel = formatDateGroupLabel(today, today);
 
-    // deck 卡序列（日记 → 行程 → 事件 → 笔记；2026-11-19 用户优先级指令
-    // 「优先级最高是日记，其次行程、事件、笔记」——笔记循环移到末位；完成态
+    // deck 卡序列（日记 → 行程 → 事件 → 计划；2026-11-19 用户优先级指令
+    // 「优先级最高是日记，其次行程、事件、计划」——计划循环移到末位；完成态
     // 过滤见文件头进入口径）。**useMemo 挂在下方 early return 之前**（hooks
     // 铁律：ready/notes 翻转会改变 hook 数量——library「Rendered more hooks」
     // 同款教训），引用稳定防 deck 层位定位 spring 无意义重跑（#15）。
@@ -373,14 +373,14 @@ export function ArchiveScreen() {
                 node: <EventDeckCard event={event} />,
             });
         }
-        // ④ 笔记（仅 open——2026-11-19 产品变更：笔记可「完成」，完成的进搜索；
-        // 标题空串兜底；2026-11-19 用户优先级指令：笔记排末位）
+        // ④ 计划（仅 open——2026-11-19 产品变更：计划可「完成」，完成的进搜索；
+        // 标题空串兜底；2026-11-19 用户优先级指令：计划排末位）
         for (const note of notes ?? []) {
             if (note.status !== 'open') continue;
             items.push({
                 key: `note-${note.id}`,
-                accessibilityLabel: note.title?.trim() ? `打开笔记：${note.title}` : '打开未命名笔记',
-                onPress: () => router.push({ pathname: '/note/[id]', params: { id: note.id } } as never),
+                accessibilityLabel: note.title?.trim() ? `打开计划：${note.title}` : '打开未命名计划',
+                onPress: () => router.push({ pathname: '/plan/[id]', params: { id: note.id } } as never),
                 onLongPress: () => {
                     haptics.impact('medium');
                     setNoteMenu({ id: note.id, confirmDelete: false });
@@ -566,50 +566,50 @@ export function ArchiveScreen() {
                 />
             ) : null}
 
-            {/* 笔记菜单卡（笔记卡长按入口，四字标题口径）：重命名复用 RenameCard
-                （updateJournalTitle 对 open 笔记有效）；删除复用 deleteJournal
+            {/* 计划菜单卡（计划卡长按入口，四字标题口径）：重命名复用 RenameCard
+                （updateJournalTitle 对 open 计划有效）；删除复用 deleteJournal
                 （级联删媒体，二次确认）。 */}
-            {noteMenu ? (
+            {planMenu ? (
                 <ActionMenuCard
-                    title="笔记"
+                    title="计划"
                     rows={[
                         {
                             key: 'rename',
                             icon: <LucideType size={20} strokeWidth={1.9} />,
-                            title: '改笔记名',
+                            title: '改计划名',
                         },
                         {
                             key: 'complete',
                             icon: <LucideCheck size={20} strokeWidth={1.9} />,
-                            title: '完成笔记',
+                            title: '完成计划',
                         },
                         {
                             key: 'delete',
                             icon: <LucideTrash size={16} strokeWidth={1.9} />,
-                            title: noteMenu.confirmDelete ? '再点一次' : '删除笔记',
+                            title: planMenu.confirmDelete ? '再点一次' : '删除计划',
                             danger: true,
                         },
                     ]}
                     onAction={(key) => {
                         if (key === 'rename') {
                             setNoteMenu(null);
-                            setRenamingJournalId(noteMenu.id);
+                            setRenamingJournalId(planMenu.id);
                             return;
                         }
                         if (key === 'complete') {
                             haptics.success();
                             setNoteMenu(null);
-                            // 完成笔记：closed 后离开首页 deck 与笔记堆（搜索仍可见）
-                            void useArchiveStore.getState().completeJournal(noteMenu.id);
+                            // 完成计划：closed 后离开首页 deck 与计划堆（搜索仍可见）
+                            void useArchiveStore.getState().completeJournal(planMenu.id);
                             return;
                         }
-                        if (!noteMenu.confirmDelete) {
-                            setNoteMenu({ id: noteMenu.id, confirmDelete: true });
+                        if (!planMenu.confirmDelete) {
+                            setNoteMenu({ id: planMenu.id, confirmDelete: true });
                             return;
                         }
                         haptics.impact('heavy');
                         setNoteMenu(null);
-                        void useArchiveStore.getState().deleteJournal(noteMenu.id);
+                        void useArchiveStore.getState().deleteJournal(planMenu.id);
                     }}
                     onClose={() => setNoteMenu(null)}
                 />
@@ -649,11 +649,11 @@ export function ArchiveScreen() {
                                 />
                                 <ChooserRow
                                     icon={<LucideStickyNote size={18} strokeWidth={1.9} color={palette.secondary} />}
-                                    title="新建笔记"
+                                    title="新建计划"
                                     onPress={() => {
                                         haptics.impact();
                                         setChooserOpen(false);
-                                        router.push('/note/new' as never);
+                                        router.push('/plan/new' as never);
                                     }}
                                 />
                                 <ChooserRow
@@ -1106,8 +1106,8 @@ function DeckCoverPlaceholder({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * 笔记卡（2026-11-19 设计打磨，卡面语言 = 日记卡同构）：eyebrow（类型 +
- * 更新时间，tabular）→ 题（15 semibold，无题回退「未命名笔记」）→ 引导行
+ * 计划卡（2026-11-19 设计打磨，卡面语言 = 日记卡同构）：eyebrow（类型 +
+ * 更新时间，tabular）→ 题（15 semibold，无题回退「未命名计划」）→ 引导行
  * （15 text 色 1 行 = 描述或正文首段，无则 muted 占位）→ 正文预算行（13
  * muted）→ 底 meta（字数 + 打开 CTA）。两级声部与日记卡同构——原来单槽
  * 描述的「矮胖」观感根因是缺引导行层级。
@@ -1137,14 +1137,14 @@ function NoteDeckCard({ note }: { note: JournalRow }) {
                     className="text-[11px] text-ink-muted dark:text-inkd-muted"
                     style={{ fontVariant: ['tabular-nums'] }}
                 >
-                    {'笔记 · '}
+                    {'计划 · '}
                     {`更新于 ${formatEventDateTime(note.updated_at)}`}
                 </Text>
                 <Text
                     numberOfLines={1}
                     className="mt-1 text-[15px] font-semibold text-ink-text dark:text-inkd-text"
                 >
-                    {note.title?.trim() || '未命名笔记'}
+                    {note.title?.trim() || '未命名计划'}
                 </Text>
                 <Text
                     numberOfLines={1}
@@ -1172,7 +1172,7 @@ function NoteDeckCard({ note }: { note: JournalRow }) {
                     </Text>
                     <View className="flex-row items-center">
                         <Text className="text-[12px] font-medium text-ink-accent dark:text-inkd-accent">
-                            打开笔记
+                            打开计划
                         </Text>
                         <LucideChevronRight size={13} color={palette.accent} strokeWidth={2} />
                     </View>

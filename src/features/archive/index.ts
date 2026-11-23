@@ -10,9 +10,9 @@ export { SearchScreen } from './search-screen';
 export { SearchResultsScreen, type SearchSpec } from './search-results-screen';
 // 设置页（新1：外观/安全/备份与恢复收口；app/settings.tsx 路由壳消费）
 export { SettingsScreen } from './settings-screen';
-// 独立笔记（v8）：新建表单 + 笔记与行程堆叠库（app/note/new.tsx、
+// 独立计划（v8）：新建表单 + 计划与行程堆叠库（app/plan/new.tsx、
 // app/library.tsx 路由壳消费；编辑器复用 JournalEditScreen，不设独立屏）
-export { NoteFormScreen } from './note-form-screen';
+export { PlanFormScreen } from './plan-form-screen';
 export { LibraryScreen } from './library-screen';
 export { JournalEditScreen } from './journal-edit-screen';
 export { TripFormScreen } from './trip-form-screen';
