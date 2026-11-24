@@ -20,7 +20,7 @@ class ArchiveWidgetModule : Module() {
         AsyncFunction("push") { snapshotJson: String, promise: Promise ->
             val ctx = context
             if (ctx == null) {
-                promise.reject(CodedException("ERR_NO_CONTEXT", "Android context unavailable"))
+                promise.reject(CodedException("ERR_NO_CONTEXT", "Android context unavailable", null))
                 return@AsyncFunction
             }
             try {

@@ -221,7 +221,7 @@ const withWidgetTarget = (config) =>
         const configList = proj.pbxXCConfigurationList()?.[target.pbxNativeTarget.buildConfigurationList];
         const overrides = {
             SWIFT_VERSION: '"5.0"',
-            IPHONEOS_DEPLOYMENT_TARGET: '"15.1"',
+            IPHONEOS_DEPLOYMENT_TARGET: '"16.4"',
             TARGETED_DEVICE_FAMILY: '"1,2"',
             CODE_SIGN_ENTITLEMENTS: `"${TARGET_NAME}/${TARGET_NAME}.entitlements"`,
             CURRENT_PROJECT_VERSION: '"1"',

@@ -85,9 +85,9 @@ import { DeadEndView } from './journal-edit-screen';
  * 行程表页（v9，/trip/[id]/day/[date]）：某一天的全部行程项 = 左右堆叠 deck，
  * **排序即优先级**——
  *
- * - deck 前卡 = 「当前应进行的项」：时间已到且 pending 的最早一项（全部未到
- *   时间则取最早 pending），已完成/失败项排到队尾；标记完成/失败后该项落到
- *   队尾，前卡自动前进到下一项（deck 以卡序签名重挂收口，见 deckEpoch）；
+ * - deck 前卡 = 「当前应进行的项」（ongoing 段最早到点在前；v0.4.4 阶段机，
+ *   见 trip-item-logic）；进入收尾/到点自动完成后该项沉入收尾段，前卡自动
+ *   前进到下一项（deck 以卡序签名重挂收口，见 deckEpoch）；
  * - 卡面：eyebrow = `${time} · 状态文案`（当前进行中 accent 色）；标题 15
  *   semibold；描述（留言/备注）；有关联图片时显示首图封面（useFileUrlState
  *   三态，缺文件降级不渲染）。当前进行中的卡面用 accent 淡底（accent-bg，
@@ -679,7 +679,7 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
         ? (phaseById.get(actionItem.id) ?? 'pending')
         : null;
 
-    // deck 重挂纪元：卡序签名变化（标记完成/失败前进、到点排序迁移、增删项）
+    // deck 重挂纪元：卡序签名变化（阶段迁移、到点排序前进、增删项）
     // 时整组重挂 → deck 前卡恒为 items[0]（当前应进行的项），不被内部翻卡指针
     // 带偏；纯数据重载（如媒体上传）签名不变，翻卡位置得以保留。
     const orderKey = useMemo(() => orderedItems.map((item) => item.id).join('|'), [orderedItems]);
