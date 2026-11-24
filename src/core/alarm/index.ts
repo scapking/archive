@@ -4,7 +4,7 @@ import { requireOptionalNativeModule } from 'expo-modules-core';
 /**
  * 系统闹钟门面（v0.4.4，用户指令 #9/#11）：
  *
- * - Android = 真系统闹钟（archive-alarm 本地模块，AlarmManager 精确闹钟 +
+ * - Android = 真系统闹钟（本地 alarm 模块，AlarmManager 精确闹钟 +
  *   到点全屏 intent 响铃通知；技术事实：第三方 app 无法往系统时钟 app 的
  *   闹钟列表里插条目——那是时钟 app 私有库，AlarmManager + 全屏呈现是
  *   「真闹钟」的全部可行面，brainstorming 已向用户说明并接受）；
@@ -17,14 +17,14 @@ import { requireOptionalNativeModule } from 'expo-modules-core';
  * 返回 false 并 console.warn 留痕，调用方照常落库。
  */
 
-type ArchiveAlarmNative = {
+type SystemAlarmNative = {
     schedule(id: string, at: number, title: string, body: string): Promise<void>;
     cancel(id: string): Promise<void>;
     permission(): Promise<'granted' | 'denied' | 'unsupported'>;
 };
 
 const native = Platform.OS === 'android'
-    ? requireOptionalNativeModule<ArchiveAlarmNative>('ArchiveAlarm')
+    ? requireOptionalNativeModule<SystemAlarmNative>('SystemAlarm')
     : null;
 
 export interface AlarmScheduleInput {
@@ -51,14 +51,14 @@ export const alarm = {
     async schedule(input: AlarmScheduleInput): Promise<boolean> {
         if (native == null) return false;
         if (input.at <= Date.now()) {
-            console.warn('[archive-alarm] 闹钟时刻已过，跳过注册（id: %s）', input.id);
+            console.warn('[alarm] 闹钟时刻已过，跳过注册（id: %s）', input.id);
             return false;
         }
         try {
             await native.schedule(input.id, input.at, input.title, input.body);
             return true;
         } catch (error) {
-            console.warn('[archive-alarm] 闹钟注册失败（不阻塞调用方，id: %s）:', input.id, error);
+            console.warn('[alarm] 闹钟注册失败（不阻塞调用方，id: %s）:', input.id, error);
             return false;
         }
     },
@@ -69,7 +69,7 @@ export const alarm = {
         try {
             await native.cancel(id);
         } catch (error) {
-            console.warn('[archive-alarm] 闹钟取消失败（id: %s）:', id, error);
+            console.warn('[alarm] 闹钟取消失败（id: %s）:', id, error);
         }
     },
 
@@ -79,7 +79,7 @@ export const alarm = {
         try {
             return await native.permission();
         } catch (error) {
-            console.warn('[archive-alarm] 权限查询失败:', error);
+            console.warn('[alarm] 权限查询失败:', error);
             return 'denied';
         }
     },

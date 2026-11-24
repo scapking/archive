@@ -15,7 +15,7 @@ class ArchiveWidgetModule : Module() {
         get() = appContext.reactContext
 
     override fun definition() = ModuleDefinition {
-        Name("ArchiveWidget")
+        Name("HomeWidget")
 
         AsyncFunction("push") { snapshotJson: String, promise: Promise ->
             val ctx = context

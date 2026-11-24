@@ -9,7 +9,7 @@ public class ArchiveWidgetModule: Module {
   static let snapshotKey = "snapshot"
 
   public func definition() -> ModuleDefinition {
-    Name("ArchiveWidget")
+    Name("HomeWidget")
 
     AsyncFunction("push") { (snapshotJson: String, promise: Promise) in
       guard let defaults = UserDefaults(suiteName: ArchiveWidgetModule.appGroupId) else {

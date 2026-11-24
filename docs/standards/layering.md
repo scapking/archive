@@ -23,7 +23,7 @@ grep -rn "from '@/config" src/core                                        # 必�
 
 ### L2 core 纯净
 **规则**：core 内代码不得引用业务域名词（archive）于类型、默认值或 key 中。core 的判定标准：**换一个业务项目可原样搬走**（almightydb 属 core 自身设施，不构成业务耦合）。
-**判定**：`grep -rni 'archive' src/core` 输出为空（模板品牌资产 `hatch-logo` / `HATCH_PALETTE` 属 core 既有件，不计）。
+**判定**：`grep -rni 'archive' src/core` 输出为空（模板品牌资产 `hatch-logo` / `HATCH_PALETTE` 属 core 既有件，不计；lucide-react-native 上游图标标识符 `icons/archive` / `LucideArchive` 属外部库命名——import 路径与别名受上游约束，同不计。**例外仅限外部标识符本身**：core 自有的类型/字符串/key 仍禁用业务域名词）。
 **正例**：✅ `createConfigStore(name, defaults)` 对 name 一无所知
 **反例**：❌ core 里写死 `'archive.config'`
 

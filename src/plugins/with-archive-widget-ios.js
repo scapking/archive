@@ -227,8 +227,15 @@ const withWidgetTarget = (config) =>
             CURRENT_PROJECT_VERSION: '"1"',
             MARKETING_VERSION: '"1.0"',
         };
-        for (const buildConfig of configList?.buildConfigurations ?? []) {
-            buildConfig.buildSettings = { ...buildConfig.buildSettings, ...overrides };
+        // configList.buildConfigurations 是 {value, comment} 引用数组——直接往
+        // 引用对象上挂 buildSettings 会静默写到死对象（第二轮门禁 SWIFT_VERSION
+        // 为空实测），必须经 value 解引用到 XCBuildConfiguration 段里的真身
+        const configs = proj.pbxXCBuildConfigurationSection();
+        for (const ref of configList?.buildConfigurations ?? []) {
+            const buildConfig = configs?.[ref.value];
+            if (buildConfig) {
+                buildConfig.buildSettings = { ...buildConfig.buildSettings, ...overrides };
+            }
         }
         return cfg;
     });

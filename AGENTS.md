@@ -25,7 +25,7 @@
 | H2 | 目录/文件 kebab-case，HTTP 动词不做目录名，禁用 utils/helpers/common/misc/shared | naming.md §1/§2/§5 正则与 find |
 | H3 | 数据按形态落位（glossary §2 判定表）：配置→`config-store`（凭据用 secure 选项）；结构化数据→`data-store`（复杂关系模型经 `database` 自建表）；二进制文件→`file-storage`；跨启动缓存→`cache-store`；打包迁移→`migration`。core 只登记 glossary §3 表内的能力目录，新能力先登记再创建 | glossary §2 形态表 + §3 登记表 |
 | H4 | 依赖只能向下：app→features→service→config→core；service 禁 import `@/app` `@/features`；core 禁 import `@/app` `@/features` `@/config` | layering.md L1 四条 grep 为空 |
-| H5 | core 必须业务无关（换项目可原样搬走），不得出现业务域名 archive（模板品牌资产 `hatch-logo` / `HATCH_PALETTE` 属 core 既有件，不在此列；almightydb 是 core 自身设施） | `grep -rni 'archive' src/core` 为空 |
+| H5 | core 必须业务无关（换项目可原样搬走），不得出现业务域名 archive（模板品牌资产 `hatch-logo` / `HATCH_PALETTE`、lucide 上游图标标识符 `icons/archive` 属外部命名不在此列；almightydb 是 core 自身设施） | `grep -rni 'archive' src/core` 仅剩外部标识符 |
 | H6 | 跨模块 import 只到目录入口，禁深路径 | `grep -rnE "from '@/core/[a-z-]+/" src` 等为空 |
 | H7 | 禁止空占位（.gitkeep / 0 字节文件 / 空目录），目录随第一个真实文件创建 | `find . -name '.gitkeep'`、`find src -type d -empty` 为空 |
 | H8 | AsyncStorage key 格式 `<domain>.<purpose>`，如 `archive.config` | naming.md §4 正则 |

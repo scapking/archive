@@ -4,9 +4,9 @@ import { requireOptionalNativeModule } from 'expo-modules-core';
 /**
  * 桌面 widget 门面（v0.4.4，用户指令 #7）：
  *
- * - Android = 真 AppWidget（archive-widget 本地模块，RemoteViews 静态行）；
- * - iOS = WidgetKit 扩展（with-archive-widget-ios 插件注入 target）；本门面
- *   经 archive-widget 的 iOS 模块把快照写进共享 App Group UserDefaults，扩展
+ * - Android = 真 AppWidget（本地 widget 模块，RemoteViews 静态行）；
+ * - iOS = WidgetKit 扩展（config plugin 注入 target）；本门面经该模块把快照
+ *   写进共享 App Group UserDefaults，扩展
  *   30min 时间线从同一 suite 读取；
  * - web = no-op。
  *
@@ -30,12 +30,12 @@ export interface WidgetSnapshot {
     items: WidgetSnapshotItem[];
 }
 
-type ArchiveWidgetNative = { push(snapshotJson: string): Promise<void> };
+type HomeWidgetNative = { push(snapshotJson: string): Promise<void> };
 
 // Android/iOS 都有原生模块（iOS = App Group UserDefaults 桥）；web = no-op
 const native = Platform.OS === 'web'
     ? null
-    : requireOptionalNativeModule<ArchiveWidgetNative>('ArchiveWidget');
+    : requireOptionalNativeModule<HomeWidgetNative>('HomeWidget');
 
 export const widget = {
     /** 平台是否具备 widget 推送能力。 */
@@ -49,7 +49,7 @@ export const widget = {
         try {
             await native.push(JSON.stringify(snapshot));
         } catch (error) {
-            console.warn('[archive-widget] 快照推送失败（不阻塞调用方）:', error);
+            console.warn('[widget] 快照推送失败（不阻塞调用方）:', error);
         }
     },
 };

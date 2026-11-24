@@ -1,6 +1,6 @@
 {
   "platforms": ["android"],
   "android": {
-    "modules": ["archive.alarm.ArchiveAlarmModule"]
+    "modules": ["archive.alarm.AlarmModule"]
   }
 }
