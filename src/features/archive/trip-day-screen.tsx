@@ -90,8 +90,9 @@ import { DeadEndView } from './journal-edit-screen';
  *   前进到下一项（deck 以卡序签名重挂收口，见 deckEpoch）；
  * - 卡面：eyebrow = `${time} · 状态文案`（当前进行中 accent 色）；标题 15
  *   semibold；描述（留言/备注）；有关联图片时显示首图封面（useFileUrlState
- *   三态，缺文件降级不渲染）。当前进行中的卡面用 accent 淡底（accent-bg，
- *   色彩只上数据纪律——蓝只上「当前」这一数据态，不上 chrome）；
+ *   三态，缺文件降级不渲染）。当前进行中的卡面铺 ongoing 深蓝渐变（色彩只上
+ *   数据纪律——蓝只上「当前」这一数据态，不上 chrome；端点收在 theme.ts
+ *   堆叠同族色阶，见 TripItemCardFace 注）；
  * - 长按前卡 → 操作卡（ActionMenuCard）：进入收尾（done）/ 结束收尾（wrap）/
  *   添加图片 / 添加视频（done 与 wrap 都可补媒体，用户指令 #8）/ 删除此行程
  *   ——手动「标记完成/失败」退役（v0.4.4），阶段由 trip-item-logic 派生；
@@ -141,19 +142,24 @@ const TripItemCardFace = memo(function TripItemCardFace({
     const coverState = useFileUrlState(cover?.file_key ?? null);
     const palette = usePalette();
 
-    // 渐变底按阶段（v0.4.4 阶段机；2026-11-19 用户指令「颜色渐变色」延续）：
-    // - 进行中（isCurrent）= 深蓝坠入墨夜渐变 + 白字家族（渐变上白字是唯一
-    //   可读解，ink 文字 token 在蓝底上全部失效）；
-    // - 完成/收尾 = surface→border 弱渐变（muted 字，完成感）；
-    // - 待进行 = surface→raised 弱渐变（token 字，克制不抢当前项）；
-    // - 已结束（终态）= surface→border（muted 字）。
-    // LinearGradient 内联 style（Animated/第三方组件 className web 静默丢弃坑）。
+    // 渐变底按阶段（v0.4.5 色阶重做：端点全部收进 theme.ts 堆叠 deck 同族
+    // token，2026-11-19 用户指令「颜色渐变色」保留、v0.4.4「与整体 deck 颜色
+    // 不协调」的散落 hex 渐变废止）：
+    // - 进行中（isCurrent）= ongoingFrom→ongoingTo：accent-deep 蓝坠入墨黑/夜面
+    //   + 白字家族（蓝是「进行中」数据色，房规允许；旧方案的 tailwind-gray
+    //   偏移蓝黑端点离族，正是「与整体 deck 不协调」的根因）；
+    // - 完成/收尾/终态 = settledFrom→settledTo：从 border/deckEdge 沉到 deckEdge
+    //   /border——完成的卡半沉进堆叠，暗端与背卡露条同色，整套 deck 一个收口；
+    // - 待进行 = pendingFrom→pendingTo：纸白/raised 亮面收到 surface 一档，
+    //   克制不抢当前项；
+    // 三态渐变同方向（左上亮、右下沉，光源恒定）。LinearGradient 内联 style
+    //（Animated/第三方组件 className web 静默丢弃坑），colors 保持二元组标注。
     const isSettled = phase === 'done' || phase === 'wrap' || phase === 'terminal';
     const gradientColors: [string, string] = isCurrent
-        ? ['#1E40AF', '#111827']
+        ? [palette.ongoingFrom, palette.ongoingTo]
         : isSettled
-          ? [palette.surface, palette.border]
-          : [palette.surface, palette.raised];
+          ? [palette.settledFrom, palette.settledTo]
+          : [palette.pendingFrom, palette.pendingTo];
     const faceTone = isCurrent ? 'accent' : 'token';
     const eyebrowTone = isCurrent
         ? 'text-white/80'

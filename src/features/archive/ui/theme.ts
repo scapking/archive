@@ -39,6 +39,28 @@ export interface Palette {
     border: string;
     /** 图表网格线（SVG 场景）。 */
     grid: string;
+    /**
+     * 堆叠 deck 同族色阶（v0.4.5 重设计，deck.tsx 壳面 / trip 卡面渐变端点专用；
+     * **inline style only**——LinearGradient 与卡壳底色走非 CSS 通道，无 className
+     * 镜像，值全部取 ink/inkd 家族既有档位或其同族延伸）：
+     * - deckEdge：背卡壳面/露条色。浅色 = ink-control 档（沉下去的纸边，深于
+     *   border），深色 = inkd-control 档（受光的下层纸边，亮于 border）——堆叠
+     *   层次靠**实色一档色阶**表达，不靠透明度渐隐（v0.4.3 的 0.45 洗白、
+     *   v0.4.4 的 0.92+描边环都被否，见 deck.tsx 色语言注）。
+     * - ongoingFrom/To：当前项卡面渐变（accent-deep 坠入墨黑/夜面，蓝是
+     *   「进行中」数据色，房规允许）。
+     * - pendingFrom/To：待进行卡面（纸白/raised 亮起，往 shadow 档收——两主题
+     *   同方向：左上受光、右下沉，光源恒定）。
+     * - settledFrom/To：已完成/收尾/终态卡面（沉入 deckEdge 一档——完成的卡
+     *   「半沉进堆叠」，与背卡露条同色收口，整套 deck 只有一个暗色终点）。
+     */
+    deckEdge: string;
+    ongoingFrom: string;
+    ongoingTo: string;
+    pendingFrom: string;
+    pendingTo: string;
+    settledFrom: string;
+    settledTo: string;
     /** tabBar：激活按亮度（不上彩）、 bar 底带透明度、上缘细线、场景底。 */
     tabActive: string;
     tabInactive: string;
@@ -71,6 +93,15 @@ const LIGHT: Palette = {
     barBorder: '#E5E8EC',
     sceneBg: '#FFFFFF',
     spinner: '#2563EB',
+    // 堆叠 deck 色阶（见 Palette 注；档位全部复用 ink 家族：control / accent-deep /
+    // text / base / surface / border，唯一新语义是「沉入堆叠」的收口色 deckEdge）
+    deckEdge: '#D9DDE2',
+    ongoingFrom: '#1D4ED8',
+    ongoingTo: '#171A1E',
+    pendingFrom: '#FFFFFF',
+    pendingTo: '#F7F8FA',
+    settledFrom: '#E5E8EC',
+    settledTo: '#D9DDE2',
 };
 
 /** 深色（与 tailwind inkd 组成对；改动必须同步 tailwind.config.js）。 */
@@ -95,6 +126,15 @@ const DARK: Palette = {
     barBorder: '#1E2422',
     sceneBg: '#080A0A',
     spinner: '#5B9DFF',
+    // 堆叠 deck 色阶（深色向：deckEdge 比 border 更亮一档 = 受光的下层纸边；
+    // 渐变仍从亮到暗 = 与浅色同一光源方向的镜像）
+    deckEdge: '#2E3533',
+    ongoingFrom: '#2E6FD9',
+    ongoingTo: '#0E1111',
+    pendingFrom: '#161B1A',
+    pendingTo: '#0E1111',
+    settledFrom: '#2E3533',
+    settledTo: '#1E2422',
 };
 
 export function getPalette(theme: 'light' | 'dark'): Palette {

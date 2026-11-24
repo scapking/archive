@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated as RNAnimated, PanResponder, Pressable, Text, View } from 'react-native';
 import type { PanResponderGestureState } from 'react-native';
+import { usePalette } from './theme';
 
 /**
  * 重叠露条多卡 deck（archive 首页 + /notes、/trips 共用）：**原双卡 deck 的
@@ -26,6 +27,16 @@ import type { PanResponderGestureState } from 'react-native';
  *
  * 页码（2026-11-19 用户指令「卡片容器的一部分」）：页码 = 卡容器的最后一个
  * 子元素（卡底内部居中裸数字，`X / N`），随卡面同底色——不是覆盖层/悬浮物。
+ *
+ * **堆叠颜色语言（v0.4.5 重设计，用户否掉两版后的定稿口径）**：层次靠
+ * **同族实色色阶**，不靠透明度、不靠描边环——前卡壳面 = surface（纸面），
+ * 背卡壳面 = deckEdge（theme.ts 堆叠色阶：浅色沉到 control 档 = 纸边投影，
+ * 深色抬到 inkd-control 档 = 受光下层纸边，双主题与页面底色都拉开 ≥1.35
+ * 对比，tests/deck-stack-colors 把关）；可见层透明度恒 1（背卡内容本就被
+ * 不透明前卡全遮，渐隐只会把露条洗进页面底色——v0.4.3 的 0.45「太淡」与
+ * v0.4.4 的 0.92+hairline 环「不协调」都出在用透明度顶替色阶），淡出只保留
+ * 给隐藏层位（1→0，翻卡退场通道）。露条是纯壳面（内容右缩进铁律不变），
+ * 所以壳面色即堆叠边色，与任何卡面内容（素面/渐变/图片）天然同族不打架。
  *
  * 手势（原 deck 沿用）：PanResponder 方向锁认领（|dx|>10 且 |dx|>1.5|dy|）——
  * 纵向语义（卡面长按菜单、误触抖动）不受伤；纯点按从不认领（点卡语义全保）；
@@ -308,11 +319,13 @@ function DeckCardLayer({
     onAdvance(k: number): void;
 }) {
     // 插值节点 useMemo 固定（原 deck useSlotStyle 同款防重建）：depth 0..2 →
-    // 右移 / 原缩放降透明语言（原 deck 背卡 scale 0.95 + opacity 0.45 的分层化）；
-    // dragX 追加一条 translateX（跟手通道，静止恒 0）。2026-11-19 调优：输入
+    // 右移 / 缩放纵深（原 deck 背卡 scale 0.95 的分层化保留）；dragX 追加一条
+    // translateX（跟手通道，静止恒 0）。2026-11-19 调优：输入
     // 区间从原 0..4 收窄到实际值域 0..DECK_HIDDEN(2)——层位定位经 Math.min 收敛
     // 恒不出 2，区间尾巴 3/4 是插值图里的死段；每卡 native 节点数不增不减，
-    // 区间收窄只瘦插值表达式（结构上再省节点会牺牲视觉分层，不做）
+    // 区间收窄只瘦插值表达式（结构上再省节点会牺牲视觉分层，不做）。
+    // v0.4.5 色语言：透明度只留退场通道（可见层恒 1，见文件头「堆叠颜色
+    // 语言」注），分层 = scale + deckEdge 实色壳面（静态 style，不入动画图）
     const layerStyle = useMemo(
         () => ({
             transform: [
@@ -334,9 +347,10 @@ function DeckCardLayer({
             ],
             opacity: values.depth.interpolate({
                 inputRange: [0, 1, DECK_HIDDEN],
-                // v0.4.4：背卡透明度下限 0.45 → 0.92（用户反馈「堆叠卡看不清」
-                // ——0.45 把卡洗进页面底色）；隐藏层位仍淡出到 0
-                outputRange: [1, 0.92, 0],
+                // 可见层（0/1）全实色，隐藏层位淡出到 0：露条不被页面底色
+                // 稀释（v0.4.3 的渐隐洗白 / v0.4.4 的近实色灰影均为废案，
+                // 数值口径由 tests/deck-stack-colors 按本表达式把关）
+                outputRange: [1, 1, 0],
             }),
         }),
         [values],
@@ -345,6 +359,11 @@ function DeckCardLayer({
         () => ({ position: 'absolute' as const, top: 0, bottom: 0, left: 0, right: PEEK }),
         [],
     );
+    // 堆叠壳面色（v0.4.5 色语言，非 CSS 通道走 palette，禁散写 hex）：前卡
+    // surface 纸面（卡面内容铺满，壳色只在素面卡透底处可见，观感与旧版一致）；
+    // 背卡 deckEdge——露条（唯一可见的壳面区域）是实色同族色阶，不再渐隐
+    const palette = usePalette();
+    const shellBg = depth === 0 ? palette.surface : palette.deckEdge;
 
     return (
         <View style={[slot, { zIndex: total - depth }]}>
@@ -355,21 +374,15 @@ function DeckCardLayer({
                     style={{ flex: 1 }}
                     accessibilityLabel={depth === 0 ? (item.accessibilityLabel ?? '当前卡片') : '下一张卡片'}
                 >
-                    {/* 卡容器（deck 统一绘制圆角壳——调用方卡面不再自带卡壳）+
-                        **页码为卡容器的最后一个子元素**（2026-11-19 用户指令
-                        「卡片容器的一部分，不是悬浮窗口」：页码嵌在卡底内部
-                        居中，裸数字随卡面同底色，非覆盖层）；pointerEvents none
-                        不挡卡面触摸。**对比度（v0.4.4 用户反馈「深浅色下堆叠卡
-                        看不清」）**：前卡 surface、背卡 raised（亮一档/暗一档，
-                        与页面 base 拉开），每卡再叠一圈 ink-border hairline
-                        环（卡面渐变盖不住它——环画在卡面之上，近色卡叠放时的
-                        恒定轮廓线，照片「卡纸装裱」同语义） */}
+                    {/* 卡容器（deck 统一绘制圆角壳——调用方卡面不再自带卡壳；
+                        底色走 palette 实色色阶：前卡 surface、背卡 deckEdge，
+                        v0.4.5 色语言见文件头注）+ **页码为卡容器的最后一个
+                        子元素**（2026-11-19 用户指令「卡片容器的一部分，不是
+                        悬浮窗口」：页码嵌在卡底内部居中，裸数字随卡面同底色，
+                        非覆盖层）；pointerEvents none 不挡卡面触摸 */}
                     <View
-                        className={`h-full w-full flex-1 flex-col overflow-hidden rounded-card ${
-                            depth === 0
-                                ? 'bg-ink-surface dark:bg-inkd-surface'
-                                : 'bg-ink-raised dark:bg-inkd-raised'
-                        }`}
+                        className="h-full w-full flex-1 flex-col overflow-hidden rounded-card"
+                        style={{ backgroundColor: shellBg }}
                     >
                         {/* 卡面铺满整卡（flex-1 占满壳）——渐变类卡面的颜色自然
                             延伸到卡底，页码叠加其上同属一块渐变（2026-11-20 用户
@@ -389,13 +402,6 @@ function DeckCardLayer({
                                 </View>
                             )}
                         </View>
-                        {/* hairline 轮廓环（画在卡面之上，pointerEvents none）：
-                            深浅色下与页面底色都有 ≥1.2 对比（tests/deck-contrast
-                            把关 token），是堆叠边「看得见」的机制件 */}
-                        <View
-                            pointerEvents="none"
-                            className="absolute inset-0 rounded-card border border-ink-border dark:border-inkd-border"
-                        />
                         {/* 页码 = 卡底内侧居中叠加（非独立行）：色调随卡面
                             pageLabelTone（渐变白 / 素面 muted），pointerEvents
                             none 不挡卡面触摸 */}
