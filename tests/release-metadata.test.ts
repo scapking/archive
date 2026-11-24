@@ -58,7 +58,7 @@ const pluginOptions = (config: ExpoConfig, name: string): Record<string, unknown
     return entry[1] as Record<string, unknown>;
 };
 
-test('release metadata pins the v0.4.4 native version contract', async () => {
+test('release metadata pins the v0.4.5 native version contract', async () => {
     const expo = (await readJson(path.join(srcRoot, 'app.json'))) as {
         expo: ExpoConfig;
     };
@@ -67,12 +67,12 @@ test('release metadata pins the v0.4.4 native version contract', async () => {
     )) as PackageJson;
     const config = expo.expo;
 
-    assert.equal(config.version, '0.4.4');
-    assert.equal(packageJson.version, '0.4.4');
+    assert.equal(config.version, '0.4.5');
+    assert.equal(packageJson.version, '0.4.5');
     assert.equal(config.android.package, 'com.anonymous.archive');
-    assert.equal(config.android.versionCode, 8);
+    assert.equal(config.android.versionCode, 9);
     assert.equal(config.ios.bundleIdentifier, 'com.anonymous.archive');
-    assert.equal(config.ios.buildNumber, '8');
+    assert.equal(config.ios.buildNumber, '9');
     assert.equal(config.ios.icon, './assets/images/icon.png');
 });
 
