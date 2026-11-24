@@ -28,7 +28,8 @@ const native = Platform.OS === 'android'
     : null;
 
 export interface AlarmScheduleInput {
-    /** 闹钟 id（与通知 identifier 同源：`trip-item-<itemId>`，取消共用）。 */
+    /** 闹钟 id（调用方自有约定；行程项用 itemId 本体——schedule/cancel 同一
+     *  值即可，无需与通知 identifier `trip-item-<itemId>` 对齐）。 */
     id: string;
     /** 触发时刻（epoch ms）。 */
     at: number;
