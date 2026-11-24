@@ -87,6 +87,12 @@ import {
     validateEventInput,
     type Event,
 } from './event-logic';
+// 计划纯逻辑（v11）：状态枚举守卫与门槛文案单一事实源（node 测试直接覆盖）
+import {
+    isPlanStatus,
+    PLAN_TITLE_REQUIRED_ERROR,
+    type PlanStatus,
+} from './plan-logic';
 // v5 require cycle 修复：store 不再从 './ui' 取任何符号（PENDING_MEDIA_ID 已下沉 db）。
 // mutation 的数据变化广播经中立层发出，ui 侧用 useDataRevision 订阅、不回头 import store
 // （依赖图见 data-revision.ts 头注）。
@@ -211,9 +217,11 @@ export interface TripCard extends Trip {
  *   并集——有内容日记（日常+行程同表）∪ 事件创建/更新日 ∪ 行程创建/更新日 ∪
  *   媒体上传日，排除打开即自动建行的空页）；
  * - totalWords / curve 仍为日记字数口径（事件行程无字数，曲线不动）；
- * - eventCounts / noteCount（2026-11-20 用户指令新增）：事件三态计数（open =
- *   进行中 / done = 完成 / failed = 失败）与独立计划总数（不分 open/closed），
- *   Me 指标卡 KPI 用；历史行程数不从 db 另取——store.trips 已有全量行程卡，
+ * - eventCounts / noteCounts（2026-11-20 用户指令新增；v11 计划改三态计数）：
+ *   事件三态计数（open = 进行中 / done = 完成 / failed = 失败）与计划三态计数
+ *   （open = 进行 / closed = 完成 / failed = 失败，对齐事件行尾口径——原
+ *   noteCount 库存总数改 GROUP BY 三档，Me 行尾「进行 N · 完成 N · 失败 N」），
+ *   Me 内容卡行尾用；历史行程数不从 db 另取——store.trips 已有全量行程卡，
  *   UI 按 status === 'finished' 派生（与进行中行程同款派生口径）。
  */
 export interface MeMetrics {
@@ -221,7 +229,7 @@ export interface MeMetrics {
     journalDays: number;
     totalWords: number;
     eventCounts: { open: number; done: number; failed: number };
-    noteCount: number;
+    noteCounts: { open: number; closed: number; failed: number };
     curve: Array<{ date: string; value: number }>;
 }
 
@@ -352,26 +360,34 @@ interface ArchiveStore {
     // 复用既有 mutation，无需为计划新增对应入口：正文保存走 saveJournalBlocks
     // （块模型/占位过滤/媒体引用对账全量同构）、插图/录音走 attachJournalMedia、
     // 删除走 deleteJournal（级联媒体行 + 文件清理，计划无行程级联分支）、标题
-    // 走 updateJournalTitle（计划 status 恒 'open'，isEditable 闸天然放行）。
+    // 走 updateJournalTitle（进行中天然放行；v11 终态计划与收笔日记同被
+    // isEditable 闸挡下——只读口径一致）。
 
     /**
-     * 新建独立计划（显式建页动作，像建行程/事件一样走表单；同日可建任意多篇）：
-     * 标题与描述均选填。校验先行（错误进 error 通道返回 null）：title trim 后
-     * ≤ JOURNAL_TITLE_MAX、description trim 后 ≤ PLAN_DESCRIPTION_MAX，超长
-     * 整体拒绝不走截断（对齐事件标题口径；trim 后空串合法 = 未命名/无描述）。
-     * 成功返回新行（deleted_at = null）并 bump revision（不 loadAll）。
+     * 新建独立计划（显式建页动作，像建行程/事件一样走分步向导；同日可建任意
+     * 多篇）：v0.4.5 起**标题必填**（对齐 createEvent 的 validateEventInput
+     * 口径，文案 PLAN_TITLE_REQUIRED_ERROR），描述选填。校验先行（错误进
+     * error 通道返回 null）：title trim 后非空、≤ JOURNAL_TITLE_MAX；
+     * description trim 后 ≤ PLAN_DESCRIPTION_MAX，超长整体拒绝不走截断。
+     * 成功返回新行（status 'open' = 进行中，deleted_at = null）并 bump
+     * revision（不 loadAll）。
      */
     createPlan(input: { title: string; description: string }): Promise<JournalRow | null>;
 
     /**
-     * 独立计划元信息更新（标题/描述，均可选）：title null = 清除；字符串经
+     * 独立计划元信息更新（标题/描述/状态，均可选）：title null = 清除；字符串经
      * normalizeJournalTitle（空串归一为 null = 未命名，超长钳制——对齐
      * updateJournalTitle 口径）；description trim 后超 PLAN_DESCRIPTION_MAX
-     * 整体拒绝（与创建同口径），空串合法。仅接受 kind = 'note' 的行（日记的
-     * 标题清除语义走 updateJournalTitle，日记无 description，防误写）。
-     * true = 成功（bump revision，不 loadAll）。
+     * 整体拒绝（与创建同口径），空串合法。status（v11）仅接受计划三态
+     * open/closed/failed（isPlanStatus 守卫，非法值整体拒绝——updateEventMeta
+     * 同款），终态由 db 层同批落 completed_at。仅接受 kind = 'note' 的行
+     * （日记的标题清除语义走 updateJournalTitle，日记无 description/failed，
+     * 防误写）。true = 成功（bump revision，不 loadAll）。
      */
-    updatePlanMeta(id: string, patch: { title?: string | null; description?: string }): Promise<boolean>;
+    updatePlanMeta(
+        id: string,
+        patch: { title?: string | null; description?: string; status?: PlanStatus },
+    ): Promise<boolean>;
     /**
      * 建事件（v6，类似工单）：标题必填，其余可选；正文 blocks 以单空文本段初始化；
      * 状态恒从 'open' 起。GPS 注入不在 store（UI 层经 core/location 取好后传参）。
@@ -466,7 +482,8 @@ interface ArchiveStore {
     completeJournal(journalId: string): Promise<void>;
     /** 重开当天的收笔页（仅当天；历史页不可重开）。 */
     reopenJournal(journalId: string): Promise<void>;
-    /** 计划标题（v4，DEV.md #6）：空串 = 清除；已收笔（closed）不可改（#7 只读语义）。 */
+    /** 计划标题（v4，DEV.md #6）：空串 = 清除；非 open 不可改（#7 只读语义——
+     *  日记 = closed 收笔，计划 = closed/failed 终态，v11 同闸）。 */
     updateJournalTitle(journalId: string, title: string): Promise<boolean>;
     /** 删单篇日记：级联删其媒体行 + 文件（同 deleteTrip 的不留孤儿口径）。 */
     deleteJournal(journalId: string): Promise<boolean>;
@@ -926,7 +943,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         journalDays: 0,
         totalWords: 0,
         eventCounts: { open: 0, done: 0, failed: 0 },
-        noteCount: 0,
+        noteCounts: { open: 0, closed: 0, failed: 0 },
         curve: [],
     },
     mediaUploadProgress: {},
@@ -936,7 +953,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             const today = todayLocal();
             // 本地时区 24:00 自动收笔：加载即收口昨日及更早的 open 日记
             await db.closeStaleOpenJournals(today);
-            const [tripRows, stats, totalWords, dates, eventCounts, noteCount] = await Promise.all([
+            const [tripRows, stats, totalWords, dates, eventCounts, noteCounts] = await Promise.all([
                 db.listTrips(),
                 db.tripStats(),
                 db.journalTotalWords(),
@@ -945,7 +962,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 //（「写过 X 天」与「连续 N 天」不分裂），排除自动建行的空页灌水
                 db.activityDates(),
                 db.eventStatusCounts(),
-                db.noteCount(),
+                db.noteStatusCounts(),
             ]);
             // 曲线窗口覆盖最近 30 天
             const window30 = await db.wordCountByDate(addDaysLocal(today, -29));
@@ -958,7 +975,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                     journalDays: dates.size,
                     totalWords,
                     eventCounts,
-                    noteCount,
+                    noteCounts,
                     curve: curveSeries(window30, 30, today),
                 },
             });
@@ -1502,9 +1519,14 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
     // 这里只补「创建」与「元信息更新」两个无对应入口的动作。
 
     async createPlan(input) {
-        // 校验先行（超长整体拒绝不走截断，对齐事件标题口径）；标题/描述均选填，
-        // trim 后空串合法（未命名计划 / 无描述，展示层兜底）
+        // 校验先行（超长整体拒绝不走截断）；v0.4.5 起标题必填、描述选填——
+        // 与 createEvent 的 validateEventInput 同构（「给计划起个名字」对齐
+        // 「给事件起个名字」），/plan/new 向导的按钮门槛与本校验同源
         const title = input.title.trim();
+        if (title.length === 0) {
+            set({ error: PLAN_TITLE_REQUIRED_ERROR });
+            return null;
+        }
         if (title.length > JOURNAL_TITLE_MAX) {
             set({ error: `计划标题最多 ${JOURNAL_TITLE_MAX} 个字` });
             return null;
@@ -1560,9 +1582,20 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 }
                 description = trimmed;
             }
+            // status（v11）：仅接受合法枚举（非法值整体拒绝，updateEventMeta
+            // 同款防脏值）；终态落 completed_at、回 open 清锚点在 db 层同批写
+            let status: PlanStatus | undefined;
+            if (patch.status !== undefined) {
+                if (!isPlanStatus(patch.status)) {
+                    set({ error: `计划状态不合法：${String(patch.status)}` });
+                    return false;
+                }
+                status = patch.status;
+            }
             await db.updatePlanMeta(id, {
                 ...(title !== undefined ? { title } : {}),
                 ...(description !== undefined ? { description } : {}),
+                ...(status !== undefined ? { status } : {}),
             });
         } catch (error) {
             set({ error: `计划保存失败：${toMessage(error)}` });

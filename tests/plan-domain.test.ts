@@ -25,6 +25,8 @@ test('the plan domain owns the routes and screen files', () => {
         'app/plan/new.tsx',
         'app/plan/[id].tsx',
         'features/archive/plan-form-screen.tsx',
+        // v11：状态机与向导步进的纯逻辑单一落点（node 测试直接 import）
+        'features/archive/plan-logic.ts',
     ]) {
         assert.ok(existsSync(path.join(srcRoot, rel)), `missing ${rel}`);
     }

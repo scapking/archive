@@ -31,6 +31,8 @@ import * as db from './db';
 import type { EventRow, JournalBlock, JournalRow } from './db';
 import { formatDateGroupLabel, isEditable, parseBlocks, previewText } from './journal-logic';
 import { formatEventDateTime } from './event-logic';
+// 计划纯逻辑（v11）：在堆判定收口派生函数，禁散落 status 字面量比较
+import { isPlanOpen } from './plan-logic';
 import {
     formatTripSpan,
     todayLocal,
@@ -67,15 +69,17 @@ import {
  * （eyebrow / 标题 / 描述 / meta 行，见 NoteDeckCard / EventDeckCard）。
  *
  * - **进入口径（完成态不显示，用户指令）**：日记 = 今天不存在或 open（已收笔
- *   不显示）；计划 = 全部（无完成态）；行程 = planning + ongoing（finished
- *   不显示）；事件 = 仅 open（done/failed 不显示）；
+ *   不显示）；计划 = 仅 open（v11 计划状态机：closed/failed 离堆、历史在搜索
+ *   可见，与事件同口径）；行程 = planning + ongoing（finished 不显示）；
+ *   事件 = 仅 open（done/failed 不显示）；
  * - **类型标识（用户指令「卡片要有标识好区分」）**：每张卡 eyebrow 行带类型
  *   前缀（日记/计划/行程/事件）——日记与计划是两个实体（journals.kind 列），
  *   靠 eyebrow 一眼分辨；
  * - **长按菜单**（原 useBlockActionGestures 手势保留在前卡内部；堆的
  *   PanResponder 方向锁只认领水平拖拽，纯点按/长按从不认领，两套手势并存）：
  *   日记卡 → 日记菜单（重命名/完成收笔/删除）；行程卡 → 行程菜单（按卡所属
- *   行程）；计划/事件卡不加菜单；
+ *   行程）；计划卡 → 计划菜单（改计划名/标记完成/标记失败/删除计划，v11 对齐
+ *   事件四字口径）；事件卡 → 事件菜单（标记完成/标记失败）；
  * - 点卡：日记 → /write；计划 → /plan/[id]；行程 → /trip/[id]；事件 →
  *   /events/[id]。
  *
@@ -373,10 +377,11 @@ export function ArchiveScreen() {
                 node: <EventDeckCard event={event} />,
             });
         }
-        // ④ 计划（仅 open——2026-11-19 产品变更：计划可「完成」，完成的进搜索；
-        // 标题空串兜底；2026-11-19 用户优先级指令：计划排末位）
+        // ④ 计划（仅 open——v11 计划状态机：标记完成/失败即离堆，历史在搜索
+        // 可见，对齐事件 open 过滤；标题空串兜底；2026-11-19 用户优先级指令：
+        // 计划排末位）
         for (const note of notes ?? []) {
-            if (note.status !== 'open') continue;
+            if (!isPlanOpen(note)) continue;
             items.push({
                 key: `note-${note.id}`,
                 accessibilityLabel: note.title?.trim() ? `打开计划：${note.title}` : '打开未命名计划',
@@ -442,20 +447,33 @@ export function ArchiveScreen() {
                 accessibilityLabel="新建"
             />
 
-            {/* 重命名设置卡（日记菜单入口，共享组件 ui/rename-card）：条件渲染
-                scrim + 居中卡挂屏根（zIndex 50 压过 FAB/deck）。落库通道经 onSave
-                注入（store.updateJournalTitle，锁定预检 #7 兜底）；Android 返回键
+            {/* 重命名设置卡（日记/计划菜单共用入口，共享组件 ui/rename-card）：
+                条件渲染 scrim + 居中卡挂屏根（zIndex 50 压过 FAB/deck）。初值按
+                renamingJournalId 查目标行（v11 修复计划改名链路：旧实现恒以
+                todayJournal 供初值并作为渲染条件——无日记当天计划改名卡弹不出、
+                有日记时初值还错拿日记标题）；落库通道经 onSave 注入
+                （store.updateJournalTitle，锁定预检 #7 兜底）；Android 返回键
                 由卡片自身 BackHandler 关闭（同块操作卡范式）。 */}
-            {renamingJournalId && todayJournal ? (
-                <RenameCard
-                    initialTitle={todayJournal.title ?? ''}
-                    onSave={(title) =>
-                        useArchiveStore.getState().updateJournalTitle(renamingJournalId, title)
-                    }
-                    onClose={() => setRenamingJournalId(null)}
-                    errorText={error}
-                />
-            ) : null}
+            {renamingJournalId
+                ? (() => {
+                      const target =
+                          todayJournal && todayJournal.id === renamingJournalId
+                              ? todayJournal
+                              : (notes ?? []).find((note) => note.id === renamingJournalId) ??
+                                null;
+                      if (!target) return null;
+                      return (
+                          <RenameCard
+                              initialTitle={target.title ?? ''}
+                              onSave={(title) =>
+                                  useArchiveStore.getState().updateJournalTitle(renamingJournalId, title)
+                              }
+                              onClose={() => setRenamingJournalId(null)}
+                              errorText={error}
+                          />
+                      );
+                  })()
+                : null}
 
             {/* 行程菜单卡（行程卡长按入口，R2，共享组件 ui/action-menu-card）：
                 菜单作用于长按的那张行程卡（tripId 定位）；关闭行程 = end_date
@@ -566,8 +584,11 @@ export function ArchiveScreen() {
                 />
             ) : null}
 
-            {/* 计划菜单卡（计划卡长按入口，四字标题口径）：重命名复用 RenameCard
-                （updateJournalTitle 对 open 计划有效）；删除复用 deleteJournal
+            {/* 计划菜单卡（计划卡长按入口，v11 对齐事件菜单解剖与四字口径）：
+                改计划名复用 RenameCard（updateJournalTitle 对 open 计划有效）；
+                标记完成/标记失败 = 状态即存（updatePlanMeta status，计划离堆——
+                deck 与计划堆只显 open，事件菜单同款交互；closed 沿用存量「完成
+                计划」落库值，failed 为 v11 新终态）；删除复用 deleteJournal
                 （级联删媒体，二次确认）。 */}
             {planMenu ? (
                 <ActionMenuCard
@@ -579,9 +600,14 @@ export function ArchiveScreen() {
                             title: '改计划名',
                         },
                         {
-                            key: 'complete',
+                            key: 'done',
                             icon: <LucideCheck size={20} strokeWidth={1.9} />,
-                            title: '完成计划',
+                            title: '标记完成',
+                        },
+                        {
+                            key: 'failed',
+                            icon: <LucideClose size={20} strokeWidth={1.9} />,
+                            title: '标记失败',
                         },
                         {
                             key: 'delete',
@@ -596,11 +622,16 @@ export function ArchiveScreen() {
                             setRenamingJournalId(planMenu.id);
                             return;
                         }
-                        if (key === 'complete') {
+                        if (key === 'done' || key === 'failed') {
                             haptics.success();
                             setNoteMenu(null);
-                            // 完成计划：closed 后离开首页 deck 与计划堆（搜索仍可见）
-                            void useArchiveStore.getState().completeJournal(planMenu.id);
+                            // 终态即离堆（open 过滤，事件同款）：完成 = closed
+                            // （兼容存量）、失败 = failed；completed_at 由 db 同批落
+                            void useArchiveStore
+                                .getState()
+                                .updatePlanMeta(planMenu.id, {
+                                    status: key === 'done' ? 'closed' : 'failed',
+                                });
                             return;
                         }
                         if (!planMenu.confirmDelete) {

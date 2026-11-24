@@ -205,4 +205,22 @@ export const ARCHIVE_MIGRATIONS: SchemaMigration[] = [
             "UPDATE trip_items SET completed_at = COALESCE(completed_at, updated_at), wrap_closed_at = updated_at WHERE status = 'failed' AND wrap_closed_at IS NULL",
         ],
     },
+    {
+        version: 11,
+        statements: [
+            // v11（计划状态机，v0.4.5 用户指令）：独立计划（journals kind='note'）
+            // 对齐事件三态 open/closed/failed（语义与展示口径见 schema.ts v11 段与
+            // plan-logic.ts）。**零 DDL**——status 本就是 TEXT 无 CHECK 列（域惯例：
+            // 状态约束在应用层，events/trip_items 同款），故本迁移不动表结构，只登记
+            // 值域归位回填：note 行出现的任何域外 status（手改库/外部包导入的坏值）
+            // 统一归 'open'（进行中——最保守档位，内容仍可读可写，不误封只读）。
+            // 存量升级路径推演（tests/plan-status-migration.test.ts 以 node:sqlite
+            // 实测同款语句）：v11 前 note 行只由 createPlan/completeJournal 写过
+            // 'open'/'closed'，本语句对真实存量数据是幂等 no-op——旧 kind='note' 行
+            // 一条不丢、状态原样读出（'open' 即「默认视为进行中」口径）；daily 行
+            // 完全不进 WHERE（收笔语义与三态无关，不触碰历史）。
+            `UPDATE journals SET status = 'open'
+             WHERE kind = 'note' AND status NOT IN ('open', 'closed', 'failed')`,
+        ],
+    },
 ];

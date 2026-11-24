@@ -7,6 +7,7 @@ import { parseBlocks, previewText, type JournalRow } from './journal-logic';
 // 事件结果：store.searchEvents 返回已装饰行（decorateEvent 在 store 内统一做，
 // 与 /events 列表同口径），此处只消费 Event 类型与状态片。
 import { formatEventDateTime, type Event } from './event-logic';
+import { planStatusLabel } from './plan-logic';
 import { formatDateParts, formatTripSpan, tripDisplayTitle } from './trip-logic';
 import { CardDeck, type DeckItem } from './ui';
 import { LoadingView, ScreenHeader } from './ui';
@@ -157,7 +158,9 @@ export function SearchResultsScreen({ spec }: { spec: SearchSpec }) {
                 node: (
                     <SearchFace
                         type="计划"
-                        status={row.status === 'open' ? '进行中' : '已收笔'}
+                        // 计划三态词表走 plan-logic 单源（v11 起有 failed，
+                        // 不再沿用日记「已收笔」二分误标）
+                        status={planStatusLabel(row.status)}
                         title={row.title?.trim() || previewText(parseBlocks(row.blocks), 40) || '[媒体]'}
                         body={row.description?.trim() ? row.description : undefined}
                         meta={`${monthDay} ${weekday}`}

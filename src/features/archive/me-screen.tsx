@@ -43,8 +43,9 @@ import { LineChart, LoadingView, usePalette } from './ui';
  *   （2026-11 用户反馈「合并为一个卡片」口径延续；计划行 → /notes、行程行 → /trips
  *   堆叠库（各自只翻自己的卡），卡片本身只显示名字不预览内容）。**行尾弱化
  *   计数（2026-11-20）**：事件行尾「进行 X · 完成 Y · 失败 Z」（状态词与事件
- *   筛选两字词表同源）、计划行尾「N 篇」、行程行尾「进行 X · 历史 Y」——
- *   数据 = metrics.eventCounts / metrics.noteCount / store.trips 派生，数字
+ *   筛选两字词表同源）、计划行尾「进行 X · 完成 Y · 失败 Z」（v11 计划状态机
+ *   对齐事件行尾口径，原库存总数「N 篇」退役）、行程行尾「进行 X · 历史 Y」——
+ *   数据 = metrics.eventCounts / metrics.noteCounts / store.trips 派生，数字
  *   跟着入口走，不在指标卡另立格子。卡内行与行**零线条**：
  *   行间分隔完全交给留白与行内 padding 节奏（入口行 h-12 单行），无任何
  *   hairline 元素。按压语言 = 行级 Pressable + active:bg-ink-raised 背景高亮
@@ -247,7 +248,7 @@ export function MeScreen() {
                                 aspectRatio/flex/百分比这类 web 宽容器下会计算失控的
                                 尺寸策略，LineChart 内部即「显式 height style + onLayout
                                 测宽」，两端一致；168 在空数据态显得空旷（desktop 大
-                                空白反馈的观感成分之一），120 收紧后 plotH 仍有 88 */}
+                                空白反馈的观感成分之一），120 收紧后 plotH 仍有 84 */}
                             <LineChart points={metrics.curve} animated height={120} />
                         </Enter>
                     </View>
@@ -287,7 +288,10 @@ export function MeScreen() {
                             </Enter>
                             {/* 计划行 → /notes 计划堆（只翻独立计划卡；卡片只显示
                                 「计划」二字不预览内容；2026-11-19 用户指令删除
-                                「日记」行——日记入口在首页 /write） */}
+                                「日记」行——日记入口在首页 /write）。行尾计数
+                                v11 对齐事件行：三态「进行 · 完成 · 失败」（状态
+                                词与 EVENT/PLAN_STATUS_LABELS 词表同源，原「N 篇」
+                                库存总数退役） */}
                             <Enter delay={280 + ENTER_STAGGER * 2}>
                                 <Pressable
                                     onPress={() => router.push('/plans' as never)}
@@ -304,7 +308,7 @@ export function MeScreen() {
                                         className="text-[12px] text-ink-muted dark:text-inkd-muted"
                                         style={{ fontVariant: ['tabular-nums'] }}
                                     >
-                                        {`${metrics.noteCount} 篇`}
+                                        {`进行 ${metrics.noteCounts.open} · 完成 ${metrics.noteCounts.closed} · 失败 ${metrics.noteCounts.failed}`}
                                     </Text>
                                     <LucideChevronRight size={16} strokeWidth={1.9} color={palette.faint} />
                                 </Pressable>

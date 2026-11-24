@@ -73,6 +73,8 @@ import {
     type JournalBlock,
 } from './journal-logic';
 import { formatDateParts, tripDisplayTitle } from './trip-logic';
+// 计划状态派生（v11）：锁页横幅按终态分文案，禁屏内散落 status 字面量
+import { isPlanFailed } from './plan-logic';
 import { getJournal, getTrip, mediaByJournalIds } from './db';
 import type { JournalMediaRow, JournalRow, TripRow } from './db';
 import { safeBack } from './ui';
@@ -94,8 +96,10 @@ import {
 } from './ui';
 
 /**
- * 计划模式的 + 选择器行词表（v8）：全行裁「完成收笔」——计划 status 恒 'open'，
- * 无收笔/24:00 语义（schema.ts JournalKind 注）。InsertMenu 的 actions 过滤
+ * 计划模式的 + 选择器行词表（v8）：全行裁「完成收笔」——收笔/24:00 是日记
+ * 语义，计划不继承（schema.ts JournalKind 注）；v11 计划的标记完成/失败入口在
+ * 首页计划卡长按菜单（对齐事件），编辑器是内容通道、不挂状态动作。InsertMenu
+ * 的 actions 过滤
  * 机制（事件编辑器同款接线面）收敛在词表一个常量上：过滤不重排，行序仍由
  * 组件内 allRows 决定；complete 确认步随行退场不可达，runInsert 的 'complete'
  * 分支成为日常模式专属路径。
@@ -177,11 +181,14 @@ const ListChecksIcon = createIcon(
  * **计划模式（v8 独立计划复用本编辑器，单一实现源）**：/plan/[id] 路由以
  * journalId 挂载计划行，屏内按 journal.kind === 'note' 分流（不设独立 prop
  * ——行类型即模式事实源，错传日记 id 也天然回落日记行为；journalId 载入路径
- * 本就跳过 ensureTodayJournal，计划侧零改动）：计划 status 恒 'open'、无收笔
- * 语义——+ 选择器按 NOTE_INSERT_ACTIONS 裁「完成收笔」行、屏头「进行中/已
+ * 本就跳过 ensureTodayJournal，计划侧零改动）：计划不参与收笔机（v8）——
+ * + 选择器按 NOTE_INSERT_ACTIONS 裁「完成收笔」行、屏头「进行中/已
  * 收笔」状态位不渲染、录制归属标签无标题时落「未命名计划」而非「M月D日 日记」
  * ；重命名（updateJournalTitle 对 open 计划有效）/正文/媒体/录音按 journalId
- * 天然可用。日常（daily）路径行为零变化。
+ * 天然可用。v11 计划三态（进行/完成/失败，标记入口在首页计划卡长按菜单）：
+ * 终态行 isEditable 天然为 false → 正文/媒体/改名只读，锁页横幅走计划文案
+ * （「该计划已完成 / 已标记失败」，不借日记的「收笔」措辞）。日常（daily）
+ * 路径行为零变化。
  *
  * 沉浸化交互承诺（#1/#6/#7，DEV.md）：
  * - 底部工具坞清空：保存状态与字数上 masthead（轻量 meta 行），底部只留
@@ -1284,8 +1291,15 @@ export function JournalEditScreen({
                     </Text>
                 ) : null}
                 {!editable ? (
+                    // 锁页横幅分实体文案（v11）：日记 = 收笔口径不变；计划 =
+                    // 三态终态口径（完成 closed / 失败 failed，标记入口在首页
+                    // 计划卡菜单），「收笔」是日记词表不借给计划
                     <Text className="px-6 pb-3 text-[12px] text-ink-muted dark:text-inkd-muted">
-                        本页已收笔，内容不可再修改。
+                        {isPlan
+                            ? journal && isPlanFailed(journal)
+                                ? '该计划已标记失败，内容不可再修改。'
+                                : '该计划已完成，内容不可再修改。'
+                            : '本页已收笔，内容不可再修改。'}
                     </Text>
                 ) : null}
 

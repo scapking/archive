@@ -35,7 +35,9 @@
  * - journals 复用为两类实体的容器，kind 列区分：'daily' = 一天一篇的日记
  *   （原语义：同日唯一、24:00 自动收笔，status 可 open/closed；含行程内日记），
  *   'note' = 独立计划（用户显式新建、同日任意多篇、不受同日唯一/收笔约束，
- *   status 恒 'open'，local_date 仅记录创建日供展示/排序）。复用建表而非单独
+ *   不参与 24:00 自动收笔，local_date 仅记录创建日供展示/排序；status 自
+ *   v11 起为计划三态状态机 open/closed/failed，v8 当时的「status 恒
+ *   'open'」口径已被 v11 取代）。复用建表而非单独
  *   建表的原因：journal_media 引用、块编辑器、保存链路、搜索、删除级联全部
  *   原样复用，单独建表 = 整套媒体/块管线重复实现；
  * - journals.description：独立计划的短描述（选填，类似行程 description；
@@ -54,6 +56,17 @@
  *   教训：全新装先跑旧 DDL 再跑 v9 ALTER，DDL 提前带新列会 duplicate column
  *   崩迁移链）；
  * - v9 同步建 idx_trip_items_trip_date（行程表页按 (trip_id, local_date) 取天）。
+ *
+ * v11 追加（计划状态机，v0.4.5 用户指令）：
+ * - 独立计划（journals kind='note'）获得对齐事件的三态状态机：
+ *   'open' = 进行中 / 'closed' = 已完成 / 'failed' = 已失败。完成沿用
+ *   'closed'（2026-11-19「完成计划」既有落库值，存量已完成计划天然读出为
+ *   已完成，不回填）；'failed' 为新增终态值。status 本就是 TEXT 无 CHECK
+ *   列——**零 DDL**，三态约束按域惯例（events/trip_items 同款）落应用层，
+ *   迁移只登记值域归位回填（见 migrations.ts v11），存量 kind='note' 行
+ *   全部原样保留、按值读出（旧行只可能是 'open'/'closed'，即进行中/完成）；
+ * - 'failed' 仅 note 行写入：daily 行永不落 'failed'（手动收笔与 24:00
+ *   扫描都只写 'closed'），读取侧 isEditable 对三态统一「非 open 即只读」。
  *
  * 约定不变：UUID 主键；日期归属用本地日期字符串 `YYYY-MM-DD`；
  * created_at/updated_at 为 epoch ms；删除一律软删除。
@@ -75,9 +88,24 @@ export const PENDING_MEDIA_ID = '__pending__';
  */
 export const TRIP_OPEN_ENDED = 'open';
 
-/** 日记状态：open = 可继续写；closed = 已收笔（手动完成或跨日自动）。
- *  独立计划（v8）不受收笔语义约束，status 恒 'open'。 */
-export type JournalStatus = 'open' | 'closed';
+/**
+ * journals.status 值域（v11 起三值）：
+ * - daily 行：open = 可继续写；closed = 已收笔（手动完成或跨日自动）——
+ *   daily 永不写 'failed'（收笔路径只写 'closed'，v11 注）；
+ * - note（独立计划）行：状态机对齐 events 三态（v11，见文件头 v11 段与
+ *   plan-logic.ts）——open = 进行中；closed = 已完成；failed = 已失败。
+ * 约束在应用层（DDL 无 CHECK，域惯例同 events.status / trip_items.status）；
+ * 展示文案与判断一律走 journal-logic.isEditable 与 plan-logic 派生函数。
+ */
+export type JournalStatus = 'open' | 'closed' | 'failed';
+
+/**
+ * 计划（journals kind='note'）状态（v11）：值集与 JournalStatus 同形——
+ * open = 进行中 / closed = 已完成 / failed = 已失败。完成用 'closed' 而非
+ * 事件侧的 'done'，是为了兼容 2026-11-19「完成计划」写下的存量 closed 行
+ * （迁移不回填、备份往返不歧义）；三态语义与 EventStatus 一一对应。
+ */
+export type PlanStatus = JournalStatus;
 
 /**
  * journals 行的实体种类（v8）：journals 表同时承载「日记」与「独立计划」两类
@@ -85,8 +113,9 @@ export type JournalStatus = 'open' | 'closed';
  * - daily：一天一篇的日记（原语义，含行程内日记）——受同日唯一索引约束、
  *   参与本地时区 24:00 自动收笔；
  * - note：独立计划——用户显式新建（像建行程一样走表单，不随日期自动建页），
- *   同日任意多篇，不参与收笔语义；local_date 仅记录创建日（展示/排序用，
- *   无「归属日」约束）。
+ *   同日任意多篇，不参与收笔语义（v11 起 status 为计划三态状态机
+ *   open/closed/failed，见 JournalStatus 注）；local_date 仅记录创建日
+ *   （展示/排序用，无「归属日」约束）。
  * 「一天一篇」「24:00 自动收笔」等 daily 专属判定一律带 kind 过滤（db 层各
  * daily 路径已逐一收口），禁止散落字面量比较。
  */

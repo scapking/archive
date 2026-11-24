@@ -20,6 +20,7 @@ import type {
     JournalKind,
     JournalMediaRow,
     JournalRow,
+    PlanStatus,
     TripDayMetaRow,
     TripItemRow,
     TripItemStatus,
@@ -40,6 +41,7 @@ export type {
     JournalMediaRow,
     JournalRow,
     JournalStatus,
+    PlanStatus,
     TripDayMetaRow,
     TripItemRow,
     TripItemStatus,
@@ -266,19 +268,19 @@ export async function updateJournalTitle(id: string, title: string | null): Prom
 
 /**
  * 手动收笔（日记专属语义，v8 起带 kind 过滤）：收笔/重开是「一天一篇」日记的
- * 状态机，独立计划 status 恒 'open'、永不该被打成 closed 只读。kind 过滤后
- * 对计划的误调用 UPDATE 命中 0 行静默不生效——计划保持 open 是正确状态，
- * 优于无过滤时把计划误收笔（不可逆地破坏只读语义的预期）。
+ * 状态机。v11 起计划三态由 updatePlanMeta(status) 收口（标记完成/失败走计划
+ * 自己的写入口），本函数不再是计划的完成通道——kind 过滤后对计划的误调用
+ * UPDATE 命中 0 行静默不生效，计划保持自身状态（优于无过滤时把计划误写成
+ * 日记口径的 closed 收笔）。
  */
-/** 完成日记/计划（2026-11-19 产品变更：计划也可「完成」——closed 后离开
-    首页 deck 与计划堆，仅在搜索可见）。 */
+/** 完成日记（历史注：2026-11-19 产品变更曾让计划也走本函数落 closed；v11 起
+    计划完成走 updatePlanMeta——closed 值沿用，存量已完成计划不迁移）。 */
 export async function completeJournal(id: string): Promise<void> {
     const db = await getDb();
-    await db.run("UPDATE journals SET status = 'closed', completed_at = ?, updated_at = ? WHERE id = ?", [
-        Date.now(),
-        Date.now(),
-        id,
-    ]);
+    await db.run(
+        "UPDATE journals SET status = 'closed', completed_at = ?, updated_at = ? WHERE id = ? AND kind = 'daily'",
+        [Date.now(), Date.now(), id],
+    );
 }
 
 /** 重开收笔页（仅当天可重开，判定在 journal-logic.canReopen；日记专属，见 completeJournal）。 */
@@ -299,8 +301,9 @@ export async function getJournal(id: string): Promise<JournalRow | null> {
 
 /**
  * 本地时区 24:00 自动收笔：所有 open 且日期早于今天的**日记**（kind = 'daily'）收口。
- * v8 关键正确性点：独立计划的 local_date 只是创建日、status 恒 'open'——不筛 kind
- * 会把昨天建的计划也「收笔」成只读，违背计划不受收笔语义约束的产品定义。
+ * v8 关键正确性点：独立计划的 local_date 只是创建日，不参与收笔机——不筛 kind
+ * 会把昨天建的计划也「收笔」成只读，违背计划不受收笔语义约束的产品定义
+ * （v11 起计划有自持的三态状态机，与收笔扫描更不可互扰）。
  */
 export async function closeStaleOpenJournals(today: string): Promise<number> {
     const db = await getDb();
@@ -331,16 +334,20 @@ export async function listDailyJournals(limit = 60): Promise<JournalRow[]> {
 }
 
 // ─── 独立计划（v8：journals.kind = 'note'，复用日记容器与媒体/块管线）───────
-// 复用面：getJournal / updateJournalBlocks / updateJournalTitle（计划 status 恒
-// 'open'，isEditable 闸天然放行）/ softDeleteJournalCascade / mediaByJournalIds /
-// searchJournals（按 id/关键词查询不筛 kind——计划可被搜索，期望行为）均对
-// note 行同样适用，无需按 kind 复制一套出口。
+// 复用面：getJournal / updateJournalBlocks / updateJournalTitle /
+// softDeleteJournalCascade / mediaByJournalIds / searchJournals（按 id/关键词
+// 查询不筛 kind——计划可被搜索，期望行为）均对 note 行同样适用，无需按 kind
+// 复制一套出口。状态口径（v11）：计划三态 open/closed/failed 由本模块
+// updatePlanMeta 收口写入；复用面里 isEditable 闸天然承接「非 open 即只读」
+// （已终态计划的正文保存/改名被 store 预检挡住，与日记收笔同机制）。
 
 /**
  * 新建独立计划（store.createPlan 编排）：kind 'note'，trip_id 恒 null（计划不从属
  * 行程），local_date = 创建当天（todayLocal，仅展示/排序用——计划无「归属日」
  * 语义，不受同日唯一索引与 24:00 自动收笔约束）。title/description 由调用方
- * 校验后传入，此处 trim 后直落（title 可为空串 = 未命名，展示层兜底）。
+ * 校验后传入，此处 trim 后直落（v0.4.5 起 store 校验标题必填、对齐事件建页
+ * 口径；db 保留空串弹性——历史未命名行与改名清除语义都靠展示层
+ * 「未命名计划」兜底）。
  * 正文初始化为单个空文本段（复用日记块模型，编辑器至少留一个可落笔段）。
  *
  * 分工说明：id 在本函数内生成（签名只收 title/description；core/crypto 的
@@ -397,24 +404,40 @@ export async function listPlans(limit = 200): Promise<JournalRow[]> {
     );
 }
 
-/** 独立计划总数（Me 指标卡用；不分 open/closed——「计划数量」是库存口径）。 */
-export async function noteCount(): Promise<number> {
+/**
+ * 独立计划状态计数（v11，Me 计划行尾用）：未删 note 行按 status 一次 GROUP BY
+ * 出三档（open = 进行中 / closed = 完成 / failed = 失败），缺档补 0——口径对齐
+ * eventStatusCounts（事件行尾同款「进行 N · 完成 N · 失败 N」）。
+ */
+export async function noteStatusCounts(): Promise<{
+    open: number;
+    closed: number;
+    failed: number;
+}> {
     const db = await getDb();
-    const row = await db.getFirst<{ n: number }>(
-        "SELECT COUNT(*) AS n FROM journals WHERE kind = 'note' AND deleted_at IS NULL",
+    const rows = await db.getAll<{ status: PlanStatus; n: number }>(
+        "SELECT status, COUNT(*) AS n FROM journals WHERE kind = 'note' AND deleted_at IS NULL GROUP BY status",
     );
-    return row?.n ?? 0;
+    const byStatus = new Map(rows.map((row) => [row.status, row.n]));
+    return {
+        open: byStatus.get('open') ?? 0,
+        closed: byStatus.get('closed') ?? 0,
+        failed: byStatus.get('failed') ?? 0,
+    };
 }
 
 /**
- * 独立计划元信息更新（store.updatePlanMeta 编排）：title null = 清除为未命名
- * （对齐 updateJournalTitle 的可空语义）；任一写入都 bump updated_at。
- * 「目标必须是计划」的 kind 校验由 store 层预检（db 认列值、业务校验在 store，
+ * 独立计划元信息更新（store.updatePlanMeta 编排，v11 起含状态）：title null =
+ * 清除为未命名（对齐 updateJournalTitle 的可空语义）；任一写入都 bump
+ * updated_at。status（v11，计划三态）：终态（closed/failed）落 completed_at =
+ * 此刻（对齐 completeJournal 的收笔锚点语义，标记即归档时刻）；回 open 清
+ * completed_at（对齐 reopenJournal）。枚举合法性由 store 预检（isPlanStatus），
+ * 「目标必须是计划」的 kind 校验同样在 store 层（db 认列值、业务校验在 store，
  * 分层同 updateJournalTitle 的 isEditable 预检）。
  */
 export async function updatePlanMeta(
     id: string,
-    patch: { title?: string | null; description?: string },
+    patch: { title?: string | null; description?: string; status?: PlanStatus },
 ): Promise<void> {
     const db = await getDb();
     const fields: string[] = [];
@@ -426,6 +449,13 @@ export async function updatePlanMeta(
     if (patch.description !== undefined) {
         fields.push('description = ?');
         params.push(patch.description);
+    }
+    if (patch.status !== undefined) {
+        fields.push('status = ?');
+        params.push(patch.status);
+        // completed_at 与 status 同批写（终态 = 进入终态的时刻；回 open 清空）
+        fields.push('completed_at = ?');
+        params.push(patch.status === 'open' ? null : Date.now());
     }
     if (fields.length === 0) return;
     fields.push('updated_at = ?');

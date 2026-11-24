@@ -6,6 +6,7 @@ import * as db from './db';
 import type { JournalRow } from './db';
 import { useArchiveRevision, useArchiveStore, type TripCard } from './store';
 import { formatEventDateTime } from './event-logic';
+import { isPlanOpen } from './plan-logic';
 import { formatTripSpan, tripDisplayTitle } from './trip-logic';
 import { CardDeck, LoadingView, safeBack, type DeckItem } from './ui';
 import { CloseButton } from './ui';
@@ -118,9 +119,9 @@ export function LibraryScreen({ kind }: { kind: LibraryKind }) {
                 ),
             }));
         }
-        // 计划堆只显 open（完成的进搜索）
+        // 计划堆只显进行中（已完成/已失败进搜索）——比较收口 plan-logic.isPlanOpen
         return (notes ?? [])
-            .filter((note) => note.status === 'open')
+            .filter(isPlanOpen)
             .map((note): DeckItem => ({
             key: `note-${note.id}`,
             onPress: () => router.push({ pathname: '/plan/[id]', params: { id: note.id } } as never),
