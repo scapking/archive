@@ -287,6 +287,40 @@ export function prewarmFileUrl(key: string, revision: number): void {
         .catch(() => undefined);
 }
 
+/**
+ * 邻卡位图预解码（v0.4.6 性能红线，web-only）：prewarmFileUrl 只预热 blob
+ * URL——换张收口帧首次绘制新位图仍要付解码/降采样的主线程成本（CDP 实测
+ * 图片堆收口帧 88ms 帧距的落点）。本函数把解码挪进空闲窗：离屏 <img> 按
+ * 目标显示尺寸（决定 Chromium 的 decode-time downscale 档位）requestIdleCallback
+ * 排期 decode()，换张帧命中同源位图缓存只剩绘制。
+ * 持有引用直到解码收口（防延迟撤销打断），失败静默（预热是增强）。
+ * native 直接 no-op：位图管线由原生层自管，JS 侧无解码帧可挪。
+ */
+export function prewarmImageDecode(
+    key: string,
+    revision: number,
+    width: number,
+    height: number,
+): void {
+    if (!WEB || !key || !(width > 0) || !(height > 0)) return;
+    void acquireFileUrl(key, revision)
+        .then(({ uri, release }) => {
+            const img = new window.Image();
+            img.decoding = 'async';
+            // 目标尺寸预置：detached 元素不参与布局，仅作为解码降采样的档位提示
+            img.width = Math.ceil(width);
+            img.height = Math.ceil(height);
+            img.src = uri;
+            const run = () => img.decode().then(release, release);
+            if (typeof window.requestIdleCallback === 'function') {
+                window.requestIdleCallback(() => run());
+            } else {
+                setTimeout(run, 200);
+            }
+        })
+        .catch(() => undefined);
+}
+
 /** 某篇日记的媒体行（数据版本变化自动重载；订阅经 data-revision，不经 store）。 */
 export function useJournalMedia(journalId: string | null): JournalMediaRow[] {
     const [rows, setRows] = useState<JournalMediaRow[]>([]);

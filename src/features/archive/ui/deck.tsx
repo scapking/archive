@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated as RNAnimated, PanResponder, Pressable, Text, View } from 'react-native';
 import type { PanResponderGestureState } from 'react-native';
-import { usePalette } from './theme';
+import { deckShadowStyle, usePalette } from './theme';
 
 /**
  * 重叠露条多卡 deck（archive 首页 + /notes、/trips 共用）：**原双卡 deck 的
@@ -28,15 +28,20 @@ import { usePalette } from './theme';
  * 页码（2026-11-19 用户指令「卡片容器的一部分」）：页码 = 卡容器的最后一个
  * 子元素（卡底内部居中裸数字，`X / N`），随卡面同底色——不是覆盖层/悬浮物。
  *
- * **堆叠颜色语言（v0.4.5 重设计，用户否掉两版后的定稿口径）**：层次靠
- * **同族实色色阶**，不靠透明度、不靠描边环——前卡壳面 = surface（纸面），
- * 背卡壳面 = deckEdge（theme.ts 堆叠色阶：浅色沉到 control 档 = 纸边投影，
- * 深色抬到 inkd-control 档 = 受光下层纸边，双主题与页面底色都拉开 ≥1.35
- * 对比，tests/deck-stack-colors 把关）；可见层透明度恒 1（背卡内容本就被
- * 不透明前卡全遮，渐隐只会把露条洗进页面底色——v0.4.3 的 0.45「太淡」与
- * v0.4.4 的 0.92+hairline 环「不协调」都出在用透明度顶替色阶），淡出只保留
- * 给隐藏层位（1→0，翻卡退场通道）。露条是纯壳面（内容右缩进铁律不变），
- * 所以壳面色即堆叠边色，与任何卡面内容（素面/渐变/图片）天然同族不打架。
+ * **堆叠光影语言（「纸 × 墨 2.0」v0.4.6 重做，用户第 1 条令「不要灰色相进、
+ * 但要可以区分」）**：卡面一律纸色 surface（v0.4.5 的 deckEdge 实色灰板壳色
+ * **退役**——整块背卡读作「灰色相进」被否），层次三线索全部走光影：
+ * ①柔和投影（theme.deckShadow front/back 两档 + deckShadowStyle()，光源左上
+ * 影落右下——前卡的影咬在背卡露条上，边界由影而不是色块给出）；
+ * ②位移（背卡右移 PEEK 露条）；③轻缩放（0.95 纵深）。透明度只留退场通道
+ * （隐藏层位 1→0；可见层恒 1，v0.4.3 渐隐洗白的教训不作回退）。tests/
+ * deck-stack-colors 按新契约把关（纸面同色 / 投影参数在动画图外 / deckEdge
+ * 全域退役）。
+ *
+ * **挂载纪律（v0.4.6 性能红线配套）**：只有前卡与第一背卡（可见层）挂真实
+ * 卡面内容；更深层位不挂（退场靠 DECK_CONTENT_LINGER_MS 滞留窗收尾动画，
+ * 沉淀后卸载），壳层保留——首页/行程表 N 卡 deck 的隐藏层此前全量常驻渲染
+ * （含封面 Image 的解码/布局），属纯浪费。
  *
  * 手势（原 deck 沿用）：PanResponder 方向锁认领（|dx|>10 且 |dx|>1.5|dy|）——
  * 纵向语义（卡面长按菜单、误触抖动）不受伤；纯点按从不认领（点卡语义全保）；
@@ -92,6 +97,13 @@ const SPRING_FRICTION = 11;
 const VISIBLE_DEPTH = 1;
 /** 隐藏层位（超出可见深度的收敛目标：完全淡出）。 */
 const DECK_HIDDEN = VISIBLE_DEPTH + 1;
+/**
+ * 退场卡内容滞留窗（ms，v0.4.6 挂载纪律）：翻卡提交后旧前卡层位 0→隐藏，
+ * 但视觉上仍以「滑移 + 淡出」在场约一个 spring 周期（friction 11 档收敛
+ * ~300-400ms）；内容卸载等到这个沉淀窗之后，退场全程有内容、收口后深层
+ * 零常驻。与卡面重提（反向滑回）竞态由 effect cleanup（clearTimeout）消解。
+ */
+const DECK_CONTENT_LINGER_MS = 450;
 /** 拖拽参数（原 deck 沿用）：认领阈值/方向锁比例、提交阈值、橡皮筋阻尼、背卡视差。 */
 const PAN_CLAIM_DX = 10;
 const PAN_CLAIM_RATIO = 1.5;
@@ -324,8 +336,8 @@ function DeckCardLayer({
     // 区间从原 0..4 收窄到实际值域 0..DECK_HIDDEN(2)——层位定位经 Math.min 收敛
     // 恒不出 2，区间尾巴 3/4 是插值图里的死段；每卡 native 节点数不增不减，
     // 区间收窄只瘦插值表达式（结构上再省节点会牺牲视觉分层，不做）。
-    // v0.4.5 色语言：透明度只留退场通道（可见层恒 1，见文件头「堆叠颜色
-    // 语言」注），分层 = scale + deckEdge 实色壳面（静态 style，不入动画图）
+    // v0.4.6 光影语言：透明度只留退场通道（可见层恒 1，见文件头「堆叠光影
+    // 语言」注），分层 = 位移 + scale + 投影（投影走静态壳层 style，不入动画图）
     const layerStyle = useMemo(
         () => ({
             transform: [
@@ -359,11 +371,38 @@ function DeckCardLayer({
         () => ({ position: 'absolute' as const, top: 0, bottom: 0, left: 0, right: PEEK }),
         [],
     );
-    // 堆叠壳面色（v0.4.5 色语言，非 CSS 通道走 palette，禁散写 hex）：前卡
-    // surface 纸面（卡面内容铺满，壳色只在素面卡透底处可见，观感与旧版一致）；
-    // 背卡 deckEdge——露条（唯一可见的壳面区域）是实色同族色阶，不再渐隐
+    // 堆叠壳面（「纸 × 墨 2.0」v0.4.6 色语言，非 CSS 通道走 palette，禁散写
+    // hex）：**前卡与背卡壳面同色 surface（纸面）**——deckEdge 灰板退役；
+    // 可区分性来自光影三线索：投影（deckShadow front/back 两档，静态 style
+    // 挂卡壳 View 随层 transform 移动，不进动画图——native driver 白名单铁律
+    // 不变）+ 位移 + 轻缩放。投影参数与透明度插值无关：可见层恒实色，
+    // 淡出只留给隐藏层位（退场通道）。
     const palette = usePalette();
-    const shellBg = depth === 0 ? palette.surface : palette.deckEdge;
+    const shellBg = palette.surface;
+    // 投影档在渲染期静态选定（depth 是 state 派生值，不是动画值），样式对象
+    // 按档记忆（palette 只在主题切换时换引用；两档对象极小，直建无 memo 压力）
+    const shellShadow = deckShadowStyle(
+        depth === 0 ? palette.deckShadow.front : palette.deckShadow.back,
+    );
+    // 挂载纪律（v0.4.6 性能红线）：可见层（前卡 + 第一背卡）挂真实卡面，
+    // 更深层位不挂——首页/行程表 N 卡 deck 的隐藏卡此前全量常驻渲染（含
+    // 封面 Image 的解码/布局），纯浪费。两条时序铁律：
+    // - 升入可见层（翻卡后被提起的卡）在**渲染期**同步置挂（React 派生态
+    //   调整模式，use-file-url 换 key 同法）——effect 落地在 paint 后，会让
+    //   新前卡空一帧白纸壳，正是本轮要消灭的观感；
+    // - 退场（可见 → 隐藏）内容**滞留到动画沉淀后再卸载**：退场卡沿
+    //   0→PEEK 滑移淡出，前 ~450ms 仍是可见帧，立即卸载会看到空白纸壳滑走；
+    //   重滑把卡重新提起时卸载定时器由 effect cleanup 取消。
+    const [contentMounted, setContentMounted] = useState(depth <= VISIBLE_DEPTH);
+    if (depth <= VISIBLE_DEPTH && !contentMounted) {
+        setContentMounted(true);
+    }
+    useEffect(() => {
+        if (depth > VISIBLE_DEPTH && contentMounted) {
+            const linger = setTimeout(() => setContentMounted(false), DECK_CONTENT_LINGER_MS);
+            return () => clearTimeout(linger);
+        }
+    }, [depth, contentMounted]);
 
     return (
         <View style={[slot, { zIndex: total - depth }]}>
@@ -375,26 +414,28 @@ function DeckCardLayer({
                     accessibilityLabel={depth === 0 ? (item.accessibilityLabel ?? '当前卡片') : '下一张卡片'}
                 >
                     {/* 卡容器（deck 统一绘制圆角壳——调用方卡面不再自带卡壳；
-                        底色走 palette 实色色阶：前卡 surface、背卡 deckEdge，
-                        v0.4.5 色语言见文件头注）+ **页码为卡容器的最后一个
+                        底色一律 palette.surface 纸面 + deckShadow 投影，
+                        v0.4.6 光影语言见文件头注）+ **页码为卡容器的最后一个
                         子元素**（2026-11-19 用户指令「卡片容器的一部分，不是
                         悬浮窗口」：页码嵌在卡底内部居中，裸数字随卡面同底色，
                         非覆盖层）；pointerEvents none 不挡卡面触摸 */}
                     <View
                         className="h-full w-full flex-1 flex-col overflow-hidden rounded-card"
-                        style={{ backgroundColor: shellBg }}
+                        style={{ backgroundColor: shellBg, ...shellShadow }}
                     >
                         {/* 卡面铺满整卡（flex-1 占满壳）——渐变类卡面的颜色自然
                             延伸到卡底，页码叠加其上同属一块渐变（2026-11-20 用户
                             指令「整个容器一致颜色，页码包裹在渐变里」）。
                             背卡（depth>0）内容收进左区（右缩进 PEEK，v0.4.2 用户
                             反馈「堆叠卡图标互相透压」）：露出的右缘 76px 露条只
-                            显卡壳面（surface + 圆角边），卡面自身的右缘元素
-                            （StatusChip/chevron/文字尾）不再透进露条与前卡相挤；
-                            overflow-hidden 兜面内绝对定位元素。前卡（depth=0）
-                            不缩——内容照旧用满整卡宽 */}
+                            显卡壳面（纸色 + 圆角边 + 前卡投下的影），卡面自身的
+                            右缘元素（StatusChip/chevron/文字尾）不再透进露条与
+                            前卡相挤；overflow-hidden 兜面内绝对定位元素。前卡
+                            （depth=0）不缩——内容照旧用满整卡宽。
+                            挂载纪律（v0.4.6）：深层不可见位不挂内容（见文件头
+                            「挂载纪律」注）；卡壳（含投影）保留供退场动画通道。 */}
                         <View className="min-h-0 flex-1">
-                            {depth === 0 ? (
+                            {!contentMounted ? null : depth === 0 ? (
                                 item.node
                             ) : (
                                 <View className="min-h-0 flex-1 overflow-hidden" style={{ marginRight: PEEK }}>

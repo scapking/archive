@@ -5,9 +5,16 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 /**
- * 堆叠 deck 颜色语言把关（v0.4.5）：层次 = theme.ts 同族实色色阶，不是透明度
- * 渐隐（v0.4.3 的 0.45 洗白）也不是描边环+高透明（v0.4.4 否案）。断言的是
- * 需求侧的视觉不变量（露条可读、光源方向一致、白字达标、hex 不落地散写），
+ * 堆叠 deck「纸 × 墨 2.0」光影语言把关（v0.4.6，用户第 1 条令「不要灰色相进、
+ * 但要可以区分」）。断言的是需求侧视觉不变量：
+ * - 卡面一律纸色：deckEdge 灰板壳色**全域退役**（theme/deck/trip 三源零出现）；
+ * - 分层靠光影：投影参数 token 化在 theme.ts，前卡档恒重于背卡档、夜面档恒
+ *   重于纸面档（暗底黑影像要更浓才咬得住边界），且投影是静态 style，不得混进
+ *   native driver 动画图（deck.tsx 白名单铁律）；
+ * - 透明度只留退场通道（可见层恒 1）；
+ * - 挂载纪律：深层不可见位不挂真实卡面；
+ * - 三态渐变端点全部来自 palette（ongoing 深蓝 AA + 纵深、pending 亮起、
+ *   settled 从纸面（surface）起沉——完成的卡还是纸，不是灰板）。
  * 预期来自设计口径而非复制实现。
  */
 
@@ -16,9 +23,8 @@ const themeSource = await readFile(path.join(repoRoot, 'src/features/archive/ui/
 const deckSource = await readFile(path.join(repoRoot, 'src/features/archive/ui/deck.tsx'), 'utf8');
 const tripSource = await readFile(path.join(repoRoot, 'src/features/archive/trip-day-screen.tsx'), 'utf8');
 
-/** 堆叠色阶 token（Palette 新字段，LIGHT/DARK 两块都必须齐）。 */
-const DECK_TOKENS = [
-    'deckEdge',
+/** 卡面渐变 token（Palette 字段，LIGHT/DARK 两块都必须齐）。 */
+const FACE_TOKENS = [
     'ongoingFrom',
     'ongoingTo',
     'pendingFrom',
@@ -33,8 +39,17 @@ function block(theme: 'LIGHT' | 'DARK'): string {
 
 function token(name: string, theme: 'LIGHT' | 'DARK'): string {
     const match = block(theme).match(new RegExp(`${name}: '#([0-9A-Fa-f]{6})'`));
-    assert.ok(match, `token ${name} missing in ${theme} — deck 色阶不许缺档`);
+    assert.ok(match, `token ${name} missing in ${theme} — 卡面渐变色阶不许缺档`);
     return match[1];
+}
+
+/** 投影档解析（deckShadow: { front: {...}, back: {...} } 单行对象字面量）。 */
+function shadowSpec(theme: 'LIGHT' | 'DARK', side: 'front' | 'back') {
+    const re = new RegExp(`${side}: \\{ color: '#([0-9A-Fa-f]{6})', opacity: ([\\d.]+), radius: (\\d+), offsetX: (\\d+), offsetY: (\\d+), elevation: (\\d+) \\}`);
+    const match = block(theme).match(re);
+    assert.ok(match, `deckShadow.${side} missing/malformed in ${theme} — 投影参数必须 token 化`);
+    const [, color, opacity, radius, offsetX, offsetY, elevation] = match;
+    return { color, opacity: Number(opacity), radius: Number(radius), offsetX: Number(offsetX), offsetY: Number(offsetY), elevation: Number(elevation) };
 }
 
 function luminance(hex: string): number {
@@ -50,43 +65,92 @@ function contrast(a: string, b: string): number {
     return (l1 + 0.05) / (l2 + 0.05);
 }
 
-test('deck 色阶 token 双主题齐档', () => {
-    for (const theme of ['LIGHT', 'DARK'] as const) {
-        for (const name of DECK_TOKENS) token(name, theme);
+test('deckEdge 灰板壳色全域退役（无字段/无消费；注释史料除外）', () => {
+    // theme.ts 不再有 deckEdge 字段；deck/trip 不再消费 palette.deckEdge
+    assert.ok(
+        !/^\s+deckEdge:/m.test(themeSource),
+        'theme.ts 仍声明 deckEdge 字段——v0.4.5 灰板壳色已废（用户否「灰色相进」）',
+    );
+    for (const [name, source] of [
+        ['deck.tsx', deckSource],
+        ['trip-day-screen.tsx', tripSource],
+    ] as const) {
+        assert.ok(!source.includes('palette.deckEdge'), `${name} 仍消费 palette.deckEdge`);
     }
 });
 
-test('背卡露条（deckEdge）在两主题下都与页面底色/前卡底色拉开实色档次', () => {
+test('卡面渐变 token + 投影参数双主题齐档', () => {
     for (const theme of ['LIGHT', 'DARK'] as const) {
-        const edge = token('deckEdge', theme);
-        const page = token('sceneBg', theme);
-        const surface = token('surface', theme);
-        // 露条 vs 页面：不洗白（v0.4.3 病灶）——≥1.30 才有清晰纸边
-        assert.ok(
-            contrast(edge, page) >= 1.3,
-            `${theme} deckEdge vs page ${contrast(edge, page).toFixed(3)} < 1.3 — 露条会融进页面`,
-        );
-        // 露条 vs 前卡纸面：层次不被同化
-        assert.ok(
-            contrast(edge, surface) >= 1.2,
-            `${theme} deckEdge vs surface ${contrast(edge, surface).toFixed(3)} < 1.2 — 堆叠无层次`,
-        );
+        for (const name of FACE_TOKENS) token(name, theme);
+        shadowSpec(theme, 'front');
+        shadowSpec(theme, 'back');
     }
 });
 
-test('露条色落在 ink 家族色阶内（浅色沉于 border，深色亮于 border，不成孤岛色）', () => {
-    // 浅色：deckEdge 必须比 border 更深（shadow 方向），且不越过 text 一档；
-    // 深色：镜像——比 border 更亮（受光纸边）。两主题都仍与 surface 相邻一档。
-    const light = ['deckEdge', 'border', 'surface', 'sceneBg'].map((t) => luminance(token(t, 'LIGHT')));
+test('卡壳纸面同色：deck.tsx 壳底恒 palette.surface，无按层位换色的三元', () => {
+    assert.match(deckSource, /const shellBg = palette\.surface;/);
     assert.ok(
-        light.every((v, i) => i === 0 || v > light[i - 1]),
-        'LIGHT 亮度阶梯必须 base > surface > border > deckEdge',
+        !/shellBg = depth/.test(deckSource),
+        '壳面色不得随层位漂移——分层靠光影，不靠色块',
     );
-    const dark = ['deckEdge', 'border', 'surface', 'sceneBg'].map((t) => luminance(token(t, 'DARK')));
-    assert.ok(
-        dark.every((v, i) => i === 0 || v < dark[i - 1]),
-        'DARK 亮度阶梯必须 deckEdge > border > surface > base（同族镜像）',
-    );
+    assert.ok(!deckSource.includes('bg-ink-surface dark:bg-inkd-surface'), '壳面底色必须走 inline palette');
+});
+
+test('投影档单调：前卡重于背卡、夜面重于纸面、影色取自本主题墨阶', () => {
+    for (const theme of ['LIGHT', 'DARK'] as const) {
+        const front = shadowSpec(theme, 'front');
+        const back = shadowSpec(theme, 'back');
+        // 前卡浮于堆上：影必须更浓、更远、更散，否则露条边界咬不住
+        assert.ok(front.opacity > back.opacity, `${theme} front.opacity 必须 > back.opacity`);
+        assert.ok(front.radius >= back.radius, `${theme} front.radius 必须 ≥ back.radius`);
+        assert.ok(front.offsetX >= back.offsetX && front.offsetY >= back.offsetY, `${theme} front 偏移必须 ≥ back（光源左上，位移同向）`);
+        assert.ok(front.elevation > back.elevation, `${theme} front.elevation 必须 > back.elevation`);
+        assert.ok(front.opacity > 0 && front.opacity < 1, `${theme} 投影浓度必须在 (0,1)`);
+        // 影色 = 本主题墨阶（LIGHT 用 text 墨色，DARK 用纯黑），禁散写第三色
+        assert.equal(
+            front.color,
+            theme === 'LIGHT' ? token('text', theme) : '000000',
+            `${theme} 投影色必须取墨阶（LIGHT=text，DARK=纯黑）`,
+        );
+        assert.equal(back.color, front.color, `${theme} front/back 影色必须同族`);
+    }
+    // 夜面黑影像必须比纸面档浓——浅页上 0.1 级已可见，暗页上会整档消失
+    const lightFront = shadowSpec('LIGHT', 'front');
+    const darkFront = shadowSpec('DARK', 'front');
+    assert.ok(darkFront.opacity > lightFront.opacity, 'DARK front.opacity 必须 > LIGHT（暗底投影更浓）');
+});
+
+test('投影是静态卡壳 style，不进 native driver 动画图', () => {
+    // deck.tsx 动画图白名单铁律（transform/opacity）：layerStyle 内不许出现
+    // 投影键；deckShadowStyle() 只许挂卡壳 View（backgroundColor 同处）
+    const layerStyleSrc = deckSource.split('const layerStyle = useMemo')[1]?.split('const slot = useMemo')[0] ?? '';
+    assert.ok(layerStyleSrc.length > 0, 'layerStyle 结构变了，测试口径需同步');
+    for (const banned of ['boxShadow', 'shadowColor', 'elevation', 'deckShadowStyle']) {
+        assert.ok(!layerStyleSrc.includes(banned), `动画图出现投影键 ${banned}——必须挂静态壳层`);
+    }
+    // 挂点 = 壳层 backgroundColor 同一 style 对象
+    assert.match(deckSource, /deckShadowStyle\(/);
+    assert.match(deckSource, /backgroundColor: shellBg, \.\.\.shellShadow/);
+});
+
+test('透明度只留退场通道：可见层恒 1、隐藏层位 1→0', () => {
+    const opacityExpr = deckSource.split('opacity: values.depth.interpolate')[1]?.split('})')[0] ?? '';
+    assert.ok(opacityExpr.length > 0, 'opacity 插值结构变了，测试口径需同步');
+    assert.match(opacityExpr, /outputRange: \[1, 1, 0\]/);
+    assert.ok(!opacityExpr.includes('0.45'), 'v0.4.3 渐隐下限回潮');
+    assert.ok(!opacityExpr.includes('0.92'), 'v0.4.4 透明度顶替方案回潮');
+});
+
+test('挂载纪律：深层不挂真实卡面，退场经滞留窗卸载', () => {
+    // 可见层（depth <= VISIBLE_DEPTH）挂载；退场位内容滞留 DECK_CONTENT_LINGER_MS
+    // 后卸载（立即卸载会让滑移淡出的退场卡露空白纸壳）
+    assert.match(deckSource, /useState\(depth <= VISIBLE_DEPTH\)/);
+    assert.match(deckSource, /DECK_CONTENT_LINGER_MS/);
+    assert.match(deckSource, /setTimeout\(\(\) => setContentMounted\(false\), DECK_CONTENT_LINGER_MS\)/);
+    // 卡面内容消费口必须先过 contentMounted 闸（前卡/背卡路径都在闸内）
+    const contentSrc = deckSource.split('<View className="min-h-0 flex-1">')[1]?.split('页码')[0] ?? '';
+    assert.ok(contentSrc.length > 0, '卡面内容结构变了，测试口径需同步');
+    assert.ok(contentSrc.includes('contentMounted'), '深层内容必须经挂载闸（性能红线：隐藏层不常驻解码）');
 });
 
 test('卡面三态渐变同族同向：每主题内 from 恒亮于 to（左上受光、右下沉的单一光源）', () => {
@@ -117,30 +181,19 @@ test('当前项深蓝渐变：白字在亮端达标 AA，且渐变有真实纵�
     }
 });
 
-test('已完成卡沉入堆叠：settled 渐变的暗端（浅色）或亮端（深色）与 deckEdge 同值收口', () => {
-    // 需求：整套 deck 的「沉底色」只有一个——完成的卡与背卡露条同族到同值。
-    // 浅色向暗走（…→deckEdge），深色向亮起（deckEdge→…），两主题各取一端。
+test('完成的卡还是纸：settled 渐变从 surface 纸面起沉，不落灰板档', () => {
+    // 需求口径（用户「不灰糊」）：settledFrom 恒 = 卡纸 surface；settledTo
+    // 比纸沉一档，但仍在 ink 家族、不得等于旧 deckEdge 灰板值回潮。
+    const retiredGray = ['#D9DDE2', '#2E3533'];
     for (const theme of ['LIGHT', 'DARK'] as const) {
-        const edge = token('deckEdge', theme);
-        const ends = [token('settledFrom', theme), token('settledTo', theme)];
-        assert.ok(
-            ends.includes(edge),
-            `${theme} settled 渐变端点不含 deckEdge——完成卡与堆叠露条不成同一次第`,
+        assert.equal(
+            token('settledFrom', theme),
+            token('surface', theme),
+            `${theme} settledFrom 必须 = surface（完成的卡是纸不是灰板）`,
         );
+        const to = token('settledTo', theme);
+        assert.ok(!retiredGray.includes(to), `${theme} settledTo 不得取退役灰板档 ${to}`);
     }
-});
-
-test('deck 壳面走 palette 实色色阶，动画图不再用透明度做可见层分层', () => {
-    // 可见层透明度恒 1、隐藏层位淡出：语言从「渐隐」翻转为「实色色阶」。
-    // 只截取 opacity 插值表达式本体断言（注释里允许引用废案数值作史料）
-    const opacityExpr = deckSource.split('opacity: values.depth.interpolate')[1]?.split('})')[0] ?? '';
-    assert.ok(opacityExpr.length > 0, 'opacity 插值结构变了，测试口径需同步');
-    assert.match(opacityExpr, /outputRange: \[1, 1, 0\]/);
-    assert.ok(!opacityExpr.includes('0.45'), 'v0.4.3 渐隐下限回潮');
-    assert.ok(!opacityExpr.includes('0.92'), 'v0.4.4 透明度顶替方案回潮');
-    // 壳面色从 palette 取（背卡 deckEdge），不再用 className 双色壳
-    assert.match(deckSource, /palette\.deckEdge/);
-    assert.ok(!deckSource.includes('bg-ink-surface dark:bg-inkd-surface'), '壳面底色必须走 inline palette');
 });
 
 test('trip 卡面零散落 hex：三态渐变端点全部来自 palette', () => {
@@ -149,7 +202,7 @@ test('trip 卡面零散落 hex：三态渐变端点全部来自 palette', () => 
         'trip-day-screen 出现硬编码 hex 字面量（色值必须收进 theme.ts）',
     );
     assert.match(tripSource, /\[string, string\][^\n]*=\s*isCurrent/);
-    for (const name of DECK_TOKENS.filter((t) => t !== 'deckEdge')) {
+    for (const name of FACE_TOKENS) {
         assert.ok(tripSource.includes(`palette.${name}`), `三态渐变未引用 palette.${name}`);
     }
 });

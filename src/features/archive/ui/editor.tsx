@@ -38,10 +38,11 @@ import {
     MediaBlock,
     useBlockActionGestures,
     useVideoThumbState,
+    videoThumbKeyFor,
 } from './media-view';
 import { usePalette, useMediaAlignPref } from './theme';
 import { useDataRevision } from '../data-revision';
-import { useFileUrlState, prewarmFileUrl } from './use-file-url';
+import { useFileUrlState, prewarmFileUrl, prewarmImageDecode } from './use-file-url';
 // 全屏查看请求汇点（中立层，谁引都不成环，见其文件头）
 import { requestViewer } from '../viewer-request';
 import type { JournalBlock, JournalMediaRow } from '../db';
@@ -1191,6 +1192,28 @@ const ADVANCE_TOTAL_MS = 330;
  *  reduceMotion 驱动，见 MediaDeckStack 注动画口径段）。 */
 const DECK_REDUCED_FADE_MS = 160;
 
+/**
+ * 视频前卡播放器面的延迟挂窗（ms，v0.4.6 性能红线）：收口换张帧只挂
+ * 「缩略图封面」（位图已在露边层画过 + 预解码热，纯绘制度），player/
+ * VideoView 的创建（web <video> 元素 + 元数据、native 解码器实例化——CDP
+ * 实测收口帧 87ms 长任务的落点）挪到转场收口后的空闲窗。140ms ≈ 收口帧
+ * 提交 + 一两帧沉淀，又短于正常连滑节奏（转场 330ms + 抬手间隔），播放器
+ * 在下一轮拖拽认领前已就位。减弱动态/快速连滑窗口内被闸吞掉的挂窗随
+ * 组件卸载作废（timer cleanup），不留悬挂。
+ */
+const DECK_VIDEO_SURFACE_DELAY_MS = 140;
+
+/**
+ * 邻卡位图预解码的去抖窗（ms，v0.4.6）：预热 effect 的触发点 = 换张收口帧，
+ * 立即解码会撞进转场（330ms）与下一轮拖拽的 raster 预算（headless CDP 实测
+ * 无去抖时图片堆整窗帧距抬升）。800ms 落在「一次翻卡完全沉淀 + 抬手」之后：
+ * 连滑节奏下定时器每轮被重排，解码预热只在停手时发生；停一拍再翻则预热
+ * 必然已就位。1000ms 档取值依据：CDP 实测 800ms 档预热仍偶发蹭进下一轮
+ * 滑移窗口（图片堆 inter maxGap 抬升样本），1000ms 把它推到正常连滑节奏
+ * （转场 330 + 抬手 + 起手 ≈1.2~2s）的后半段，蹭窗概率进一步下降。
+ */
+const DECK_WARM_DECODE_DELAY_MS = 1000;
+
 /* v10 的 DECK_FRONT_FADE_IN_MS（收口帧前卡淡入）与 deckFrontRatio（前卡
  * 自然比例派生）随自适应画幅一并退役（v11）：固定几何下换张零 reflow，
  * 无尺寸跳变可掩盖，前卡淡入失去存在理由——frontFade 通道只剩减弱动态
@@ -1374,13 +1397,18 @@ const DeckBackCard = memo(DeckBackCardImpl);
  * 链），file/url 状态与全屏口径复用同一批收口件（useFileUrlState /
  * requestViewer / useBlockActionGestures）。
  *
- * **性能红线（视频堆）**：整堆只有本卡挂 player（useVideoPlayer，paused 封
- * 面态不自动播放）；底层露边层绝不挂载视频播放器（见 DeckVideoBackCard）。
- * 宿主以 key={media.id} 挂载本卡：收口换张 = 卸载旧 player + 挂载新 player
+ * **性能红线（视频堆，v0.4.6 升级口径）**：整堆只有延迟挂载的
+ * DeckVideoSurface 子层挂 player（useVideoPlayer，paused 封面态不自动播放）；
+ * 底层露边层绝不挂载视频播放器（见 DeckVideoBackCard）。宿主以
+ * key={media.id} 挂载本卡：收口换张 = 卸载旧 player + 挂载新 player
  * （useVideoPlayer 卸载即释放，任意时刻每堆 ≤1 个 player 实例）——不用
  * replaceAsync 复用实例的原因：源替换异步完成，换张瞬间 VideoView 会残留
- * 上一张视频的首帧（刚滑出的那张）造成错内容闪帧，重挂的空 player 以
- * raised 底过渡（与加载态同语言）直到新首帧就绪，内容永远正确。
+ * 上一张视频的首帧（刚滑出的那张）造成错内容闪帧，内容永远正确。
+ * **换张帧零解码器**（v0.4.6，CDP 实测换张收口帧 87ms 长任务落点 =
+ * <video> 元素创建 + 元数据 IO）：卡体先以「缩略图真封面」起面（露边层刚
+ * 画过同源位图，纯绘制度），player/VideoView 面经
+ * DECK_VIDEO_SURFACE_DELAY_MS 延迟窗挂上——解码器创建挪出转场帧，观感
+ * 连续（封面与首帧同内容，见 DECK_VIDEO_SURFACE_DELAY_MS 注）。
  * contentFit = cover（v11 与图片前卡同步）：固定 frame（高 = DECK_CARD_HEIGHT
  * 420）与视频自然比例无关，cover 精确填满卡体（裁切部分放弃，占满优先于
  * 完整显示——v10 的 contain「卡即图」随自适应画幅一并撤销）；VideoView
@@ -1391,6 +1419,92 @@ const DeckBackCard = memo(DeckBackCardImpl);
  * "none"（expo-video 原生层吞触摸，#2b 同口径），按压统一走外层
  * BouncyPressable；触摸面零 className。
  */
+/**
+ * 播放器面（v0.4.6 延迟挂窗，见 DECK_VIDEO_SURFACE_DELAY_MS 注）：本堆唯一
+ * player 实例的家（hook 在子层 → player/VideoView 的创建整体移出换张收口帧；
+ * 父层不挂本组件时 useVideoPlayer 不被调用，无「常驻空 player」）。
+ * 挂上时封面 Image 退场、VideoView（paused 首帧 + 中央播放钮）接管——同内容
+ * 换面，读作「实体化」不读作闪帧。卸载即释放 player（换张/组解散）。
+ */
+function DeckVideoSurfaceImpl({ uri }: { uri: string }) {
+    const palette = usePalette();
+    const player = useVideoPlayer(uri, (p) => {
+        p.loop = false;
+        p.muted = false;
+    });
+    return (
+        <>
+            {/* 封面帧：paused 首帧，nativeControls=false；触摸层 = core RN View
+                包装（pointerEvents="none"，#2b 见 DeckVideoFrontCard 注）；包装
+                层再兜 overflow-hidden + 同值圆角（VideoView 是平台视图，Android
+                对其外溢内容的裁切最不稳——见 DECK_CARD_RADIUS 注），VideoView
+                本体同值自挂 */}
+            <View
+                className="flex-1"
+                pointerEvents="none"
+                style={{ overflow: 'hidden', borderRadius: DECK_CARD_RADIUS }}
+            >
+                <VideoView
+                    player={player}
+                    nativeControls={false}
+                    contentFit="cover"
+                    style={{
+                        flex: 1,
+                        backgroundColor: palette.raised,
+                        borderRadius: DECK_CARD_RADIUS,
+                    }}
+                    allowsPictureInPicture={false}
+                />
+            </View>
+            {/* 中央播放钮：与 MediaVideo 同口径（黑透圆底 + 白播放三角，
+                不参与命中，整块按压统一进全屏） */}
+            <View className="pointer-events-none absolute inset-0 items-center justify-center">
+                <View className="h-12 w-12 items-center justify-center rounded-full bg-black/40">
+                    <LucidePlay size={20} color="#FFFFFF" strokeWidth={2.2} />
+                </View>
+            </View>
+        </>
+    );
+}
+
+const DeckVideoSurface = memo(DeckVideoSurfaceImpl);
+
+/**
+ * 封面起面位（播放器面挂上前的画面）：缩略图真封面 Image（露边层同款源，
+ * 常已在会话缓存 + 预解码热）；未就绪回退 raised 底 + 中央播放钮占位
+ * （与 DeckVideoBackCard 同语言）。零 player、零 VideoView——换张帧的
+ * 全部成本 = 一张已解码位图的绘制。
+ */
+function DeckVideoCoverFaceImpl({
+    media,
+    width,
+    height,
+}: {
+    media: JournalMediaRow;
+    width: number;
+    height: number;
+}) {
+    const { status, uri } = useVideoThumbState(media.file_key);
+    if (status === 'ready' && uri) {
+        return (
+            <Image
+                source={{ uri }}
+                style={{ width, height, borderRadius: DECK_CARD_RADIUS }}
+                resizeMode="cover"
+            />
+        );
+    }
+    return (
+        <View className="flex-1 items-center justify-center">
+            <View className="h-12 w-12 items-center justify-center rounded-full bg-black/40">
+                <LucidePlay size={20} color="#FFFFFF" strokeWidth={2.2} />
+            </View>
+        </View>
+    );
+}
+
+const DeckVideoCoverFace = memo(DeckVideoCoverFaceImpl);
+
 function DeckVideoFrontCardImpl({
     media,
     width,
@@ -1411,12 +1525,13 @@ function DeckVideoFrontCardImpl({
     const palette = usePalette();
     const ready = status === 'ready' && uri != null;
     const usable = ready && interactive;
-    // player（本堆唯一实例，见组件注性能红线）：uri 可能为 null（文件未解析/
-    // 缺失），是合法 VideoSource（空 player），同 MediaVideo 口径
-    const player = useVideoPlayer(uri, (p) => {
-        p.loop = false;
-        p.muted = false;
-    });
+    // 播放器面延迟挂载（见 DECK_VIDEO_SURFACE_DELAY_MS 注）：key=media.id
+    // 重挂 = 每张新前卡各起一个挂窗；收口帧（本卡首次挂载帧）只画封面。
+    const [surfaceMounted, setSurfaceMounted] = useState(false);
+    useEffect(() => {
+        const timer = setTimeout(() => setSurfaceMounted(true), DECK_VIDEO_SURFACE_DELAY_MS);
+        return () => clearTimeout(timer);
+    }, []);
     const openViewer = () => {
         // 键盘态开全屏先收键盘（DeckFrontCard/MediaVideo 同口径：#17/#18）
         Keyboard.dismiss();
@@ -1445,38 +1560,10 @@ function DeckVideoFrontCardImpl({
                 className="overflow-hidden rounded-card border border-ink-border bg-ink-raised dark:border-inkd-border dark:bg-inkd-raised"
                 style={{ width, height, borderRadius: DECK_CARD_RADIUS }}
             >
-                {ready ? (
-                    <>
-                        {/* 封面帧：paused 首帧，nativeControls=false；触摸层 =
-                            core RN View 包装（pointerEvents="none"，#2b 见组件注）；
-                            包装层再兜 overflow-hidden + 同值圆角（VideoView 是
-                            平台视图，Android 对其外溢内容的裁切最不稳——见
-                            DECK_CARD_RADIUS 注），VideoView 本体同值自挂 */}
-                        <View
-                            className="flex-1"
-                            pointerEvents="none"
-                            style={{ overflow: 'hidden', borderRadius: DECK_CARD_RADIUS }}
-                        >
-                            <VideoView
-                                player={player}
-                                nativeControls={false}
-                                contentFit="cover"
-                                style={{
-                                    flex: 1,
-                                    backgroundColor: palette.raised,
-                                    borderRadius: DECK_CARD_RADIUS,
-                                }}
-                                allowsPictureInPicture={false}
-                            />
-                        </View>
-                        {/* 中央播放钮：与 MediaVideo 同口径（黑透圆底 + 白播放三角，
-                            不参与命中，整块按压统一进全屏） */}
-                        <View className="pointer-events-none absolute inset-0 items-center justify-center">
-                            <View className="h-12 w-12 items-center justify-center rounded-full bg-black/40">
-                                <LucidePlay size={20} color="#FFFFFF" strokeWidth={2.2} />
-                            </View>
-                        </View>
-                    </>
+                {ready && surfaceMounted && uri != null ? (
+                    <DeckVideoSurface uri={uri} />
+                ) : ready ? (
+                    <DeckVideoCoverFace media={media} width={width} height={height} />
                 ) : status === 'missing' ? (
                     <View className="flex-1 items-center justify-center gap-1.5">
                         <LucideVideo size={20} strokeWidth={1.9} color={palette.muted} />
@@ -1796,10 +1883,12 @@ function SelectionCheck({ selected }: { selected: boolean }) {
  *
  * 性能口径：图片堆任意 N 最多挂载 3 个图片实例（左/中/右三槽，N=2 恒
  * 2 个），转场不增实例（无第四渲染位——归中相纸复用本槽渲染位，内容零
- * 切换）；视频堆每堆仅前卡挂 1 个 player 实例、露边层零 player（缩略图
+ * 切换），邻卡位图经 prewarmImageDecode 空闲窗预解码，换张帧只剩绘制；
+ * 视频堆每堆仅前卡挂 1 个 player 实例、露边层零 player（缩略图
  * Image 真封面，未生成回退占位卡——仅 thumbKey 的 url 三态订阅，零字节
  * 搬运），收口换张 = 旧 player 卸载
- * 释放 + 新 player 挂载（同批 React 提交），任意时刻每堆 ≤1；两种堆
+ * 释放 + 新前卡封面起面、player 面延迟挂窗（换张帧零解码器，见
+ * DECK_VIDEO_SURFACE_DELAY_MS 注），任意时刻每堆 ≤1；两种堆
  * 其余成员都留在 blocks 数据里，换位只是索引轮转（数量无上限）；组内
  * 单删/移动 → buildRenderUnits 重派生（clamp/解散免费获得），deck 实例
  * 按组首块 id 做 key，组首块被删即重挂回第 1 块。与画布纵滚正交：方向锁
@@ -2350,15 +2439,39 @@ function MediaDeckStack({
     const leftItem = itemCount >= 3 ? items[(safeIndex - 1 + itemCount) % itemCount] : null;
     const rightItem = items[(safeIndex + 1) % itemCount];
 
-    // 邻卡 URI 预热（v0.4.4 堆叠换张零占位帧的另一半）：换张后成为新前卡的
-    // 邻卡提前 acquire（acquire 即 release——条目留会话缓存，引用计数 0 +
-    // 延迟撤销），换 key 渲染期 peek 恒命中，前卡首帧就是真图（file-url-state
-    // 的同步 ready 路径）。缩略图/大图共用同一会话缓存，预热零额外读取。
+    // 邻卡预热（v0.4.4 零占位帧 → v0.4.6 连滑零解码帧，两级）：
+    // ① URI 级（即时，零字节）：换张后成为新前卡的邻卡提前 acquire（acquire
+    //   即 release——条目留会话缓存，引用计数 0 + 延迟撤销），换 key 渲染期
+    //   peek 恒命中，前卡首帧就是真图（file-url-state 的同步 ready 路径）。
+    // ② 位图级（web-only，见 prewarmImageDecode）：图片邻卡按前卡 frame 尺寸、
+    //   视频邻卡按封面起面位（缩略图，同尺寸）预解码。**排期铁律：
+    //   DECK_WARM_DECODE_DELAY_MS 去抖 + 邻卡变化即重排**——effect 触发点恰是
+    //   换张收口帧，立即解码会和转场/下一轮拖拽抢 raster（CDP 实测：无去抖
+    //   时图片堆滑移期帧距反升 20→35ms）；去抖后预热只落在「停手」的静默窗，
+    //   连滑期间永不抢占交互帧，停一拍后下一次翻卡天然零解码。
     const dataRevision = useDataRevision();
     useEffect(() => {
-        if (leftItem) prewarmFileUrl(leftItem.media.file_key, dataRevision);
-        if (rightItem) prewarmFileUrl(rightItem.media.file_key, dataRevision);
-    }, [leftItem, rightItem, dataRevision]);
+        for (const neighbor of [leftItem, rightItem]) {
+            if (!neighbor) continue;
+            // URI 级即时预热（廉价，引用计数操作）
+            prewarmFileUrl(neighbor.media.file_key, dataRevision);
+            if (neighbor.deckKind === 'video') {
+                prewarmFileUrl(videoThumbKeyFor(neighbor.media.file_key), dataRevision);
+            }
+        }
+        const timer = setTimeout(() => {
+            for (const neighbor of [leftItem, rightItem]) {
+                if (!neighbor || cardWidth <= 0) continue;
+                if (neighbor.deckKind === 'video') {
+                    // 视频文件只热 URI（player 面自带延迟窗）；封面位图（缩略图）按前卡尺寸预解码
+                    prewarmImageDecode(videoThumbKeyFor(neighbor.media.file_key), dataRevision, cardWidth, cardHeight);
+                } else if (neighbor.deckKind !== 'audio') {
+                    prewarmImageDecode(neighbor.media.file_key, dataRevision, cardWidth, cardHeight);
+                }
+            }
+        }, DECK_WARM_DECODE_DELAY_MS);
+        return () => clearTimeout(timer);
+    }, [leftItem, rightItem, dataRevision, cardWidth, cardHeight]);
 
     return (
         <View

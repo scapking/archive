@@ -148,8 +148,9 @@ const TripItemCardFace = memo(function TripItemCardFace({
     // - 进行中（isCurrent）= ongoingFrom→ongoingTo：accent-deep 蓝坠入墨黑/夜面
     //   + 白字家族（蓝是「进行中」数据色，房规允许；旧方案的 tailwind-gray
     //   偏移蓝黑端点离族，正是「与整体 deck 不协调」的根因）；
-    // - 完成/收尾/终态 = settledFrom→settledTo：从 border/deckEdge 沉到 deckEdge
-    //   /border——完成的卡半沉进堆叠，暗端与背卡露条同色，整套 deck 一个收口；
+    // - 完成/收尾/终态 = settledFrom→settledTo：从纸面 surface 沉一档（v0.4.6
+    //   「纸 × 墨 2.0」：完成的卡还是纸、只是光弱一档；旧「沉进 deckEdge 灰板」
+    //   被用户否为「灰色相进」，堆叠分层已改走 theme.deckShadow 光影）；
     // - 待进行 = pendingFrom→pendingTo：纸白/raised 亮面收到 surface 一档，
     //   克制不抢当前项；
     // 三态渐变同方向（左上亮、右下沉，光源恒定）。LinearGradient 内联 style

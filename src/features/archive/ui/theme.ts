@@ -1,5 +1,5 @@
 import { useCallback, useEffect } from 'react';
-import { Platform, TurboModuleRegistry, type TurboModule } from 'react-native';
+import { Platform, TurboModuleRegistry, type TurboModule, type ViewStyle } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { colorScheme, useColorScheme } from 'nativewind';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -18,6 +18,21 @@ import { archiveConfig } from '@/config/archive';
  * getPalette 取语义色，禁止再散写 hex。
  */
 export type ThemePref = 'system' | 'light' | 'dark';
+
+/** 堆叠投影单档参数（front/back 共用结构，语义见 Palette.deckShadow 注）。 */
+export interface DeckShadowSpec {
+    /** 投影色（light = 墨色 text 档；dark = 纯黑——夜读纸面上黑影最实）。 */
+    color: string;
+    /** 投影浓度（iOS shadowOpacity / web rgba alpha；Android 忽略靠 elevation）。 */
+    opacity: number;
+    /** 模糊半径（dp）。 */
+    radius: number;
+    /** 右下偏移（光源左上 → 影落右下）。 */
+    offsetX: number;
+    offsetY: number;
+    /** Android elevation（dp，近似档，系统按它派生影形）。 */
+    elevation: number;
+}
 
 /** 非 CSS 场景的语义色（值与 tailwind.config.js 的 ink/inkd 严格成对）。 */
 export interface Palette {
@@ -40,27 +55,34 @@ export interface Palette {
     /** 图表网格线（SVG 场景）。 */
     grid: string;
     /**
-     * 堆叠 deck 同族色阶（v0.4.5 重设计，deck.tsx 壳面 / trip 卡面渐变端点专用；
-     * **inline style only**——LinearGradient 与卡壳底色走非 CSS 通道，无 className
-     * 镜像，值全部取 ink/inkd 家族既有档位或其同族延伸）：
-     * - deckEdge：背卡壳面/露条色。浅色 = ink-control 档（沉下去的纸边，深于
-     *   border），深色 = inkd-control 档（受光的下层纸边，亮于 border）——堆叠
-     *   层次靠**实色一档色阶**表达，不靠透明度渐隐（v0.4.3 的 0.45 洗白、
-     *   v0.4.4 的 0.92+描边环都被否，见 deck.tsx 色语言注）。
-     * - ongoingFrom/To：当前项卡面渐变（accent-deep 坠入墨黑/夜面，蓝是
+     * 堆叠卡面渐变端点（「纸 × 墨 2.0」，v0.4.6 重做：deckEdge 灰板壳色退役，
+     * 堆叠分层改走 deckShadow 光影档；卡面渐变仍为 **inline style only**——
+     * LinearGradient 走非 CSS 通道，无 className 镜像，值全部取 ink/inkd 家族
+     * 既有档位）：
+     * - ongoingFrom/To：当前项卡面渐变（accent-deep 蓝坠入墨黑/夜面，蓝是
      *   「进行中」数据色，房规允许）。
      * - pendingFrom/To：待进行卡面（纸白/raised 亮起，往 shadow 档收——两主题
      *   同方向：左上受光、右下沉，光源恒定）。
-     * - settledFrom/To：已完成/收尾/终态卡面（沉入 deckEdge 一档——完成的卡
-     *   「半沉进堆叠」，与背卡露条同色收口，整套 deck 只有一个暗色终点）。
+     * - settledFrom/To：已完成/收尾/终态卡面（**从纸面本身起沉一档**：from
+     *   恒 = surface、to 落在 surface 与页面底色之间——完成的卡还是纸，只是
+     *   光弱一档；旧口径「沉入 deckEdge 灰板」被用户否为「灰色相进」）。
      */
-    deckEdge: string;
     ongoingFrom: string;
     ongoingTo: string;
     pendingFrom: string;
     pendingTo: string;
     settledFrom: string;
     settledTo: string;
+    /**
+     * 堆叠 deck 投影档（「纸 × 墨 2.0」层次语言：卡面一律纸色 surface，分层 =
+     * 柔和投影 + 位移 + 轻缩放，deckEdge 实色灰板壳色退役——用户否「灰色相进」
+     * 但要求「可以区分」）。光源恒定左上，影落右下：
+     * - front：前卡（栈顶），影投在背卡露条与页面上，形成「咬合」边界；
+     * - back：背卡（贴地浅影），只需与页面底色离地。
+     * 消费面 = deckShadowStyle()：iOS shadow* 键 / Android elevation /
+     * web box-shadow 三端同源一份参数（见 deck.tsx 壳层注）。
+     */
+    deckShadow: { front: DeckShadowSpec; back: DeckShadowSpec };
     /** tabBar：激活按亮度（不上彩）、 bar 底带透明度、上缘细线、场景底。 */
     tabActive: string;
     tabInactive: string;
@@ -93,15 +115,20 @@ const LIGHT: Palette = {
     barBorder: '#E5E8EC',
     sceneBg: '#FFFFFF',
     spinner: '#2563EB',
-    // 堆叠 deck 色阶（见 Palette 注；档位全部复用 ink 家族：control / accent-deep /
-    // text / base / surface / border，唯一新语义是「沉入堆叠」的收口色 deckEdge）
-    deckEdge: '#D9DDE2',
+    // 堆叠 deck 色阶（「纸 × 墨 2.0」：卡面恒纸色，分层靠光影；渐变端点全部
+    // 复用 ink 家族档位——deckEdge 灰板色已退役，见 Palette.deckShadow 注）
     ongoingFrom: '#1D4ED8',
     ongoingTo: '#171A1E',
     pendingFrom: '#FFFFFF',
     pendingTo: '#F7F8FA',
-    settledFrom: '#E5E8EC',
-    settledTo: '#D9DDE2',
+    // 完成的卡 = 纸面沉一档（surface→border），不沉成灰板
+    settledFrom: '#F7F8FA',
+    settledTo: '#E5E8EC',
+    // 影色 = 墨色 text 档（ink 家族的投影不是新色，是同族加深）
+    deckShadow: {
+        front: { color: '#171A1E', opacity: 0.18, radius: 24, offsetX: 12, offsetY: 14, elevation: 10 },
+        back: { color: '#171A1E', opacity: 0.12, radius: 14, offsetX: 6, offsetY: 8, elevation: 4 },
+    },
 };
 
 /** 深色（与 tailwind inkd 组成对；改动必须同步 tailwind.config.js）。 */
@@ -126,15 +153,20 @@ const DARK: Palette = {
     barBorder: '#1E2422',
     sceneBg: '#080A0A',
     spinner: '#5B9DFF',
-    // 堆叠 deck 色阶（深色向：deckEdge 比 border 更亮一档 = 受光的下层纸边；
-    // 渐变仍从亮到暗 = 与浅色同一光源方向的镜像）
-    deckEdge: '#2E3533',
+    // 堆叠 deck 色阶（深色向：夜读纸面；渐变仍从亮到暗 = 与浅色同一光源方向
+    // 的镜像；夜面上投影必须比浅色更浓才咬得住边界——opacity 翻倍档）
     ongoingFrom: '#2E6FD9',
     ongoingTo: '#0E1111',
     pendingFrom: '#161B1A',
     pendingTo: '#0E1111',
-    settledFrom: '#2E3533',
-    settledTo: '#1E2422',
+    // 完成的卡 = 纸面沉一档（surface→surface/base 之间），不浮成灰板
+    settledFrom: '#0E1111',
+    settledTo: '#0A0D0D',
+    // 影色纯黑（夜面唯一有效的「更深一档」）
+    deckShadow: {
+        front: { color: '#000000', opacity: 0.62, radius: 28, offsetX: 12, offsetY: 14, elevation: 14 },
+        back: { color: '#000000', opacity: 0.45, radius: 16, offsetX: 6, offsetY: 8, elevation: 6 },
+    },
 };
 
 export function getPalette(theme: 'light' | 'dark'): Palette {
@@ -144,6 +176,43 @@ export function getPalette(theme: 'light' | 'dark'): Palette {
 /** 当前生效主题下的语义色（组件里取 icon color / 原生 props 用）。 */
 export function usePalette(): Palette {
     return getPalette(useEffectiveTheme());
+}
+
+/** '#RRGGBB' + alpha → rgba() 串（web box-shadow 用；hex 必为 token 常量，
+ *  解析失败回 0 通道由调用方保证输入合法）。 */
+function hexAlpha(hex: string, alpha: number): string {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r},${g},${b},${alpha})`;
+}
+
+/**
+ * 堆叠投影档 → 平台样式（「纸 × 墨 2.0」分层语言的落地点，deck.tsx 壳层消费；
+ * 结果恒为**静态 style**，不进 Animated 样式图——native driver 白名单只有
+ * transform/opacity，投影键挂在与动画层同 transform 的卡壳 View 上即可随层
+ * 移动）。三端同源一份参数：
+ * - web：box-shadow 合成串（expo web 预览 = CDP 截图管线走这条）；
+ * - iOS：shadowColor/shadowOpacity/shadowRadius/shadowOffset（Fabric 下按
+ *   圆角层生成 shadowPath）；
+ * - Android：elevation 近似档（系统派生影形，opacity/radius 无对应物——
+ *   档位取 spec 的 elevation 字段，与 RN 社区「elevation ≈ 影深」口径一致）。
+ */
+export function deckShadowStyle(spec: DeckShadowSpec): ViewStyle {
+    if (Platform.OS === 'web') {
+        return {
+            boxShadow: `${spec.offsetX}px ${spec.offsetY}px ${spec.radius}px ${hexAlpha(spec.color, spec.opacity)}`,
+        };
+    }
+    if (Platform.OS === 'android') {
+        return { elevation: spec.elevation, shadowColor: spec.color };
+    }
+    return {
+        shadowColor: spec.color,
+        shadowOpacity: spec.opacity,
+        shadowRadius: spec.radius,
+        shadowOffset: { width: spec.offsetX, height: spec.offsetY },
+    };
 }
 
 export function useThemePref(): [ThemePref, (pref: ThemePref) => void] {
