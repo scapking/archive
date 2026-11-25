@@ -42,7 +42,8 @@ class AlarmKeepAliveService : Service() {
             val notification = AlarmFireReceiver.ongoingNotification(
                 this, id, titleOf(intent), bodyOf(intent), fullScreen = false,
             )
-            // 类型走清单声明（service 元素 android:foregroundServiceType="alarm"）：
+            // 类型走清单声明（service 元素 foregroundServiceType="specialUse"
+            // + alarm-keep-alive subtype，0.4.7 CI 后选型，见 manifest 注释）：
             // ServiceCompat 传 0 = TYPE_NONE，回落两参 startForeground 由系统按清单
             // 读取。不在代码里引用 ServiceInfo.FOREGROUND_SERVICE_TYPE_ALARM——
             // API 34 常量，模块 compileSdk 未必带该常量池（0.4.7 CI 实测

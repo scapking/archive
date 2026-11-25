@@ -17,20 +17,31 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- 到点常驻通知保活（用户令 #2：前台服务维持存活，确认后移除）。
-         Android 14+ FGS 必须带类型，本服务类型 = alarm -->
+         Android 14+ FGS 必须带类型。类型选型注（0.4.7 CI 两轮实测）：
+         「alarm」FGS 类型是 Android 15 才引入的枚举（ServiceInfo 常量与
+         manifest attr flags 同源于 35），本项目编译链的 AAPT 属性域没有它
+         （'alarm' is incompatible with attribute foregroundServiceType），
+         故走 specialUse + subtype 申报（34 起可用，语义=闹钟保活自述），
+         FOREGROUND_SERVICE_ALARM 权限一并换成 SPECIAL_USE；待 compileSdk
+         到 35+ 且 Play 政策允许时可一行切回 alarm。 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_ALARM" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application>
         <!-- 闹钟到点接收器：仅本 app 内部显式 intent 触发（不导出） -->
         <receiver
             android:name="archive.alarm.AlarmFireReceiver"
             android:exported="false" />
-        <!-- 到点保活前台服务（v0.4.7）：常驻通知认领 + JS 全屏闹钟存活面 -->
+        <!-- 到点保活前台服务（v0.4.7）：常驻通知认领 + JS 全屏闹钟存活面；
+             specialUse+subtype 申报闹钟保活语义（见上方类型选型注） -->
         <service
             android:name="archive.alarm.AlarmKeepAliveService"
             android:exported="false"
-            android:foregroundServiceType="alarm" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="trip-alarm-keep-alive" />
+        </service>
         <!-- 开机重排：系统广播（必须导出 + intent-filter） -->
         <receiver
             android:name="archive.alarm.BootRescheduleReceiver"
