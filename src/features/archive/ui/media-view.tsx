@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Image, Keyboard, Platform, Pressable, Text, View } from 'react-native';
-import type { GestureResponderEvent } from 'react-native';
+import type { GestureResponderEvent, LayoutChangeEvent } from 'react-native';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BouncyPressable, LucideImage, LucidePlay, LucideVideo } from '@/core/icons';
 import { AudioLinesIcon } from './editor-icons';
 import { AudioBlock } from './audio-player';
 import { requestViewer } from '../viewer-request';
-import { useFileUrlState, type FileUrlState } from './use-file-url';
+import { useDataRevision } from '../data-revision';
+import { useFileUrlState, prewarmImageDecode, type FileUrlState } from './use-file-url';
 import { useVideoNaturalSize } from './use-video-natural-size';
 import { usePalette, useMediaAlignPref, type MediaAlign } from './theme';
 import type { JournalMediaRow } from '../db';
@@ -360,6 +361,7 @@ export function MediaImage({
     onBlockAction?: () => void;
 }) {
     const { status, uri } = useFileUrlState(media.file_key);
+    const revision = useDataRevision();
     const palette = usePalette();
     // 水平对齐偏好（hook 直读自生效，调用方零改动；默认 left 靠左，见
     // MEDIA_ALIGN_SELF 注）
@@ -393,6 +395,22 @@ export function MediaImage({
         onBlockAction,
         onSinglePress: openViewer,
     });
+    // 视口外解码挪移（v0.4.7 纵向滚动卡顿修复，用户/主控追加令 2）：画布里的
+    // 单张图块挂载即定盒（几何全由比例+上限派生，不依赖内容加载），但 Chromium
+    // 到图**滚进视口**才解码降采样——快速滚多图的日记 = 每张一个新位图解码
+    // 撞进滚动帧（CDP 实测图块画布 maxGap 265ms、7 长任务，即「上下滑动特别
+    // 卡几乎不可用」的主体成因）。布局收口后把 (显示尺寸, revision) 交给
+    // prewarmImageDecode 的空闲窗解码（档位去重在 use-file-url 层，重复布局
+    // 回调零成本）；已可见的图本来就在解码，预热同档命中缓存零双份。
+    const warmedForRef = useRef<string | null>(null);
+    const onBoxLayout = (event: LayoutChangeEvent) => {
+        const { width, height } = event.nativeEvent.layout;
+        if (!(width > 0) || !(height > 0)) return;
+        const tag = `${media.file_key}@${revision}@${Math.round(width)}x${Math.round(height)}`;
+        if (warmedForRef.current === tag) return;
+        warmedForRef.current = tag;
+        prewarmImageDecode(media.file_key, revision, width, height);
+    };
     return (
         <BouncyPressable
             onPress={ready ? gestures.onPress : undefined}
@@ -401,6 +419,7 @@ export function MediaImage({
         >
             <View
                 className="w-full overflow-hidden rounded-card bg-ink-raised dark:bg-inkd-raised"
+                onLayout={onBoxLayout}
                 style={{
                     aspectRatio: ratio,
                     maxWidth: MEDIA_MAX_HEIGHT * ratio,

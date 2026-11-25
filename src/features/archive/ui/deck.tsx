@@ -1,21 +1,34 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated as RNAnimated, PanResponder, Pressable, Text, View } from 'react-native';
+import {
+    Animated as RNAnimated,
+    PanResponder,
+    Platform,
+    Pressable,
+    Text,
+    View,
+    type ViewStyle,
+} from 'react-native';
 import type { PanResponderGestureState } from 'react-native';
 import { deckShadowStyle, usePalette } from './theme';
 
 /**
  * 重叠露条多卡 deck（archive 首页 + /notes、/trips 共用）：**原双卡 deck 的
  * N 卡泛化**（2026-11-19 用户指令「首页保持之前的 ui 但是扩展支持多卡片」）——
- * 卡宽 = 容器−PEEK；前卡全显，背卡按层位右移（每层 STRIDE=24px）在右侧露条
- * 形成堆叠边（层位超出的卡淡出）；点前卡 → onFrontPress（打开内容），点背卡
+ * 卡宽 = 容器−PEEK；前卡全显，背卡统一右移一档 PEEK 在右侧形成露条（v0.4.6
+ * 两档几何，多档 STRIDE 构图退役；可见层外的卡淡出）；点前卡 → onFrontPress（打开内容），点背卡
  * 露条 → 该卡提前到前位（环形），左右拖拽跟手、松手过阈值翻卡。
  *
- * 几何铁律（原 deck 沿用）：前卡 right=PEEK 留出露条；背卡 translateX =
- * depth×STRIDE，右侧三条 24px 堆叠边（不越容器右缘：72 ≤ PEEK）。两卡高度由
+ * 几何铁律：前卡 right=PEEK 留出露条；背卡 translateX = PEEK 一档（露条 76px，
+ * 不越容器右缘）。两卡高度由
  * 槽位 top/bottom 0 恒等，height prop 定 deck 高（首页 430 原样；/notes、/trips
- * 520 长卡——互不影响）。**露条边-only 铁律（v0.4.2）**：背卡内容右缩进 PEEK
- * 收进左区，露条只显卡壳面——卡面右缘元素（StatusChip/chevron 等）不得透进
- * 露条（用户反馈「堆叠卡图标互相透压」，见 DeckCardLayer 内注）。
+ * 520 长卡——互不影响）。**露条边-only 铁律（v0.4.2）已于 v0.4.7 退役**：用户
+ * 第 4 条令「堆叠不管顶部底部都铺满，不要空白区域」——背卡不再右缩进 PEEK，
+ * 卡面铺满整宽，露条带真实内容；触摸防抢由背层 pointerEvents="none" 承担。
+ * **铺满的结构不变量（v0.4.7 归因，勿再简化）**：背卡内容必须留在
+ * `<View className="min-h-0 flex-1 overflow-hidden">` 包装层里——CDP 二分实测
+ * （baseline+全铺无包装 = 首页 deck 拖拽不被认领/连翻失效；保留包装只去
+ * marginRight = 连翻正常且铺满），overflow 包装层是 RNW 触摸/绘制路径的
+ * 承重件，margin 才是可去项。
  *
  * 结构铁律（原 deck 沿用）：**zIndex 用 React state 驱动（静态 style），禁止
  * 写进动画值**；动画底层 = **RN 内置 Animated（native driver）**——reanimated
@@ -38,16 +51,25 @@ import { deckShadowStyle, usePalette } from './theme';
  * deck-stack-colors 按新契约把关（纸面同色 / 投影参数在动画图外 / deckEdge
  * 全域退役）。
  *
- * **挂载纪律（v0.4.6 性能红线配套）**：只有前卡与第一背卡（可见层）挂真实
- * 卡面内容；更深层位不挂（退场靠 DECK_CONTENT_LINGER_MS 滞留窗收尾动画，
- * 沉淀后卸载），壳层保留——首页/行程表 N 卡 deck 的隐藏层此前全量常驻渲染
- * （含封面 Image 的解码/布局），属纯浪费。
+ * **挂载纪律（v0.4.7 改写，用户第 4 条令）**：v0.4.6 的「仅前卡+第一背卡挂
+ * 内容、深层纯壳」被否——切到深层卡时先见空白纸壳再等内容加载，堆叠观感
+ * 断裂。新纪律：**全部可见层位（0..VISIBLE_DEPTH=2）挂完整卡面**，深层
+ * （隐藏位）仍不挂（退场靠 DECK_CONTENT_LINGER_MS 滞留窗收尾，沉淀后卸载
+ * ——铺满与流畅同时成立，0.4.6 的性能结论不回退）。背卡卡面 pointerEvents=
+ * "none" 整层让位：露条点按语义（提前到前位）恒归 deck 层 Pressable，卡面
+ * 自带按压体不再截胡。
  *
- * 手势（原 deck 沿用）：PanResponder 方向锁认领（|dx|>10 且 |dx|>1.5|dy|）——
- * 纵向语义（卡面长按菜单、误触抖动）不受伤；纯点按从不认领（点卡语义全保）；
- * 认领即抢占（capture 声明，内层 Pressable 收到 terminate 即 abort 未完成点
- * 按）；拖拽只动 translateX（跟手值），松手 |dx|>60 提交（左滑下一张 / 右滑
- * 上一张，环形），否则弹回。
+ * 手势（原 deck 沿用 + v0.4.7 防中断加固）：PanResponder 方向锁认领（|dx|>10
+ * 且 |dx|>1.5|dy|）——纵向语义（卡面长按菜单、误触抖动）不受伤；纯点按从不
+ * 认领（点卡语义全保）；认领即抢占（capture 声明，内层 Pressable 收到
+ * terminate 即 abort 未完成点按）；拖拽只动 translateX（跟手值），松手
+ * |dx|>60 提交（左滑下一张 / 右滑上一张，环形），否则弹回。加固三件：
+ * ①grant 幂等复位认领旗标（release 若被宿主吞掉，滞留的 claimedFlag 会让
+ *   下一手势首帧 move 直接认领、吞内层点按——grant 再置真让状态机与
+ *   responder 生命周期锁步）；②web 手势容器 `touch-action: pan-y`（纵向滚动
+ *   照常、横向拖拽不再被合成器滚动仲裁抢走 touchcancel——卡顿帧里 JS 认领
+ *   慢半拍时合成器先下手正是「卡一下然后翻不动」的主通道之一）；③硬夺
+ *   （terminate）与 release 同闸提交（过阈值补翻，中断态恒复位）。
  *
  * 手感调优（2026-11-19，用户反馈左右滑动卡顿不丝滑；本环境无法真机验证，
  * 以「结构正确 + 参数合理」交付）：①弹簧 friction 8 → 11（收尾更快，区间
@@ -90,13 +112,25 @@ const PEEK = 76;
  */
 const SPRING_FRICTION = 11;
 /**
- * 可见层数 = 1（2026-11-19 用户指令「只要两个，左右堆叠，不显示过深的堆叠」）：
- * 前卡全显 + 一张背卡按原双卡几何右移 PEEK（露条 = 原版 76px 宽），更深的卡
- * 一律淡出——回到原版两卡观感。
+ * 可见层数 = 2（v0.4.7 用户第 4 条令「堆叠不管顶部底部都铺满」）：前卡全显 +
+ * 背卡按原双卡几何右移 PEEK（露条 = 76px），第二背卡与第一背卡同位被完全遮覆
+ * （zIndex 低一档）——层位「可见」的判据不止当前像素露出：翻卡过程中第一背卡
+ * 让位、第二背卡即顶上露条位，不预挂内容就是用户看到的空白纸壳。1→2 的挂载
+ * 成本 = 每 deck 多一张静态卡面（web 图片走会话缓存同图重绘，native file://
+ * O(1)），隐藏位（depth ≥ 3）依旧纯壳 + 滞留窗卸载（0.4.6 性能红线口径保留）。
  */
-const VISIBLE_DEPTH = 1;
+const VISIBLE_DEPTH = 2;
 /** 隐藏层位（超出可见深度的收敛目标：完全淡出）。 */
 const DECK_HIDDEN = VISIBLE_DEPTH + 1;
+/**
+ * web 手势容器 touch-action（v0.4.7 翻卡卡死修复，见文件头「加固」注②）：
+ * `pan-y` 让浏览器只为纵向手势保留原生滚动仲裁，横向拖拽不触发合成器接管
+ * （接管 = touchcancel = responder 被夺）。native 端该样式键无消费（Platform
+ * 闸后 native 恒不携带）；RN 类型未收录 touchAction，单点 cast，消费处全走
+ * 本常量（editor.tsx 的 MediaDeckStack 同源导入，防两处漂移）。
+ */
+export const DECK_TOUCH_ACTION_STYLE: ViewStyle | null =
+    Platform.OS === 'web' ? ({ touchAction: 'pan-y' } as unknown as ViewStyle) : null;
 /**
  * 退场卡内容滞留窗（ms，v0.4.6 挂载纪律）：翻卡提交后旧前卡层位 0→隐藏，
  * 但视觉上仍以「滑移 + 淡出」在场约一个 spring 周期（friction 11 档收敛
@@ -236,6 +270,10 @@ export function CardDeck({
                 onMoveShouldSetPanResponder: (_e, g: PanResponderGestureState) => claim(g),
                 onMoveShouldSetPanResponderCapture: (_e, g: PanResponderGestureState) => claim(g),
                 onPanResponderGrant: () => {
+                    // 认领旗标与 responder 生命周期锁步（v0.4.7 加固①，见
+                    // 文件头注）：release 被宿主吞掉时滞留的 claimedFlag 会让
+                    // 下一手势首帧 move 直接认领吞内层点按；grant 再置真
+                    claimedFlag.current = true;
                     // 认领即接管拖拽通道：停掉在途的 dragX 弹簧并归零（只在 grant
                     // 做，move 通道纪律 = 只 setValue 不 stop——move 高频回调里
                     // stopAnimation 会打断 native 弹簧图造成跳帧）
@@ -256,7 +294,11 @@ export function CardDeck({
                 onPanResponderRelease: (_e, g) => {
                     settle(Math.abs(g.dx) > PAN_COMMIT_DX ? (g.dx < 0 ? 1 : -1) : 0);
                 },
-                onPanResponderTerminate: () => settle(0),
+                // v0.4.7 加固③：硬夺（touchcancel/blur）与 release 同闸——
+                // 过阈值补提交这一翻，未过阈值回弹；中断态恒复位
+                onPanResponderTerminate: (_e, g) => {
+                    settle(Math.abs(g.dx) > PAN_COMMIT_DX ? (g.dx < 0 ? 1 : -1) : 0);
+                },
                 onPanResponderReject: () => {
                     // 认领被拒：grant 从未执行，无句柄可清，只复位旗标
                     claimedFlag.current = false;
@@ -280,7 +322,7 @@ export function CardDeck({
     return (
         // PanResponder 挂容器：纯点按不认领，内层卡体 Pressable 的全部点按语义不受影响
         <View>
-            <View className="relative" style={{ height }} {...panResponder.panHandlers}>
+            <View className="relative" style={[{ height }, DECK_TOUCH_ACTION_STYLE]} {...panResponder.panHandlers}>
                 {/* 卡槽：每卡一层（left 0 / right PEEK + 层位右移），普通 wrapper 承担
                     静态几何 + state 驱动 zIndex；AnimatedSlot 只挂 transform/opacity
                     （native driver 白名单键，原 deck 静态 key 收口铁律不变） */}
@@ -308,10 +350,11 @@ export function CardDeck({
  * 单卡层：普通 wrapper（静态几何 + state 驱动 zIndex）→ AnimatedSlot（flex:1 +
  * transform/opacity 动画）→ 卡 Pressable（flex:1 填充，零 className——触摸面
  * 纯净铁律）。前卡点按 = item.onPress（打开内容）；背卡点按 = 提前到前位
- * （环形；原 deck「点露条换位」的 N 卡语义）。背卡对触摸透明由 wrapper
- * pointerEvents="none" 承担？——**否**：背卡露条必须可点（提前到前位），故
- * 背卡 Pressable 保持可按（露条命中区 = 层位右移后露出的右缘窄条，与原 deck
- * 露条命中区同机制）；卡内深层内容（封面/文字区按压体）由卡面自理。
+ * （环形；原 deck「点露条换位」的 N 卡语义）。
+ * v0.4.7 全层铺满后的触摸口径：背卡卡面铺满整宽（露条带真实内容，用户第
+ * 4 条令），触摸让位由内容容器 pointerEvents="none"（depth>0）承担——背卡
+ * 点按命中恒归本层 Pressable（提前到前位），卡面自带按压体在背位天然失活，
+ * 升入前位后 pointerEvents 翻回 'auto'、按压体照常工作。
  */
 function DeckCardLayer({
     item,
@@ -332,10 +375,10 @@ function DeckCardLayer({
 }) {
     // 插值节点 useMemo 固定（原 deck useSlotStyle 同款防重建）：depth 0..2 →
     // 右移 / 缩放纵深（原 deck 背卡 scale 0.95 的分层化保留）；dragX 追加一条
-    // translateX（跟手通道，静止恒 0）。2026-11-19 调优：输入
-    // 区间从原 0..4 收窄到实际值域 0..DECK_HIDDEN(2)——层位定位经 Math.min 收敛
-    // 恒不出 2，区间尾巴 3/4 是插值图里的死段；每卡 native 节点数不增不减，
-    // 区间收窄只瘦插值表达式（结构上再省节点会牺牲视觉分层，不做）。
+    // translateX（跟手通道，静止恒 0）。输入区间 = 实际值域
+    // 0..DECK_HIDDEN(3)（v0.4.7 可见层扩到 2 后随 Math.min 收敛目标挪档，
+    // 断点表 [0,1,2,3] 无死段）；每卡 native 节点数不增不减，档数扩展只改
+    // 断点表（结构上再省节点会牺牲视觉分层，不做）。
     // v0.4.6 光影语言：透明度只留退场通道（可见层恒 1，见文件头「堆叠光影
     // 语言」注），分层 = 位移 + scale + 投影（投影走静态壳层 style，不入动画图）
     const layerStyle = useMemo(
@@ -351,18 +394,21 @@ function DeckCardLayer({
                 },
                 { translateX: values.dragX },
                 {
+                    // 纵深缩放：0/1/2 三层各降一档（1→0.95→0.92），隐藏位收敛
+                    // 到 0.9；深度刻度与 VISIBLE_DEPTH=2 对齐（第二背卡恒被第一
+                    // 背卡遮覆，档差只服务退场过程的层次感）
                     scale: values.depth.interpolate({
-                        inputRange: [0, 1, DECK_HIDDEN],
-                        outputRange: [1, 0.95, 0.9],
+                        inputRange: [0, 1, 2, DECK_HIDDEN],
+                        outputRange: [1, 0.95, 0.92, 0.9],
                     }),
                 },
             ],
             opacity: values.depth.interpolate({
-                inputRange: [0, 1, DECK_HIDDEN],
-                // 可见层（0/1）全实色，隐藏层位淡出到 0：露条不被页面底色
-                // 稀释（v0.4.3 的渐隐洗白 / v0.4.4 的近实色灰影均为废案，
+                inputRange: [0, 1, 2, DECK_HIDDEN],
+                // 可见层（0..VISIBLE_DEPTH）全实色，隐藏层位淡出到 0：露条不被
+                // 页面底色稀释（v0.4.3 的渐隐洗白 / v0.4.4 的近实色灰影均为废案，
                 // 数值口径由 tests/deck-stack-colors 按本表达式把关）
-                outputRange: [1, 1, 0],
+                outputRange: [1, 1, 1, 0],
             }),
         }),
         [values],
@@ -384,9 +430,10 @@ function DeckCardLayer({
     const shellShadow = deckShadowStyle(
         depth === 0 ? palette.deckShadow.front : palette.deckShadow.back,
     );
-    // 挂载纪律（v0.4.6 性能红线）：可见层（前卡 + 第一背卡）挂真实卡面，
-    // 更深层位不挂——首页/行程表 N 卡 deck 的隐藏卡此前全量常驻渲染（含
-    // 封面 Image 的解码/布局），纯浪费。两条时序铁律：
+    // 挂载纪律（v0.4.7 改写；性能红线口径保留）：可见层（0..VISIBLE_DEPTH=2）
+    // **全部挂完整卡面**（用户第 4 条令「不管顶部底部都铺满」——v0.4.6 只挂
+    // 前卡+第一背卡被否，深层卡切到时先见空白纸壳再加载）；隐藏位（≥3）仍不
+    // 挂——不可见卡全量常驻渲染纯浪费。两条时序铁律：
     // - 升入可见层（翻卡后被提起的卡）在**渲染期**同步置挂（React 派生态
     //   调整模式，use-file-url 换 key 同法）——effect 落地在 paint 后，会让
     //   新前卡空一帧白纸壳，正是本轮要消灭的观感；
@@ -426,19 +473,21 @@ function DeckCardLayer({
                         {/* 卡面铺满整卡（flex-1 占满壳）——渐变类卡面的颜色自然
                             延伸到卡底，页码叠加其上同属一块渐变（2026-11-20 用户
                             指令「整个容器一致颜色，页码包裹在渐变里」）。
-                            背卡（depth>0）内容收进左区（右缩进 PEEK，v0.4.2 用户
-                            反馈「堆叠卡图标互相透压」）：露出的右缘 76px 露条只
-                            显卡壳面（纸色 + 圆角边 + 前卡投下的影），卡面自身的
-                            右缘元素（StatusChip/chevron/文字尾）不再透进露条与
-                            前卡相挤；overflow-hidden 兜面内绝对定位元素。前卡
-                            （depth=0）不缩——内容照旧用满整卡宽。
-                            挂载纪律（v0.4.6）：深层不可见位不挂内容（见文件头
-                            「挂载纪律」注）；卡壳（含投影）保留供退场动画通道。 */}
-                        <View className="min-h-0 flex-1">
+                            **v0.4.7 全层铺满（用户第 4 条令）**：背卡（depth>0）
+                            不再右缩进 PEEK（v0.4.2「露条壳面-only」随「不要空白
+                            区域」裁决退役），卡面用满整宽——露条带真实内容右缘；
+                            overflow-hidden 包装层保留（v0.4.7 归因的承重件，见
+                            文件头几何铁律段）。触摸让位由外层 pointerEvents 承担。
+                            挂载纪律（v0.4.7）：0..VISIBLE_DEPTH 全挂完整卡面，
+                            仅隐藏位不挂；卡壳（含投影）保留供退场动画通道。 */}
+                        <View
+                            className="min-h-0 flex-1"
+                            pointerEvents={depth === 0 ? 'auto' : 'none'}
+                        >
                             {!contentMounted ? null : depth === 0 ? (
                                 item.node
                             ) : (
-                                <View className="min-h-0 flex-1 overflow-hidden" style={{ marginRight: PEEK }}>
+                                <View className="min-h-0 flex-1 overflow-hidden">
                                     {item.node}
                                 </View>
                             )}

@@ -27,6 +27,8 @@ import {
 } from '@/core/icons';
 import { AudioLinesIcon, MoreIcon } from './editor-icons';
 import { AudioBlock } from './audio-player';
+// 手势容器 touch-action（web 滚动仲裁免疫，与 ui/deck 堆叠同一常量单源）
+import { DECK_TOUCH_ACTION_STYLE } from './deck';
 import {
     FIELD_TONE_TEXT,
     INPUT_PLATFORM_PROPS,
@@ -651,7 +653,20 @@ const CONTINUE_PLACEHOLDER = '继续写…';
  *   输入框段）一律 72dp 落笔体量，写过降到两行固定底贴合内容（written 锁存，
  *   内容多则自然生长、删空回两行底不回弹大盒）——「第一个输入框正常、追加
  *   输入框特别小」的形态分裂在此收口，空段 rect 高度三端一致可测。
+ *
+ * **受控模型 v0.4.7（用户第 2a 条令「输入框每次刷新或其他操作非常不自然」）**：
+ * TextInput 的 value 不再直连屏层 blocks——本组件持**本地草稿态**（draft），
+ * 外部 `value` 只在「不在编辑（未聚焦且无待提交草稿）且与已提交基线不同」时
+ * 被采纳（DB 回灌/撤销等真实外部变更），编辑期间的任何屏层 churn（自动保存
+ * 回写、媒体行重载、revision 广播、插块/删块重渲）都**不得重灌用户正在编辑
+ * 的值**：光标位置与 IME 组合态归 DOM 所有。落库走**防抖提交**（本窗
+ * DRAFT_COMMIT_MS 合并连续击键 → onChange 上抛块数组），blur 与卸载即时收口
+ * （失焦即存双通道契约不变；屏层 800ms 自动保存节拍原样沿用，本窗只发生在
+ * 它之前）。onChange 经 ref 取最新闭包（防 pending 窗内块序/内容换代后旧
+ * 闭包回写覆盖）。
  */
+const DRAFT_COMMIT_MS = 200;
+
 function TextBlock({
     value,
     editable,
@@ -683,6 +698,76 @@ function TextBlock({
 }) {
     const palette = usePalette();
     const inputRef = useRef<React.ComponentRef<typeof TextInput>>(null);
+
+    /* ---- 本地草稿态（v0.4.7 受控模型改造，契约见组件头注） ---- */
+    // draft = TextInput 的 value 事实源（DOM 归本组件，外部重灌不进）；
+    // committedRef = 上一次经 onChange 上抛的值（外部 value 的本地镜像基线）；
+    // focusedRef = 编辑中闸（blur 前一切外部 value 漂移都视而不见）。
+    const [draft, setDraft] = useState(value);
+    const draftRef = useRef(draft);
+    draftRef.current = draft;
+    const committedRef = useRef(value);
+    const focusedRef = useRef(false);
+    const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // onChange 最新闭包 ref：防抖窗内块序/内容可能已换代（屏层 applyBlocks
+    // 权威镜像），旧闭包上抛会覆盖新 blocks——提交一律经本 ref 取当帧回调
+    const onChangeRef = useRef(onChange);
+    onChangeRef.current = onChange;
+    // 提交收口（防抖窗到期 / blur / 卸载三处共用）：同值幂等吞掉，跨窗不重复
+    // 上抛；先清挂起定时器（防双触发）
+    const commitDraft = useCallback(() => {
+        if (commitTimerRef.current != null) {
+            clearTimeout(commitTimerRef.current);
+            commitTimerRef.current = null;
+        }
+        if (draftRef.current === committedRef.current) return;
+        committedRef.current = draftRef.current;
+        onChangeRef.current(draftRef.current);
+    }, []);
+    // 防抖提交：连续击键合并为一拍（键间 <DRAFT_COMMIT_MS 零上抛 → 屏层/画布
+    // 子树不被每击键重渲，「打字时整幅画布抖」的直接病灶）
+    const scheduleCommit = useCallback(() => {
+        if (commitTimerRef.current != null) clearTimeout(commitTimerRef.current);
+        commitTimerRef.current = setTimeout(commitDraft, DRAFT_COMMIT_MS);
+    }, [commitDraft]);
+    useEffect(
+        () => () => {
+            // 卸载收口顺序：此 cleanup 与下方「卸载兜底提交」effect 都在卸载
+            // 时执行——先清掉挂起的防抖拍（其回调在卸载后不可达），再由
+            // commit 兜底 effect 同步上抛最终草稿
+            if (commitTimerRef.current != null) {
+                clearTimeout(commitTimerRef.current);
+                commitTimerRef.current = null;
+            }
+        },
+        [],
+    );
+    // 卸载兜底：在途草稿即时上抛（防「打完字 200ms 内切屏/删块」丢尾字）——
+    // 块若已被删除，BlockEditor.updateText 的恒等 bail 让这次上抛成为无副作用
+    // 空操作（见其注）
+    const commitRef = useRef(commitDraft);
+    commitRef.current = commitDraft;
+    useEffect(
+        () => () => {
+            commitRef.current();
+        },
+        [],
+    );
+    // 外部 value 采纳：不在编辑（未聚焦且无挂起提交）且与已提交基线不同才灌
+    // 草稿——DB 回灌/撤销类真实外部变更照常同步 UI；编辑期间的屏层重渲
+    // （autosave 回写、revision 广播、媒体重载）零重灌、零光标扰动
+    useEffect(() => {
+        if (
+            focusedRef.current ||
+            commitTimerRef.current != null ||
+            value === committedRef.current
+        ) {
+            return;
+        }
+        committedRef.current = value;
+        setDraft(value);
+    }, [value]);
+
     // 写过标记（锁存）：挂载时已有内容（重开旧计划）即为内容段；此后一旦
     // 写过就保持内容段档位——删空回两行固定底，不回弹 72dp 大盒（编辑中抖动源）
     const [written, setWritten] = useState(value.length > 0);
@@ -755,21 +840,32 @@ function TextBlock({
         <TextInput
             ref={inputRef}
             multiline
-            value={value}
+            // value = 本地草稿（v0.4.7 受控模型：外部重灌只在不编辑时发生，
+            // 编辑中的光标/组合态归 DOM，见组件头注契约）
+            value={draft}
             editable={editable}
             onChangeText={(text) => {
                 // 写过锁存：首字落下即按内容段处理（72 → 两行固定底的唯一跳变
                 // 点，之后随行数平滑增高；同值 setState 被 React 合并，无额外渲染）
                 setWritten((current) => current || text.length > 0);
-                onChange(text);
+                setDraft(text);
+                // 防抖提交（替代旧的逐键上抛整块数组）：连续击键合并为一拍，
+                // 屏层与画布子树不再每字重渲
+                scheduleCommit();
             }}
             onFocus={() => {
+                // 编辑闸合闸（先于上层 onFocus 回调，采纳 effect 从此屏蔽外灌）
+                focusedRef.current = true;
                 // 聚焦激活（触发①）：订阅键盘事件 + 立即排程「最佳位置」落位
                 positioner?.activate();
                 onInputFocus?.(inputRef.current);
                 onFocus?.();
             }}
             onBlur={() => {
+                // 失焦即存（双通道契约 v0.4.7 落点）：先收口草稿（同步上抛，
+                // 屏层 800ms 防抖自此开始计时），再开闸允许外部 value 采纳
+                commitDraft();
+                focusedRef.current = false;
                 // 失焦去激活：撤销在途落位 + 摘键盘订阅（blur 后零落位扰动）
                 positioner?.deactivate();
                 onInputBlur?.(inputRef.current);
@@ -1204,15 +1300,17 @@ const DECK_REDUCED_FADE_MS = 160;
 const DECK_VIDEO_SURFACE_DELAY_MS = 140;
 
 /**
- * 邻卡位图预解码的去抖窗（ms，v0.4.6）：预热 effect 的触发点 = 换张收口帧，
- * 立即解码会撞进转场（330ms）与下一轮拖拽的 raster 预算（headless CDP 实测
- * 无去抖时图片堆整窗帧距抬升）。800ms 落在「一次翻卡完全沉淀 + 抬手」之后：
- * 连滑节奏下定时器每轮被重排，解码预热只在停手时发生；停一拍再翻则预热
- * 必然已就位。1000ms 档取值依据：CDP 实测 800ms 档预热仍偶发蹭进下一轮
- * 滑移窗口（图片堆 inter maxGap 抬升样本），1000ms 把它推到正常连滑节奏
- * （转场 330 + 抬手 + 起手 ≈1.2~2s）的后半段，蹭窗概率进一步下降。
+ * 邻卡位图预解码的去抖窗（ms；v0.4.7 由 1000 → 350）：预热 effect 的触发点 =
+ * 换张收口帧，立即解码会撞进转场（330ms）与下一轮拖拽的 raster 预算（v0.4.6
+ * headless CDP 实测无去抖时图片堆整窗帧距抬升）。v0.4.6 取 1000ms 是为了躲连滑
+ * 蹭窗——**副作用即本条令的病根**：连滑节奏（~450ms/张）下定时器每轮被重排、
+ * 永远不落地，每次收口帧都在现场解码新位图（「滑动切换时加载图片卡一下」）。
+ * 350ms 档 + prewarmImageDecode 的档位去重（use-file-url.ts）成立的新口径：
+ * 去抖只保证「不在本张转场帧里解码」，同 (key,尺寸,revision) 只解一次使重排
+ * 成本归零——连滑每一拍收口后 350ms 即热好下一对邻卡，蹭窗概率不再取决于
+ * 定时器长短而是解码本身不再重复发生。
  */
-const DECK_WARM_DECODE_DELAY_MS = 1000;
+const DECK_WARM_DECODE_DELAY_MS = 350;
 
 /* v10 的 DECK_FRONT_FADE_IN_MS（收口帧前卡淡入）与 deckFrontRatio（前卡
  * 自然比例派生）随自适应画幅一并退役（v11）：固定几何下换张零 reflow，
@@ -1419,12 +1517,25 @@ const DeckBackCard = memo(DeckBackCardImpl);
  * "none"（expo-video 原生层吞触摸，#2b 同口径），按压统一走外层
  * BouncyPressable；触摸面零 className。
  */
+/** 挂窗重试节拍（ms，v0.4.7）：空闲闸拦截后隔一拍再探，短到不影响观感、
+ *  长到不会在忙帧里持续排队。rIC 排期已试撤（见挂窗 effect 注）：浏览器把
+ *  媒体管线初始化推给首次用户手势，兜底挂点反而撞进下一轮按压。 */
+const DECK_VIDEO_SURFACE_RETRY_MS = 120;
+
 /**
  * 播放器面（v0.4.6 延迟挂窗，见 DECK_VIDEO_SURFACE_DELAY_MS 注）：本堆唯一
  * player 实例的家（hook 在子层 → player/VideoView 的创建整体移出换张收口帧；
  * 父层不挂本组件时 useVideoPlayer 不被调用，无「常驻空 player」）。
  * 挂上时封面 Image 退场、VideoView（paused 首帧 + 中央播放钮）接管——同内容
  * 换面，读作「实体化」不读作闪帧。卸载即释放 player（换张/组解散）。
+ *
+ * **v0.4.7 空闲闸**（用户第 2b 条令修复面）：140ms 定窗只躲开了**本次**收口
+ * 帧，却可能正落在用户的**下一轮拖拽**中途（连滑节奏 ≈300-500ms/张）——
+ * <video> 元素创建 + 元数据 IO 的长任务打断进行中的横滑手势，即「卡一下然后
+ * 翻不动」的触发源之一。挂窗前查宿主传入的 busy refs（转场中 / 拖拽在场则
+ * 顺延重试一拍），播放器创建只落在静止窗；封面 Image 面在等待期原样在场，
+ * 观感无损（封面与首帧同内容）。refs 由 MediaDeckStack 以 useMemo 恒等传入，
+ * 不破坏本组件 memo。
  */
 function DeckVideoSurfaceImpl({ uri }: { uri: string }) {
     const palette = usePalette();
@@ -1511,6 +1622,7 @@ function DeckVideoFrontCardImpl({
     height,
     interactive = true,
     onBlockAction,
+    busyRefs,
 }: {
     media: JournalMediaRow;
     width: number;
@@ -1520,18 +1632,47 @@ function DeckVideoFrontCardImpl({
     interactive?: boolean;
     /** 长按/桌面双击 → 块操作卡（编辑态传入；只读态不传 → 无长按层）。 */
     onBlockAction?: () => void;
+    /** 空闲闸 refs（v0.4.7）：转场中/拖拽在场则顺延播放器面挂窗，见组件注。 */
+    busyRefs?: {
+        advancing: React.RefObject<boolean>;
+        dragging: React.RefObject<boolean>;
+    };
 }) {
     const { status, uri } = useFileUrlState(media.file_key);
     const palette = usePalette();
     const ready = status === 'ready' && uri != null;
     const usable = ready && interactive;
-    // 播放器面延迟挂载（见 DECK_VIDEO_SURFACE_DELAY_MS 注）：key=media.id
-    // 重挂 = 每张新前卡各起一个挂窗；收口帧（本卡首次挂载帧）只画封面。
+    // 播放器面延迟挂载（见 DECK_VIDEO_SURFACE_DELAY_MS 注）+ v0.4.7 空闲闸：
+    // key=media.id 重挂 = 每张新前卡各起一个挂窗；收口帧（本卡首次挂载帧）
+    // 只画封面；挂窗到期时若仍转场/拖拽在场，顺延重试直至静止窗。
     const [surfaceMounted, setSurfaceMounted] = useState(false);
     useEffect(() => {
-        const timer = setTimeout(() => setSurfaceMounted(true), DECK_VIDEO_SURFACE_DELAY_MS);
-        return () => clearTimeout(timer);
-    }, []);
+        if (surfaceMounted) return;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        let cancelled = false;
+        const doMount = () => {
+            if (!cancelled) setSurfaceMounted(true);
+        };
+        const tryMount = () => {
+            if (cancelled) return;
+            // v0.4.7 空闲闸（CDP 实测口径：rIC 排期反而更差——浏览器把媒体
+            // 管线初始化挂到首次用户手势上，兜底挂点被推到下一轮按压的
+            // t≈40ms 处 = 95-160ms 长任务；固定 delay + busy 重试的落点
+            // 「收口后第一个静止拍」才是交互窗外）：转场中/拖拽在场则顺延
+            if (busyRefs && (busyRefs.advancing.current || busyRefs.dragging.current)) {
+                timer = setTimeout(tryMount, DECK_VIDEO_SURFACE_RETRY_MS);
+                return;
+            }
+            doMount();
+        };
+        timer = setTimeout(tryMount, DECK_VIDEO_SURFACE_DELAY_MS);
+        return () => {
+            cancelled = true;
+            if (timer != null) clearTimeout(timer);
+        };
+        // 依赖只 surfaceMounted（busyRefs 是宿主恒定对象）
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [surfaceMounted]);
     const openViewer = () => {
         // 键盘态开全屏先收键盘（DeckFrontCard/MediaVideo 同口径：#17/#18）
         Keyboard.dismiss();
@@ -1936,6 +2077,9 @@ function MediaDeckStack({
     // 闩（手势闭包同步检查）——转场期间吞并发手势（滑/点全部无效）
     const [advance, setAdvance] = useState<DeckAdvance | null>(null);
     const advancingRef = useRef(false);
+    // 拖拽在场标记（v0.4.7 播放器面挂窗空闲闸 + 手势通道共用；声明在组件顶部
+    // 保证 busyRefs（近处）与 panResponder（远处）同引一例）
+    const dragBusyRef = useRef(false);
     const advanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // 系统减弱动态（挂载时读一次 + 订阅变化；promise/事件在个别宿主缺失
@@ -1956,6 +2100,15 @@ function MediaDeckStack({
             subscription?.remove();
         };
     }, []);
+
+    // 播放器面挂窗的空闲闸（v0.4.7，见 DeckVideoFrontCard 注）：恒定对象一次
+    // 构造（memo 组件 prop 引用稳定），渲染期同步刷新 advancing 镜像
+    const busyRefs = useMemo(
+        () => ({ advancing: { current: false }, dragging: dragBusyRef }),
+        // dragBusyRef 终生恒定；advancing 镜像在下方每次渲染同步
+        [],
+    );
+    busyRefs.advancing.current = advance != null;
 
     // 中卡索引（clamp 后派生，组收缩不越界）
     const safeIndex = Math.min(Math.max(frontIndex, 0), itemCount - 1);
@@ -2264,6 +2417,18 @@ function MediaDeckStack({
     // 转场期间闩吞并发手势（不认领新拖拽）；松手过阈值提交真转场、否则回弹；
     // 被系统夺走（来电/滚动接管）回弹归位。只用 transform，无布局动画
     //（Fabric/Expo Go 触摸链纪律，deck.tsx 同源教训）。
+    //
+    // **v0.4.7 防中断加固（用户第 2b 条令「卡一下然后就无法持续切换」）**：
+    // ①`onPanResponderTerminationRequest: () => false`（deck.tsx 同款保护，
+    //   旧版缺失是编辑器堆叠独有的翻卡吞失通道）：web responder 系统对
+    //   scroll / selectionchange / contextmenu 三类抢占先问 terminationRequest
+    //   ——图片解码长任务把 React 提交挤进拖拽窗口时，画布滚动/选区变动事件
+    //   会在**松手前**终结本 responder（release 被吞 → 这一翻直接丢失）；已
+    //   过横向方向锁的拖拽拒绝让位，抢占仅剩 touchcancel/blur 这类硬夺（走
+    //   terminate 复位，状态不残留）。②dragBusyRef：拖拽在场标记，供视频
+    //   播放器面的延迟挂窗避让（见 DeckVideoFrontCard 注）——挂窗落在下一轮
+    //   拖拽中途 = <video> 创建/元数据 IO 长任务打断手势，同病根。
+    //（dragBusyRef 声明在组件顶部，busyRefs 与本处共用同一 ref 实例）
     const panResponder = useMemo(
         () =>
             PanResponder.create({
@@ -2273,6 +2438,7 @@ function MediaDeckStack({
                     Math.abs(gesture.dx) > SWIPE_LOCK_DX &&
                     Math.abs(gesture.dx) > Math.abs(gesture.dy) * SWIPE_LOCK_RATIO,
                 onPanResponderGrant: () => {
+                    dragBusyRef.current = true;
                     // 打断在飞的收口动画：本轮拖拽位移由 event 的 dx 接管
                     //（快速连滑时从归位中途接管，跟手无弹簧打架）
                     frontX.stopAnimation();
@@ -2285,10 +2451,19 @@ function MediaDeckStack({
                     useNativeDriver: false,
                 }),
                 onPanResponderRelease: (_evt, gesture) => {
+                    dragBusyRef.current = false;
                     if (Math.abs(gesture.dx) > SWIPE_COMMIT_DX) commitSwipe(gesture.dx);
                     else springBack();
                 },
-                onPanResponderTerminate: springBack,
+                onPanResponderTerminate: (_evt, gesture) => {
+                    dragBusyRef.current = false;
+                    // 硬夺收口：位移已过提交阈值的 terminate（合成器在 release
+                    // 在途时抢接）补提交这一翻，未过阈值回弹——拖拽中断态恒复位，
+                    // 不留半程位移给下一轮
+                    if (Math.abs(gesture.dx) > SWIPE_COMMIT_DX) commitSwipe(gesture.dx);
+                    else springBack();
+                },
+                onPanResponderTerminationRequest: () => false,
             }),
         [frontX, commitSwipe, springBack],
     );
@@ -2559,7 +2734,10 @@ function MediaDeckStack({
                 key = media.id：收口换张即重挂（旧 player 卸载释放 + 新
                 player 挂载，防 replaceAsync 异步窗口的错内容闪帧，性能
                 红线口径 = 每堆任意时刻 ≤1 player，见 DeckVideoFrontCard 注） */}
-            <View style={[gestureSlot, { zIndex: 3 }]} {...panResponder.panHandlers}>
+            <View
+                style={[gestureSlot, { zIndex: 3 }, DECK_TOUCH_ACTION_STYLE]}
+                {...panResponder.panHandlers}
+            >
                 <View style={cardSlot}>
                     <DeckAnimatedSlot style={[{ flex: 1 }, frontStyle]}>
                         {frontItem && cardWidth > 0 ? (
@@ -2574,6 +2752,7 @@ function MediaDeckStack({
                                         width={cardWidth}
                                         height={cardHeight}
                                         interactive={advance == null && selection == null}
+                                        busyRefs={busyRefs}
                                         onBlockAction={
                                             editable && selection == null
                                                 ? () => onBlockAction(frontItem.block.id)
@@ -2691,27 +2870,36 @@ function MediaDeckStack({
     Animated.View 的 opacity 动画在 web 上输出 will-change:opacity → 每个块
     各自成 stacking context：块内浮层（聚焦态 ⋯ 微钮）在本块内后渲染、天然
     盖过本块 TextInput；微钮已改为完全落在块边界内（#4），不再有跨块浮层，
-    无需块级提层。 */
+    无需块级提层。
+    v0.4.7 输入不自然修复：`muted` 位的块**只静默改记 index 不脉冲**——正在
+    编辑的段（聚焦块）在别处插块/删块时被位移，旧版会闪一次 0.45→1 的透明度
+    （用户反馈「做其他操作时输入框非常不自然」的可见症状之一；DOM 身份不变，
+    光标不丢，但闪动足以破坏书写心流）。 */
 function BlockReveal({
     index,
+    muted = false,
     children,
 }: {
     index: number;
+    /** true = 抑制脉冲（聚焦中的段），index 照常静默跟记。 */
+    muted?: boolean;
     children: React.ReactNode;
 }) {
     const opacity = useRef(new Animated.Value(1)).current;
     const prevIndex = useRef(index);
+    const mutedRef = useRef(muted);
+    mutedRef.current = muted;
     useEffect(() => {
-        if (prevIndex.current !== index) {
-            prevIndex.current = index;
-            // 先压低再抬回：脉冲语义 = "这块动过"，不喧宾夺主
-            opacity.setValue(0.45);
-            Animated.timing(opacity, {
-                toValue: 1,
-                duration: 160,
-                useNativeDriver: true,
-            }).start();
-        }
+        if (prevIndex.current === index) return;
+        prevIndex.current = index;
+        if (mutedRef.current) return;
+        // 先压低再抬回：脉冲语义 = "这块动过"，不喧宾夺主
+        opacity.setValue(0.45);
+        Animated.timing(opacity, {
+            toValue: 1,
+            duration: 160,
+            useNativeDriver: true,
+        }).start();
     }, [index, opacity]);
     return <Animated.View style={{ opacity }}>{children}</Animated.View>;
 }
@@ -2851,10 +3039,26 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(funct
         [], // 闭包只引用稳定 ref，句柄终生不变
     );
 
+    // blocks 最新镜像（v0.4.7 草稿防抖窗配套）：TextBlock 的挂起提交可能在任意
+    // 帧落地（blur/定时器/卸载兜底），届时 `blocks` 渲染闭包或已换代（插块/删块/
+    // 重排），恒从 ref 取当帧数组重算——杜绝「旧闭包回写覆盖新块序」
+    const blocksRef = useRef(blocks);
+    blocksRef.current = blocks;
     const updateText = (id: string, text: string) => {
-        const next = blocks.map((block) =>
-            block.id === id && block.t === 'p' ? { t: 'p' as const, id, text } : block,
-        );
+        const current = blocksRef.current;
+        // 恒等 bail：目标块已删（卸载兜底迟于删块）或文本同值（blur 收口与防抖
+        // 窗竞态）时**原样返回引用**——屏层 applyBlocks 同引用即空操作，不再触发
+        // 无谓的 blocks 换代与自动保存拍
+        if (!current.some((block) => block.id === id && block.t === 'p')) return;
+        let changed = false;
+        const next = current.map((block) => {
+            if (block.id === id && block.t === 'p' && block.text !== text) {
+                changed = true;
+                return { t: 'p' as const, id, text };
+            }
+            return block;
+        });
+        if (!changed) return;
         onChange(next);
     };
 
@@ -2924,7 +3128,11 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(funct
                 if (block.t === 'p') {
                     const microVisible = editable && activeBlockId === block.id;
                     return (
-                        <BlockReveal key={block.id} index={index}>
+                        <BlockReveal
+                            key={block.id}
+                            index={index}
+                            muted={activeBlockId === block.id}
+                        >
                             <View className="relative">
                                 {/* 统一文本块（#3）：首段/续写段/+ 添加输入框段同一组件，
                                     差异只经 firstBlock（占位文案）/written（高度档）表达 */}

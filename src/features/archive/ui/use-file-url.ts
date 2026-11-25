@@ -288,13 +288,25 @@ export function prewarmFileUrl(key: string, revision: number): void {
 }
 
 /**
+ * 已预热档位表（v0.4.7）：key = `fileKey|revision|w×h`（尺寸取整到 2px 档，
+ * 同档复用）。FIFO 上限防会话内无界增长。意义：连翻时邻卡变化 effect 反复
+ * 重排预热不再重复排解码（同 (key,档位) 只解一次），于是去抖窗可以缩短到
+ * 「一次转场收口之后」——v0.4.6 的 1000ms 长窗在连滑节奏（~450ms/张）下
+ * 永远等不到预热落地，每次收口帧都在现场解码，正是「滑动切换时加载图片
+ * 卡一下」的直接病灶；去重后 350ms 短窗连滑期也能命中。
+ */
+const WARMED_DECODE_LIMIT = 64;
+const warmedDecodes = new Set<string>();
+
+/**
  * 邻卡位图预解码（v0.4.6 性能红线，web-only）：prewarmFileUrl 只预热 blob
  * URL——换张收口帧首次绘制新位图仍要付解码/降采样的主线程成本（CDP 实测
  * 图片堆收口帧 88ms 帧距的落点）。本函数把解码挪进空闲窗：离屏 <img> 按
  * 目标显示尺寸（决定 Chromium 的 decode-time downscale 档位）requestIdleCallback
  * 排期 decode()，换张帧命中同源位图缓存只剩绘制。
- * 持有引用直到解码收口（防延迟撤销打断），失败静默（预热是增强）。
- * native 直接 no-op：位图管线由原生层自管，JS 侧无解码帧可挪。
+ * 持有引用直到解码收口（防延迟撤销打断），失败静默（预热是增强——失败时
+ * 从表里摘除，下次调用可重试）。native 直接 no-op：位图管线由原生层自管，
+ * JS 侧无解码帧可挪。
  */
 export function prewarmImageDecode(
     key: string,
@@ -303,6 +315,14 @@ export function prewarmImageDecode(
     height: number,
 ): void {
     if (!WEB || !key || !(width > 0) || !(height > 0)) return;
+    const bucket = `${key}|${revision}|${Math.ceil(width / 2) * 2}x${Math.ceil(height / 2) * 2}`;
+    if (warmedDecodes.has(bucket)) return;
+    warmedDecodes.add(bucket);
+    if (warmedDecodes.size > WARMED_DECODE_LIMIT) {
+        // FIFO：Map 式插入序在 Set 上成立，摘最旧（重挂旧卡时最多重解一次）
+        const oldest = warmedDecodes.values().next().value;
+        if (oldest != null) warmedDecodes.delete(oldest);
+    }
     void acquireFileUrl(key, revision)
         .then(({ uri, release }) => {
             const img = new window.Image();
@@ -311,14 +331,26 @@ export function prewarmImageDecode(
             img.width = Math.ceil(width);
             img.height = Math.ceil(height);
             img.src = uri;
-            const run = () => img.decode().then(release, release);
+            const run = () =>
+                img.decode().then(release, () => {
+                    // 解码失败：摘除档位记忆，允许后续邻卡变化时重试
+                    warmedDecodes.delete(bucket);
+                    release();
+                });
             if (typeof window.requestIdleCallback === 'function') {
-                window.requestIdleCallback(() => run());
+                // timeout 兜底（v0.4.7 纵向滚动修复配套）：无 timeout 的 rIC 在
+                // 繁忙页面里可能永不触发——预热不落地 = 滚动首现解码回来了
+                // （CDP 高载复测实证 r1/r3 长任务回潮）。2.5s 上限把「空闲才解」
+                // 换成「最迟 2.5s 解」，仍远离交互帧（滚轮 burst 在挂载 2.5s 后
+                // 才可能开始，且单段解码 ≤~90ms、不在事件回调里连发）
+                window.requestIdleCallback(() => run(), { timeout: 2500 });
             } else {
                 setTimeout(run, 200);
             }
         })
-        .catch(() => undefined);
+        .catch(() => {
+            warmedDecodes.delete(bucket);
+        });
 }
 
 /** 某篇日记的媒体行（数据版本变化自动重载；订阅经 data-revision，不经 store）。 */

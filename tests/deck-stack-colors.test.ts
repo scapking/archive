@@ -1,8 +1,15 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+
+/** 同步读源（v0.4.7 新增跨文件把关用例用；顶层 await 的 readFile 结果在
+ *  test 回调外不可 await，故补一个轻量同步入口，口径一致）。 */
+function readFileSyncSafe(file: string): string {
+    return readFileSync(file, 'utf8');
+}
 
 /**
  * 堆叠 deck「纸 × 墨 2.0」光影语言把关（v0.4.6，用户第 1 条令「不要灰色相进、
@@ -12,7 +19,10 @@ import { fileURLToPath } from 'node:url';
  *   重于纸面档（暗底黑影像要更浓才咬得住边界），且投影是静态 style，不得混进
  *   native driver 动画图（deck.tsx 白名单铁律）；
  * - 透明度只留退场通道（可见层恒 1）；
- * - 挂载纪律：深层不可见位不挂真实卡面；
+ * - 挂载纪律 v0.4.7：可见层位（0..2）全挂完整卡面（用户第 4 条令「都铺满」），
+ *   隐藏位不挂 + 滞留窗卸载（0.4.6 性能红线口径保留）；
+ * - 翻卡防中断（用户第 2b 条令）：两堆叠手势面拒软抢占 + terminate 补提交 +
+ *   播放器面空闲闸 + 预解码档位去重；
  * - 三态渐变端点全部来自 palette（ongoing 深蓝 AA + 纵深、pending 亮起、
  *   settled 从纸面（surface）起沉——完成的卡还是纸，不是灰板）。
  * 预期来自设计口径而非复制实现。
@@ -136,21 +146,67 @@ test('投影是静态卡壳 style，不进 native driver 动画图', () => {
 test('透明度只留退场通道：可见层恒 1、隐藏层位 1→0', () => {
     const opacityExpr = deckSource.split('opacity: values.depth.interpolate')[1]?.split('})')[0] ?? '';
     assert.ok(opacityExpr.length > 0, 'opacity 插值结构变了，测试口径需同步');
-    assert.match(opacityExpr, /outputRange: \[1, 1, 0\]/);
+    // v0.4.7 全层铺满：可见层 = 0..VISIBLE_DEPTH(2) 三档恒实色，隐藏位淡出
+    assert.match(opacityExpr, /outputRange: \[1, 1, 1, 0\]/);
     assert.ok(!opacityExpr.includes('0.45'), 'v0.4.3 渐隐下限回潮');
-    assert.ok(!opacityExpr.includes('0.92'), 'v0.4.4 透明度顶替方案回潮');
+    assert.ok(!/outputRange: \[1, [0159]\.\d+, 0\]/.test(opacityExpr), 'v0.4.4 透明度顶替方案回潮');
 });
 
-test('挂载纪律：深层不挂真实卡面，退场经滞留窗卸载', () => {
-    // 可见层（depth <= VISIBLE_DEPTH）挂载；退场位内容滞留 DECK_CONTENT_LINGER_MS
-    // 后卸载（立即卸载会让滑移淡出的退场卡露空白纸壳）
+test('挂载纪律 v0.4.7：全部可见层位挂完整卡面，深层纯壳 + 滞留窗卸载', () => {
+    // 用户第 4 条令：v0.4.6「仅前卡+第一背卡挂内容」被否——可见深度提到 2，
+    // 0..VISIBLE_DEPTH 全挂真实卡面（翻卡过程任何时刻露出层都有内容）；
+    // 隐藏位（depth > VISIBLE_DEPTH）仍不挂（0.4.6 性能红线：隐藏层不常驻
+    // 解码），退场经 DECK_CONTENT_LINGER_MS 滞留窗卸载
+    assert.match(deckSource, /const VISIBLE_DEPTH = 2;/);
     assert.match(deckSource, /useState\(depth <= VISIBLE_DEPTH\)/);
     assert.match(deckSource, /DECK_CONTENT_LINGER_MS/);
     assert.match(deckSource, /setTimeout\(\(\) => setContentMounted\(false\), DECK_CONTENT_LINGER_MS\)/);
-    // 卡面内容消费口必须先过 contentMounted 闸（前卡/背卡路径都在闸内）
-    const contentSrc = deckSource.split('<View className="min-h-0 flex-1">')[1]?.split('页码')[0] ?? '';
+    // 卡面内容消费口必须先过 contentMounted 闸
+    const contentSrc = deckSource.split('className="min-h-0 flex-1"')[1]?.split('页码')[0] ?? '';
     assert.ok(contentSrc.length > 0, '卡面内容结构变了，测试口径需同步');
-    assert.ok(contentSrc.includes('contentMounted'), '深层内容必须经挂载闸（性能红线：隐藏层不常驻解码）');
+    assert.ok(contentSrc.includes('contentMounted'), '内容必须经挂载闸（隐藏层不常驻解码）');
+    // v0.4.7 铺满：背卡不再右缩进 PEEK（v0.4.2 露条壳面-only 铁律退役，
+    // 用户否「空白区域」），但 overflow-hidden 包装层是 CDP 二分实测的承重件
+    // （无包装全铺 = 首页 deck 拖拽不被认领/连翻失效）——两者都是契约。
+    assert.ok(
+        !contentSrc.includes('marginRight: PEEK'),
+        '背卡内容右缩进 PEEK 回潮——v0.4.7 要求全层铺满（露条带真实内容）',
+    );
+    assert.ok(
+        /<View className="min-h-0 flex-1 overflow-hidden">/.test(deckSource),
+        '背卡 overflow-hidden 包装层缺失——连翻回归高危（见 deck.tsx 几何铁律段归因注）',
+    );
+    // 单一 item.node 消费路径（前/背同渲染，触摸让位由 pointerEvents 表达）
+    assert.ok(contentSrc.includes('item.node'), '卡面消费路径缺失');
+    assert.match(
+        deckSource,
+        /pointerEvents=\{depth === 0 \? 'auto' : 'none'\}/,
+        '背卡层必须 pointerEvents 让位（露条点按 = 提前到前位 语义保住）',
+    );
+});
+
+test('翻卡防中断：两个堆叠手势面都拒绝软抢占（release 不被吞）', () => {
+    // 用户第 2b 条令：卡顿帧里 responder 被 scroll/selectionchange 终结 →
+    // release 丢失 → 「卡一下然后翻不动」。deck.tsx 与编辑器 MediaDeckStack
+    // 的 PanResponder 都必须挂 onPanResponderTerminationRequest: () => false，
+    // 且 web 手势容器带 touch-action: pan-y（横向拖拽免疫浏览器滚动接管）
+    assert.match(deckSource, /onPanResponderTerminationRequest: \(\) => false/);
+    assert.match(deckSource, /touchAction: 'pan-y'/);
+    assert.match(deckSource, /claimedFlag\.current = true;/, 'grant 必须幂等复位认领旗标');
+    // 硬夺（terminate）同闸提交：过阈值补翻、未过回弹——release 被吞时翻卡不丢
+    const termSrc = deckSource.split('onPanResponderTerminate:')[1]?.split('onPanResponderReject')[0] ?? '';
+    assert.ok(termSrc.includes('PAN_COMMIT_DX'), 'deck terminate 未走提交闸（过阈值丢翻）');
+    const editorSource = readFileSyncSafe(path.join(repoRoot, 'src/features/archive/ui/editor.tsx'));
+    assert.match(editorSource, /onPanResponderTerminationRequest: \(\) => false/, 'MediaDeckStack 缺让位拒绝');
+    const editTerm = editorSource.split('onPanResponderTerminate:')[1]?.split('onPanResponderTerminationRequest')[0] ?? '';
+    assert.ok(editTerm.includes('SWIPE_COMMIT_DX'), 'MediaDeckStack terminate 未走提交闸（过阈值丢翻）');
+    assert.ok(editTerm.includes('dragBusyRef.current = false'), 'terminate 未复位拖拽标记（空闲闸悬挂）');
+    assert.ok(editorSource.includes('DECK_TOUCH_ACTION_STYLE'), 'MediaDeckStack 手势面缺 touch-action');
+    // 视频播放器面挂窗必须查空闲闸（转场/拖拽在场则顺延）
+    assert.match(editorSource, /busyRefs\.advancing\.current \|\| busyRefs\.dragging\.current/);
+    // 邻卡预热带档位去重（连滑期每拍都能落地预热，不再现场解码）
+    const urlSource = readFileSyncSafe(path.join(repoRoot, 'src/features/archive/ui/use-file-url.ts'));
+    assert.ok(urlSource.includes('warmedDecodes'), 'prewarmImageDecode 缺档位去重表');
 });
 
 test('卡面三态渐变同族同向：每主题内 from 恒亮于 to（左上受光、右下沉的单一光源）', () => {
