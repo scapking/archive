@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import * as dayDeckLogic from '../src/features/archive/trip-day-deck-logic.ts';
 import {
     DAY_DECK_MAX,
     DAY_DECK_MIN,
     DAY_FACE_PLAN_LIMIT,
     dayDeckHeight,
-    dayFaceInvitation,
     dayFacePlanPreview,
     dayFaceTags,
     tripDayTarget,
@@ -14,8 +17,20 @@ import {
 /**
  * 日卡左右堆纯逻辑 + 点卡去向分流（v0.4.7 行程域重构令 1 的可测面）。
  * 旧「垂直日卡列表」形态的断言随形态退役，本文件按新形态（堆叠卡面摘要 +
- * 点前卡进当日）改写口径——用例只增不减。
+ * 点前卡进当日）改写口径——用例只增不减。v0.4.9 令 2：空日卡占位文案工厂
+ * 退场，原 dayFaceInvitation 用例改为「文案块不存在 + 卡面禁词清单」契约
+ * （同 deck-stack-colors 先例的跨文件读源把关；屏源不可 import，只扫文本）。
  */
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const logicSource = readFileSync(
+    path.join(repoRoot, 'src/features/archive/trip-day-deck-logic.ts'),
+    'utf8',
+);
+const detailSource = readFileSync(
+    path.join(repoRoot, 'src/features/archive/trip-detail-screen.tsx'),
+    'utf8',
+);
 
 test('dayDeckHeight：视口比例夹紧到可读档，非法输入不塌', () => {
     assert.equal(dayDeckHeight(932), DAY_DECK_MAX); // 桌面 web：932−250=682 → 封顶 640
@@ -61,14 +76,26 @@ test('dayFacePlanPreview：3 行预览档 + 全量完成统计（含隐藏行）
     assert.deepEqual(empty, { visible: [], hidden: 0, done: 0 });
 });
 
-test('dayFaceInvitation：未写才邀请（文案对 = 标题+去向提示）；锁定无写入口 → 邀请退空（提示不撒谎）', () => {
-    assert.deepEqual(dayFaceInvitation(false, false), {
-        title: '这一天还没写',
-        hint: '点卡看当日行程，长按补一句',
-    });
-    assert.equal(dayFaceInvitation(false, true), null);
-    assert.equal(dayFaceInvitation(true, false), null);
-    assert.equal(dayFaceInvitation(true, true), null);
+test('空日卡占位文案块退场（v0.4.9 令 2）：文案工厂移除、raised 井容器退场、卡面禁词清单零出现', () => {
+    // ① 逻辑契约：dayFaceInvitation 占位文案工厂从导出面彻底消失——
+    //    空日卡不再有 title/hint 文案源（新契约：卡面无占位文案块）
+    assert.equal('dayFaceInvitation' in dayDeckLogic, false);
+    // ② 渲染契约：未写日（可写态）的「raised 井」占位容器退场；锁定态与
+    //    已写态分支不受影响（分流由屏层按 locked / hasJournal 直判，
+    //    tripDayTarget / dayFaceTags 用例继续把关节奏面）
+    assert.ok(
+        !detailSource.includes('bg-ink-raised px-4 py-4'),
+        'trip-detail-screen.tsx 仍挂着空日卡 raised 井容器',
+    );
+    // ③ 卡面禁词清单（用户点名）：兜底行程名与占位文案不得出现在日堆
+    //    逻辑与日堆屏任一源文件中（含注释——注释复述即是文案回流的温床）
+    const banned = ['未命名行程', '这一天还没写', '点卡看当日行程', '长按补一句'];
+    for (const phrase of banned) {
+        assert.ok(!logicSource.includes(phrase), `trip-day-deck-logic.ts 残留「${phrase}」`);
+        assert.ok(!detailSource.includes(phrase), `trip-detail-screen.tsx 残留「${phrase}」`);
+    }
+    // ④ 「未写」状态事实词仍允许（锁定只读行），不属于禁词占位文案
+    assert.ok(detailSource.includes('未写'), '锁定只读态的「未写」状态行应在屏源保留');
 });
 
 test('tripDayTarget：点卡去向分流（未锁定/锁定无日记=当日行程表；锁定有日记=只读日记）', () => {

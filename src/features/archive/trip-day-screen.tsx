@@ -10,17 +10,18 @@ import {
     BackHandler,
     Image,
     Keyboard,
+    KeyboardAvoidingView,
+    Platform,
     Pressable,
-    Switch,
+    ScrollView,
     Text,
     View,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { imagePicker } from '@/core/image-picker';
 import {
     LucideArchive,
-    LucideCheck,
+    LucideBell,
     LucideClock,
     LucideImage,
     LucidePackageCheck,
@@ -31,7 +32,8 @@ import { haptics } from '@/core/haptics';
 import * as db from './db';
 // 屏层数据编排（行程项 mutation 与错误/revision 通道）+ 时刻纯函数
 // （tripItemDueAt：通知时间闸与 deck 排序的单一事实源，屏层禁止另写时刻组合；
-// isValidTripItemTime 校验收口 store 层——表单时间走芯片值域恒合法，屏层不再复检）。
+// isValidTripItemTime 校验收口 store 层——表单步进值域（5 分量化 + 24h 取模）
+// 恒合法，屏层不再复检）。
 import {
     tripItemDueAt,
     useArchiveRevision,
@@ -66,6 +68,7 @@ import {
     ComposeFab,
     EmptyState,
     LoadingView,
+    PAPER_FLOAT_SHADOW,
     PrimaryButton,
     useFileUrlState,
     usePalette,
@@ -83,20 +86,21 @@ import { DeadEndView } from './journal-edit-screen';
  * - deck 前卡 = 「当前应进行的项」（ongoing 段最早到点在前；v0.4.4 阶段机，
  *   见 trip-item-logic）；进入收尾/到点自动完成后该项沉入收尾段，前卡自动
  *   前进到下一项（deck 以卡序签名重挂收口，见 deckEpoch）；
- * - 卡面：eyebrow = `${time} · 状态文案`（当前进行中 accent 色）；标题 15
+ * - 卡面（v0.4.9「纸 × 墨 2.1」：整面渐变退场，用户判深蓝渐变丑）：eyebrow =
+ *   `${time} · 状态文案`（当前进行中 accent 色 + accent 圆点）；标题 15
  *   semibold；描述（留言/备注）；有关联图片时显示首图封面（useFileUrlState
- *   三态，缺文件降级不渲染）。当前进行中的卡面铺 ongoing 深蓝渐变（色彩只上
- *   数据纪律——蓝只上「当前」这一数据态，不上 chrome；端点收在 theme.ts
- *   堆叠同族色阶，见 TripItemCardFace 注）；
+ *   三态，缺文件降级不渲染）。三态区分 = 纸面档位差（ongoing 亮档 / pending
+ *   素面 / settled 沉一档，theme 卡面档位色）+ 当前卡 accent 细边 + 投影，
+ *   卡面文字恒走 text/secondary/accent 三档（AA 把关见 deck-stack-colors）；
  * - 长按前卡 → 操作卡（ActionMenuCard）：进入收尾（done）/ 结束收尾（wrap）/
  *   添加图片 / 添加视频（done 与 wrap 都可补媒体，用户指令 #8）/ 删除此行程
  *   ——手动「标记完成/失败」退役（v0.4.4），阶段由 trip-item-logic 派生；
  *   锁定行程 isTripLocked 时长按与 FAB 入口全部关断，整页只读）；
- * - `+` FAB → 创建行程项表单卡（分步引导式，v0.4.2 用户指令「带交互的」：
- *   时刻回显 + 时/分点选芯片网格（v0.4.7 重做，用户追加令「滚轮丑、要重构」，
- *   见 TimeChipGroup 注；「此刻」快捷一键回到下一个 5 分钟档）→ 标题（自动
- *   聚焦）→ 备注可选可跳过；已选项回显为可点行回改）→
- *   store.createTripItem（成功后自动调度本地通知，权限被拒静默降级）；
+ * - `+` FAB → 创建行程项**底部弹层**（v0.4.9 重构，用户令「居中卡丑、操作不
+ *   方便」：贴键盘底部 sheet + 单行步进器改时（±5 分 / ±1 小时，「此刻」快捷）
+ *   + 标题即写即提交（主按钮恒在，两步「下一步→添加」砍除）+ 备注/响铃收进
+ *   次级 chip 行）→ store.createTripItem（成功后自动调度本地通知，权限被拒
+ *   静默降级）；
  * - **应用内闹钟**（页内 useEffect 定时检查）：前台期间某 pending 项的时刻
  *   （local_date + time）到达时弹确认卡——标题「行程时间到」+ 正文（时间 +
  *   标题 + 描述）+「知道了」；确认后本次不再弹（dismissedAlarmIds 会话集），
@@ -118,9 +122,20 @@ function itemDueAt(item: db.TripItemRow): number {
     return tripItemDueAt(item.local_date, item.time);
 }
 
+/** rounded-card 半径档同值 inline（细边层要贴壳的 overflow-hidden 圆角裁切）。 */
+const FACE_EDGE_RADIUS = 16;
+
 /**
  * 行程项卡面（deck item.node）：deck 统一绘制 surface 圆角壳，本卡面只负责
- * 内容填充；当前进行中的卡面铺 accent 淡底（bg-ink-accent-bg）盖住壳底色。
+ * 内容填充。**v0.4.9「纸 × 墨 2.1」三态语言（用户判「渐变深蓝太丑」，整面
+ * 渐变全域退场）**：
+ * - 进行中（isCurrent）= ongoingFace 亮档纸 + accent 细边（1.5px 周线，
+ *   绝对层零布局影响）+ eyebrow accent 圆点与文字——状态信号全部小面积；
+ * - 待进行 = pendingFace（= 壳色 surface 素面，克制不抢当前项）；
+ * - 完成/收尾/终态 = settledFace（从纸面沉一档，完成的卡还是纸、只是光弱）；
+ * - 卡面文字只允许 text/secondary/accent 三档（muted 与旧渐变白字退役——
+ *   muted 在任何纸面档上不足 AA，tests/deck-stack-colors 按新契约把关）。
+ * 三档底色走 inline palette（禁散写 hex，色值收口 theme.ts）。
  */
 const TripItemCardFace = memo(function TripItemCardFace({
     item,
@@ -131,7 +146,7 @@ const TripItemCardFace = memo(function TripItemCardFace({
     item: db.TripItemRow;
     /** 派生阶段（tripItemPhaseMap，与 deck 排序同源）。 */
     phase: TripItemPhase;
-    /** 前卡（当前应进行的项）：eyebrow accent + 卡面 accent 淡底。 */
+    /** 前卡（当前应进行的项）：亮档纸面 + accent 细边 + eyebrow accent。 */
     isCurrent: boolean;
     /** 首图封面媒体行（无关联图片为 null，不渲染封面）。 */
     cover: db.TripMediaRow | null;
@@ -139,52 +154,55 @@ const TripItemCardFace = memo(function TripItemCardFace({
     const coverState = useFileUrlState(cover?.file_key ?? null);
     const palette = usePalette();
 
-    // 渐变底按阶段（v0.4.5 色阶重做：端点全部收进 theme.ts 堆叠 deck 同族
-    // token，2026-11-19 用户指令「颜色渐变色」保留、v0.4.4「与整体 deck 颜色
-    // 不协调」的散落 hex 渐变废止）：
-    // - 进行中（isCurrent）= ongoingFrom→ongoingTo：accent-deep 蓝坠入墨黑/夜面
-    //   + 白字家族（蓝是「进行中」数据色，房规允许；旧方案的 tailwind-gray
-    //   偏移蓝黑端点离族，正是「与整体 deck 不协调」的根因）；
-    // - 完成/收尾/终态 = settledFrom→settledTo：从纸面 surface 沉一档（v0.4.6
-    //   「纸 × 墨 2.0」：完成的卡还是纸、只是光弱一档；旧「沉进 deckEdge 灰板」
-    //   被用户否为「灰色相进」，堆叠分层已改走 theme.deckShadow 光影）；
-    // - 待进行 = pendingFrom→pendingTo：纸白/raised 亮面收到 surface 一档，
-    //   克制不抢当前项；
-    // 三态渐变同方向（左上亮、右下沉，光源恒定）。LinearGradient 内联 style
-    //（Animated/第三方组件 className web 静默丢弃坑），colors 保持二元组标注。
     const isSettled = phase === 'done' || phase === 'wrap' || phase === 'terminal';
-    const gradientColors: [string, string] = isCurrent
-        ? [palette.ongoingFrom, palette.ongoingTo]
+    const faceBg = isCurrent
+        ? palette.ongoingFace
         : isSettled
-          ? [palette.settledFrom, palette.settledTo]
-          : [palette.pendingFrom, palette.pendingTo];
-    const faceTone = isCurrent ? 'accent' : 'token';
-    const eyebrowTone = isCurrent
-        ? 'text-white/80'
-        : phase === 'terminal'
-          ? 'text-ink-muted dark:text-inkd-muted'
-          : phase === 'wrap'
-            ? 'text-ink-accent dark:text-inkd-accent'
-            : isSettled
-              ? 'text-ink-muted dark:text-inkd-muted'
-              : 'text-ink-secondary dark:text-inkd-secondary';
-    const titleTone = isCurrent ? 'text-white' : 'text-ink-text dark:text-inkd-text';
-    const bodyTone = isCurrent ? 'text-white/85' : 'text-ink-secondary dark:text-inkd-secondary';
-    const metaTone = isCurrent ? 'text-white/75' : 'text-ink-muted dark:text-inkd-muted';
+          ? palette.settledFace
+          : palette.pendingFace;
+    // eyebrow：accent 只上「当前/收尾」两个数据态（wrap = 已 done 未归档，
+    // 仍是待办信号），done/terminal 落 secondary——纸面档上 secondary 达 AA，
+    // 旧 muted 档退场
+    const eyebrowTone = isCurrent || phase === 'wrap'
+        ? 'text-ink-accent dark:text-inkd-accent'
+        : 'text-ink-secondary dark:text-inkd-secondary';
 
-    const content = (
-        <>
+    return (
+        <View
+            style={{
+                flex: 1,
+                paddingHorizontal: 24,
+                paddingTop: 20,
+                paddingBottom: 12,
+                backgroundColor: faceBg,
+            }}
+        >
+            <View className="flex-row items-center">
+                {isCurrent ? (
+                    // 当前项状态圆点（小面积 accent 点，与细边同语）
+                    <View
+                        className="mr-1.5 h-1.5 w-1.5 rounded-full"
+                        style={{ backgroundColor: palette.accent }}
+                    />
+                ) : null}
+                <Text
+                    className={`text-[12px] font-medium ${eyebrowTone}`}
+                    style={{ fontVariant: ['tabular-nums'] }}
+                >
+                    {`${item.time} · ${TRIP_ITEM_PHASE_LABEL[phase]}`}
+                </Text>
+            </View>
             <Text
-                className={`text-[12px] font-medium ${eyebrowTone}`}
-                style={{ fontVariant: ['tabular-nums'] }}
+                numberOfLines={2}
+                className="mt-2 text-[15px] font-semibold text-ink-text dark:text-inkd-text"
             >
-                {`${item.time} · ${TRIP_ITEM_PHASE_LABEL[phase]}`}
-            </Text>
-            <Text numberOfLines={2} className={`mt-2 text-[15px] font-semibold ${titleTone}`}>
                 {item.title}
             </Text>
             {item.description ? (
-                <Text numberOfLines={3} className={`mt-1.5 text-[13px] leading-5 ${bodyTone}`}>
+                <Text
+                    numberOfLines={3}
+                    className="mt-1.5 text-[13px] leading-5 text-ink-secondary dark:text-inkd-secondary"
+                >
                     {item.description}
                 </Text>
             ) : null}
@@ -196,51 +214,50 @@ const TripItemCardFace = memo(function TripItemCardFace({
                     resizeMode="cover"
                 />
             ) : null}
-        </>
-    );
-
-    return (
-        <LinearGradient
-            colors={gradientColors}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={{ flex: 1, paddingHorizontal: 24, paddingTop: 20, paddingBottom: 12 }}
-        >
-            {content}
-        </LinearGradient>
+            {/* 当前卡 accent 细边：绝对铺满层（pointerEvents none 不挡卡面），
+                半径与壳的 rounded-card 同值，贴 overflow-hidden 裁切边成周线 */}
+            {isCurrent ? (
+                <View
+                    pointerEvents="none"
+                    style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        borderRadius: FACE_EDGE_RADIUS,
+                        borderWidth: 1.5,
+                        borderColor: palette.faceAccentEdge,
+                    }}
+                />
+            ) : null}
+        </View>
     );
 });
 
 /* ------------------------------------------------------------------ */
-/* 时间选择（v0.4.7 重做，用户追加令「v0.4.4 滚轮丑、要重构」）           */
+/* 时间编辑（v0.4.9 重构：24+12 点选芯片网格退场 → 单行步进器）           */
 /* ------------------------------------------------------------------ */
 
 /**
- * 值域是**平的**（24 个时、12 个 5 分步进），旧版却用纵向滚轮表达：滚动把
- * 「选一个值」变成「调一段距离」——看不见全貌、无法直达、要滚动仲裁（本屏
- * 滚动还踩长任务），五项窗口 + 上下垫行在短列表上又切出半空带（before 截图
- * 实证：分列 45/50/55 下垫行缺失）。新方案 = 点选网格（chip grid）：
- * ① 全值域一眼扫完、一次点中（occasional 频次走标准交互，无动画预算问题）；
- * ② 键鼠触屏同一条链（Pressable 天然 focusable + Enter/Space，无滚动手势
- *    仲裁 = 零滚动卡顿面）；
- * ③ 选中态是数据色（accent 填充 + 白字，onPrimaryBtn 同族），未选是纸面
- *    raised 一档——「时/分」两组结构即值域本身，非装饰（frontend-design：
- *    structural devices encode information）；
- * ④ 「此刻」快捷芯片把默认值（下一个 5 分钟档）做成可点事实而非隐式初值。
- * 触控口径（animate-expo）：视觉 40dp + hitSlop 上下左右各 2 = 44dp 命中，
- * 不放大视觉本体；同行间距 8 保证相邻命中区不重叠（40+8 > 44/2×2）。
+ * 选时间的真实动作不是「从 36 个值里挑一个」而是「在默认值上微调」——默认已是
+ * 下一个 5 分钟档，用户站在「此刻」附近，修正量典型 ≤2 小时、校准步是 5 分
+ * 倍数。旧点选网格把全值域的视觉扫描成本塞给用户（24+12 芯片吃半屏，v0.4.7
+ * 「滚轮丑」只是把滚动仲裁换成了扫描负担）。新方案 = 单行步进器：中央大号
+ * 时刻回显，左 −1h/−5、右 +5/+1h——四钮覆盖小时级定位 + 分钟级校准两档频率，
+ * 单手拇指可达、零滚动、零键盘；值域 = 5 分量化 + 24h 环内取模，恒合法
+ *（store 契约不变）。触控口径（animate-expo）：视觉 40dp + hitSlop 2 = 44dp
+ * 命中，按钮 raised 纸面 + secondary 字（控件级中性档——accent 只上数据/选中
+ * 语义，+/− 按钮不是数据态，不抢主按钮视觉重量）。
  */
-const HOUR_VALUES = Array.from({ length: 24 }, (_, i) => i);
-const MINUTE_VALUES = Array.from({ length: 12 }, (_, i) => i * 5);
-/** chip 视觉边长 / 命中外扩 / 行距 / 圆角（rounded-control 档同值 inline）。 */
-const TIME_CHIP = 40;
-const TIME_CHIP_SLOP = 2;
-const TIME_CHIP_GAP = 8;
-const TIME_CHIP_RADIUS = 12;
+const TIME_STEP = 5;
+const TIME_HOUR = 60;
+/** 步进钮视觉边长 / 命中外扩 / 圆角（rounded-control 档同值 inline）。 */
+const STEP_BTN = 40;
+const STEP_BTN_SLOP = 2;
+const STEP_BTN_RADIUS = 12;
 
-const pad2 = (n: number): string => String(n).padStart(2, '0');
-
-/** 下一个可选 5 分钟档（整表单初值与「此刻」快捷共用；跨时进位取 24 模）。 */
+/** 下一个可选 5 分钟档（表单初值与「此刻」快捷共用；跨时进位取 24 模）。 */
 function nextFiveMinuteSlot(now: Date): { hour: number; minute: number } {
     const rolled = Math.ceil(now.getMinutes() / 5) * 5;
     return {
@@ -250,70 +267,79 @@ function nextFiveMinuteSlot(now: Date): { hour: number; minute: number } {
 }
 
 /**
- * 时间值芯片（时 24 枚 / 分 12 枚共用）：选中 = accent 填充 + 白字（onPrimaryBtn
- * 同族，明暗两主题恒可辨）；未选 = raised 纸面一档 + secondary 字；按压 = 透明度
- * 一档（100ms 级反馈，无弹跳动画——高频点选走「几乎不可感知」档）。触摸面样式
- * 走 inline（css-interop 按压 observable 铁律：状态动态样式不落 className）。
+ * 分钟偏移（−5/+5/±60 共用）：总分钟环上取模、恒落 5 分档（入参与步长都是
+ * 5 的倍数），跨 0 点回卷。
  */
-function TimeChip({
-    text,
-    selected,
-    accessibilityLabel,
+function shiftFiveMinuteSlot(
+    hour: number,
+    minute: number,
+    delta: number,
+): { hour: number; minute: number } {
+    const total = (((hour * 60 + minute + delta) % 1440) + 1440) % 1440;
+    return { hour: Math.floor(total / 60), minute: total % 60 };
+}
+
+/**
+ * 步进钮：raised 纸面 + secondary 字；按压透明度一档 + selection tick（旧芯片
+ * 的触感口径保留）。
+ */
+function TimeStepButton({
+    label,
+    a11yLabel,
     onPress,
 }: {
-    text: string;
-    selected: boolean;
-    accessibilityLabel: string;
+    label: string;
+    a11yLabel: string;
     onPress(): void;
 }) {
     const palette = usePalette();
     return (
         <Pressable
             onPress={() => {
-                // 选择拍触感（animate-expo：值跨过档位的 selection tick；web no-op）
                 haptics.selection();
                 onPress();
             }}
-            hitSlop={TIME_CHIP_SLOP}
+            hitSlop={STEP_BTN_SLOP}
             accessibilityRole="button"
-            accessibilityLabel={accessibilityLabel}
-            accessibilityState={{ selected }}
+            accessibilityLabel={a11yLabel}
             style={({ pressed }) => ({
-                width: TIME_CHIP,
-                height: TIME_CHIP,
-                borderRadius: TIME_CHIP_RADIUS,
+                width: STEP_BTN,
+                height: STEP_BTN,
+                borderRadius: STEP_BTN_RADIUS,
                 alignItems: 'center',
                 justifyContent: 'center',
-                backgroundColor: selected ? palette.accent : palette.raised,
-                opacity: pressed && !selected ? 0.6 : 1,
+                backgroundColor: palette.raised,
+                opacity: pressed ? 0.6 : 1,
             })}
         >
             <Text
                 style={{
-                    fontSize: 15,
-                    fontWeight: selected ? '600' : '400',
-                    color: selected ? palette.onPrimaryBtn : palette.secondary,
+                    fontSize: 13,
+                    fontWeight: '600',
+                    color: palette.secondary,
                     fontVariant: ['tabular-nums'],
                 }}
             >
-                {text}
+                {label}
             </Text>
         </Pressable>
     );
 }
 
 /**
- * 「此刻」快捷（描边 ghost chip）：accent 文字 + 透明底 + 1.5 描边——快捷动作
- * 不伪装成值选项（填充/描边语法区分）；已是目标档时禁用（60% 透明 + 无触感），
- * 诚实降级不发没效果的拍。
+ * 描边 ghost chip（「此刻」快捷 / 「加备注」展开共用）：accent 文字 + 透明底 +
+ * 1.5 描边——快捷动作不伪装成值选项/固定控件（填充/描边语法区分）；禁用态
+ * （已在目标档）降透明不发没效果的拍（诚实降级）。
  */
-function TimeGhostChip({
+function GhostChip({
     label,
-    disabled,
+    a11yLabel,
+    disabled = false,
     onPress,
 }: {
     label: string;
-    disabled: boolean;
+    a11yLabel: string;
+    disabled?: boolean;
     onPress(): void;
 }) {
     const palette = usePalette();
@@ -326,12 +352,12 @@ function TimeGhostChip({
             }}
             disabled={disabled}
             accessibilityRole="button"
-            accessibilityLabel={`${label}（跳到下一个 5 分钟档）`}
+            accessibilityLabel={a11yLabel}
             accessibilityState={{ disabled }}
             style={({ pressed }) => ({
                 height: 36,
                 paddingHorizontal: 14,
-                borderRadius: TIME_CHIP_RADIUS,
+                borderRadius: STEP_BTN_RADIUS,
                 alignItems: 'center',
                 justifyContent: 'center',
                 borderWidth: 1.5,
@@ -352,61 +378,79 @@ function TimeGhostChip({
     );
 }
 
-/** 芯片组：eyebrow 标签 + flexWrap 行（gap 8；行距同值，纵向节奏一致）。 */function TimeChipGroup({
-    label,
-    values,
-    selected,
-    format,
-    a11yUnit,
-    onSelect,
-}: {
-    label: string;
-    values: number[];
-    selected: number;
-    format(n: number): string;
-    a11yUnit: string;
-    onSelect(n: number): void;
-}) {
+/**
+ * 到点响铃 chip 开关（v0.4.9：整行 surface 井退场——两态开关不值得占一块
+ * 说明区）：StatusChip 的淡底描边 + 图标语法——on = accent 淡底描边 + 铃铛
+ * accent，off = raised 纸面 + secondary；点按即切换（accessibilityRole switch
+ * 带 checked 态）。默认开与语义同旧 Switch（用户指令 #9；iOS/web 无闹钟 API
+ * 时由 core/alarm 门面 no-op，平台差异不摆 UI）。
+ */
+function AlarmToggleChip({ value, onToggle }: { value: boolean; onToggle(): void }) {
+    const palette = usePalette();
     return (
-        <View>
-            <Text className="mb-1.5 text-[11px] font-medium text-ink-muted dark:text-inkd-muted">
-                {label}
+        <Pressable
+            onPress={() => {
+                haptics.selection();
+                onToggle();
+            }}
+            hitSlop={STEP_BTN_SLOP}
+            accessibilityRole="switch"
+            accessibilityLabel={value ? '到点响铃：已开启（注册系统闹钟，到点全屏提醒）' : '到点响铃：已关闭'}
+            accessibilityState={{ checked: value }}
+            className={`h-10 flex-row items-center rounded-control border px-3 ${
+                value
+                    ? 'border-ink-accent bg-ink-accent-bg dark:border-inkd-accent dark:bg-inkd-accent-bg'
+                    : 'border-transparent bg-ink-raised dark:bg-inkd-raised'
+            } active:opacity-70`}
+            style={{ gap: 6 }}
+        >
+            <LucideBell
+                size={15}
+                strokeWidth={2}
+                color={value ? palette.accent : palette.secondary}
+            />
+            <Text
+                className={`text-[13px] font-medium ${
+                    value
+                        ? 'text-ink-accent dark:text-inkd-accent'
+                        : 'text-ink-secondary dark:text-inkd-secondary'
+                }`}
+            >
+                到点响铃
             </Text>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: TIME_CHIP_GAP }}>
-                {values.map((n) => (
-                    <TimeChip
-                        key={n}
-                        text={format(n)}
-                        selected={n === selected}
-                        accessibilityLabel={`${format(n)} ${a11yUnit}`}
-                        onPress={() => onSelect(n)}
-                    />
-                ))}
-            </View>
-        </View>
+        </Pressable>
     );
 }
 
 /**
- * 创建行程项表单卡（v0.4.4 同卡渐进式，用户指令「标题下一步后在时间和标题
- * 输入框下面再加一个输入框」）：时刻回显 + 时/分点选芯片网格（v0.4.7 重做
- * 滚轮）+ 标题常显同卡，「下一步」把备注
- * 输入框**追加**在下方（不换屏不替换），「添加」提交。时间芯片值域恒合法、
- * 标题空值关住提交——本地正则校验退场，仅剩 store 失败（error 通道）就地
- * 展示可重试。scrim + 居中卡，ActionMenuCard/RenameCard 同语言，禁 RN Modal
- * 条件渲染。
+ * 添加行程项底部弹层（v0.4.9 重构，用户令「居中卡丑、键盘弹起后体验断裂、
+ * 两步绕提交」）：
+ * - 形态 = ui/date-picker.tsx 的 sheet 语言：scrim justify-end + 底部悬浮纸卡
+ *   （PAPER_FLOAT 投影档 + rounded-card + 安全区底衬），KeyboardAvoidingView
+ *   让 iOS 键盘顶起整层、Android adjustResize 自适应——弹层贴键盘，不再居中
+ *   悬空；禁 RN Modal，条件渲染 + absolute 层范式保持；
+ * - 时间 = 单行步进器（TimeStepButton 注），默认下一个 5 分钟档 + 「此刻」
+ *   快捷；
+ * - 路径最短：标题即写即提交（autoFocus、done 键直发），「添加」主按钮恒在，
+ *   两步流程砍除；备注走次级 chip 展开的内联字段（不整卡膨胀），响铃收成
+ *   chip 开关；
+ * - 红线保持：Android 返回键关闭、打开即收键盘、errorText 就地重试、
+ *   onSubmit({time,title,description,withAlarm}) store 契约不变；native 输入
+ *   只走 FieldInput 的 uncontrolled 通道（本屏零裸 TextInput）。
  */
 function TripItemFormCard({
     onSubmit,
     onClose,
     errorText,
 }: {
-    /** 提交通道（store.createTripItem）：resolve false = 失败（卡片保持打开）。 */
+    /** 提交通道（store.createTripItem）：resolve false = 失败（弹层保持打开）。 */
     onSubmit(input: { time: string; title: string; description: string; withAlarm: boolean }): Promise<boolean>;
     onClose(): void;
     /** store.error 就地文案（失败后展示，避免陈旧错误串场）。 */
     errorText: string | null;
 }) {
+    const insets = useSafeAreaInsets();
+    const palette = usePalette();
     // 时间初值 = 「下一个可选的整 5 分钟」（与「此刻」快捷同派生；59 分→整点
     // 进位取 24 模）。一次取 now 定格快照，两个 useState 共用（分取两次 Date
     // 会跨分钟漂移）。
@@ -416,15 +460,12 @@ function TripItemFormCard({
     const [title, setTitle] = useState('');
     const [note, setNote] = useState('');
     const [noteOpen, setNoteOpen] = useState(false);
-    // 系统闹钟（用户指令 #9「创建时支持自定义创建系统闹钟」）：默认开（行程
-    // 提醒是核心场景），开关行随手关——iOS/web 模块缺失时开关仍在（提交后
-    // 由 core/alarm 门面 no-op，不给平台差异摆 UI）。
     const [withAlarm, setWithAlarm] = useState(true);
     const [saveFailed, setSaveFailed] = useState(false);
     const submittingRef = useRef(false);
 
     const timeLabel = normalizeWheelTime(hour, minute);
-    const palette = usePalette();
+    const canSubmit = title.trim().length > 0;
 
     // 打开即收键盘准备输入；Android 返回键关闭（替代 Modal onRequestClose 语义）
     useEffect(() => {
@@ -438,15 +479,14 @@ function TripItemFormCard({
         return () => sub.remove();
     }, [onClose]);
 
-    /** 下一步：标题非空才前进（按钮 disabled 同闸），备注框追加在本卡下方。 */
-    const openNote = () => {
-        if (title.trim().length === 0) return;
-        haptics.impact('light');
-        setNoteOpen(true);
+    const shiftTime = (delta: number) => {
+        const next = shiftFiveMinuteSlot(hour, minute, delta);
+        setHour(next.hour);
+        setMinute(next.minute);
     };
 
     const submit = async () => {
-        if (submittingRef.current) return;
+        if (!canSubmit || submittingRef.current) return;
         setSaveFailed(false);
         submittingRef.current = true;
         try {
@@ -469,132 +509,142 @@ function TripItemFormCard({
     return (
         <View className="absolute inset-0 z-50">
             <Pressable
-                className="flex-1 items-center justify-center bg-ink-scrim px-10 dark:bg-inkd-scrim"
+                className="flex-1 justify-end bg-ink-scrim px-3 dark:bg-inkd-scrim"
                 onPress={onClose}
                 accessibilityLabel="关闭添加行程项"
             >
-                {/* 卡体拦截冒泡：点卡不关（同 ActionMenuCard 卡体结构） */}
-                <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-4 dark:bg-inkd-base">
-                    <View className="flex-row items-center justify-between">
-                        <Text className="text-[15px] font-semibold text-ink-text dark:text-inkd-text">
-                            添加行程项
-                        </Text>
-                        {/* 44 视觉盒：左邻题文字非按压体，右缘贴卡内边距，无重叠核算项 */}
-                        <CloseButton onPress={onClose} />
-                    </View>
-
-                    {/* 时间选择（v0.4.7 重做：滚轮 → 点选网格，见 TimeChipGroup
-                        注）：大号时刻回显 + 「此刻」快捷 + 时/分两组芯片。 */}
-                    <View className="mt-3 flex-row items-end justify-between">
-                        <View>
-                            <Text className="text-[11px] font-medium text-ink-muted dark:text-inkd-muted">
-                                开始时间
-                            </Text>
-                            <Text
-                                className="mt-0.5 text-[30px] font-semibold text-ink-text dark:text-inkd-text"
-                                style={{ fontVariant: ['tabular-nums'] }}
-                            >
-                                {timeLabel}
-                            </Text>
-                        </View>
-                        {/* 「此刻」快捷：一键回到下一个可选 5 分钟档（默认值
-                            做成可点事实；已是目标档时禁用置灰——诚实降级） */}
-                        <TimeGhostChip
-                            label="此刻"
-                            disabled={hour === initialTime.hour && minute === initialTime.minute}
-                            onPress={() => {
-                                const next = nextFiveMinuteSlot(new Date());
-                                setHour(next.hour);
-                                setMinute(next.minute);
+                {/* KAV flex-1 + justify-end：iOS keyboard 顶起整层（padding 行为
+                    把贴底卡推离键盘），Android adjustResize 走窗口收缩 */}
+                <KeyboardAvoidingView
+                    className="flex-1 justify-end"
+                    behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+                >
+                    {/* 卡体拦截冒泡：点卡不关（同 DatePickerSheet 卡体结构）；
+                        maxHeight 86%（父层 KAV 定高，百分比可解）+ 内层 ScrollView
+                        flexShrink = 键盘 + 展开备注在小屏叠高时的兜底滚动通道
+                        （主路径内容不满，不滚动） */}
+                    <Pressable
+                        className="overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface"
+                        style={[PAPER_FLOAT_SHADOW, { maxHeight: '86%' }]}
+                        accessibilityLabel="添加行程项面板"
+                    >
+                        <ScrollView
+                            style={{ flexShrink: 1 }}
+                            keyboardShouldPersistTaps="handled"
+                            contentContainerStyle={{
+                                paddingHorizontal: 16,
+                                paddingTop: 16,
+                                paddingBottom: Math.max(insets.bottom + 16, 24),
                             }}
-                        />
-                    </View>
-                    <TimeChipGroup
-                        label="时"
-                        values={HOUR_VALUES}
-                        selected={hour}
-                        format={(n) => pad2(n)}
-                        a11yUnit="点"
-                        onSelect={setHour}
-                    />
-                    <View className="mt-3">
-                        <TimeChipGroup
-                            label="分"
-                            values={MINUTE_VALUES}
-                            selected={minute}
-                            format={(n) => pad2(n)}
-                            a11yUnit="分"
-                            onSelect={setMinute}
-                        />
-                    </View>
-                    <Text className="mt-3 text-[12px] text-ink-muted dark:text-inkd-muted">
-                        标题
-                    </Text>
-                    <FieldInput
-                        tone="surface"
-                        autoFocus
-                        value={title}
-                        onChangeText={setTitle}
-                        placeholder="这段时间做什么？"
-                        maxLength={40}
-                        returnKeyType="next"
-                        onSubmitEditing={openNote}
-                        containerClassName="mt-1.5"
-                        accessibilityLabel="行程项标题"
-                    />
-                    {/* 备注框（「下一步」后追加，autoFocus 接管输入；点键盘 next
-                        同走追加） */}
-                    {noteOpen ? (
-                        <>
-                            <Text className="mt-3 text-[12px] text-ink-muted dark:text-inkd-muted">
-                                备注（选填）
+                        >
+                            <View className="flex-row items-center justify-between">
+                                <Text className="text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    添加行程项
+                                </Text>
+                                <CloseButton onPress={onClose} />
+                            </View>
+
+                            {/* 时间区：eyebrow + 「此刻」快捷 / 单行步进器 */}
+                            <View className="mt-3 flex-row items-center justify-between">
+                                <Text className="text-[11px] font-medium text-ink-muted dark:text-inkd-muted">
+                                    开始时间
+                                </Text>
+                                <GhostChip
+                                    label="此刻"
+                                    a11yLabel="此刻（跳到下一个 5 分钟档）"
+                                    disabled={hour === initialTime.hour && minute === initialTime.minute}
+                                    onPress={() => {
+                                        const next = nextFiveMinuteSlot(new Date());
+                                        setHour(next.hour);
+                                        setMinute(next.minute);
+                                    }}
+                                />
+                            </View>
+                            <View className="mt-2 flex-row items-center justify-center">
+                                <TimeStepButton label="−1h" a11yLabel="提前 1 小时" onPress={() => shiftTime(-TIME_HOUR)} />
+                                <View style={{ width: 8 }} />
+                                <TimeStepButton label={`−${TIME_STEP}`} a11yLabel="提前 5 分钟" onPress={() => shiftTime(-TIME_STEP)} />
+                                <Text
+                                    style={{
+                                        minWidth: 104,
+                                        textAlign: 'center',
+                                        marginHorizontal: 10,
+                                        fontSize: 34,
+                                        fontWeight: '600',
+                                        color: palette.text,
+                                        fontVariant: ['tabular-nums'],
+                                    }}
+                                >
+                                    {timeLabel}
+                                </Text>
+                                <TimeStepButton label={`+${TIME_STEP}`} a11yLabel="推后 5 分钟" onPress={() => shiftTime(TIME_STEP)} />
+                                <View style={{ width: 8 }} />
+                                <TimeStepButton label="+1h" a11yLabel="推后 1 小时" onPress={() => shiftTime(TIME_HOUR)} />
+                            </View>
+
+                            {/* 标题即写即提交：打开即聚焦，done 键 = 添加 */}
+                            <Text className="mt-4 text-[11px] font-medium text-ink-muted dark:text-inkd-muted">
+                                标题
                             </Text>
                             <FieldInput
-                                tone="surface"
+                                tone="raised"
                                 autoFocus
-                                multiline
-                                value={note}
-                                onChangeText={setNote}
-                                placeholder="留言或备注"
+                                value={title}
+                                onChangeText={setTitle}
+                                placeholder="这段时间做什么？"
+                                maxLength={40}
+                                returnKeyType="done"
+                                onSubmitEditing={() => void submit()}
                                 containerClassName="mt-1.5"
-                                accessibilityLabel="行程项备注"
+                                accessibilityLabel="行程项标题"
                             />
-                        </>
-                    ) : null}
-                    {/* 系统闹钟开关（用户指令 #9，创建时可选）：默认开。Android
-                        到点 = 真闹钟（全屏响铃，锁屏可关）；iOS/web 无加闹钟
-                        API，提交后由 core/alarm 门面 no-op（强提醒走既有通知
-                        链），开关本身不做平台差异摆位 */}
-                    <View className="mt-3 flex-row items-center justify-between rounded-control bg-ink-surface px-3 py-2.5 dark:bg-inkd-surface">
-                        <View className="min-w-0 flex-1 pr-2">
-                            <Text className="text-[13px] font-medium text-ink-text dark:text-inkd-text">
-                                到点响铃
-                            </Text>
-                            <Text className="mt-0.5 text-[11px] text-ink-muted dark:text-inkd-muted">
-                                注册系统闹钟，到点全屏提醒
-                            </Text>
-                        </View>
-                        <Switch
-                            value={withAlarm}
-                            onValueChange={setWithAlarm}
-                            trackColor={{ false: palette.border, true: palette.accent }}
-                            ios_backgroundColor={palette.border}
-                        />
-                    </View>
-                    <View className="mt-4">
-                        <PrimaryButton
-                            label={noteOpen ? '添加' : '下一步'}
-                            disabled={title.trim().length === 0}
-                            onPress={noteOpen ? () => void submit() : openNote}
-                        />
-                    </View>
 
-                    {saveFailed && errorText ? (
-                        <Text className="mt-2 text-[12px] text-ink-negative dark:text-inkd-negative">
-                            {errorText}
-                        </Text>
-                    ) : null}
-                </Pressable>
+                            {/* 备注（次级可展开）：chip 开合，内联字段不整卡膨胀 */}
+                            {noteOpen ? (
+                                <>
+                                    <Text className="mt-3 text-[11px] font-medium text-ink-muted dark:text-inkd-muted">
+                                        备注（选填）
+                                    </Text>
+                                    <FieldInput
+                                        tone="raised"
+                                        autoFocus
+                                        multiline
+                                        value={note}
+                                        onChangeText={setNote}
+                                        placeholder="留言或备注"
+                                        containerClassName="mt-1.5"
+                                        accessibilityLabel="行程项备注"
+                                    />
+                                </>
+                            ) : null}
+
+                            {/* 次级动作行：响铃 chip 开关 + 备注展开 chip */}
+                            <View className="mt-4 flex-row items-center justify-between">
+                                <AlarmToggleChip value={withAlarm} onToggle={() => setWithAlarm((prev) => !prev)} />
+                                <GhostChip
+                                    label={noteOpen ? '收起备注' : '加备注'}
+                                    a11yLabel={noteOpen ? '收起备注输入框' : '展开备注输入框（选填）'}
+                                    onPress={() => {
+                                        haptics.selection();
+                                        setNoteOpen((prev) => !prev);
+                                    }}
+                                />
+                            </View>
+
+                            {/* 主按钮恒在：空标题闸住（disabled 视觉自带诚实态），
+                                旧「引导→提交」分步流程砍除 */}
+                            <View className="mt-4">
+                                <PrimaryButton label="添加" disabled={!canSubmit} onPress={() => void submit()} />
+                            </View>
+
+                            {saveFailed && errorText ? (
+                                <Text className="mt-2 text-[12px] text-ink-negative dark:text-inkd-negative">
+                                    {errorText}
+                                </Text>
+                            ) : null}
+                        </ScrollView>
+                    </Pressable>
+                </KeyboardAvoidingView>
             </Pressable>
         </View>
     );
@@ -795,8 +845,8 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
         () =>
             orderedItems.map((item, index) => ({
                 key: item.id,
-                // 当前项（前卡）页码走白字（渐变底），其余 muted（素面）
-                pageLabelTone: index === 0 ? ('light' as const) : ('muted' as const),
+                // v0.4.9 渐变底退场：三态卡面都是纸面档，页码恒走默认 muted
+                //（'light' 白字档只属于深底卡面，本屏不再产生）
                 node: (
                     <TripItemCardFace
                         item={item}

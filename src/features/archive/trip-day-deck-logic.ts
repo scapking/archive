@@ -75,19 +75,11 @@ export function dayFaceTags(input: {
     return tags.slice(0, 2);
 }
 
-/**
- * 卡面点按可达性（锁定语义在词表层收口，展示端直接用）：锁定行程仍可点卡
- * 浏览（只读路径），未写日在锁定态不渲染「点开写这一天」邀请（写入口不
- * 存在，邀请即谎言——方向令 §18 接口名实一致在文案面的延伸）。
- */
-export function dayFaceInvitation(
-    locked: boolean,
-    hasJournal: boolean,
-): { title: string; hint: string } | null {
-    if (hasJournal) return null;
-    if (locked) return null;
-    return { title: '这一天还没写', hint: '点卡看当日行程，长按补一句' };
-}
+// 卡面点按可达性（锁定语义在词表层收口，展示端直接用）：锁定行程仍可点卡
+// 浏览（只读路径）。v0.4.9 令 2：未写日的占位文案工厂 dayFaceInvitation（标题
+// + 去向提示）整体退场——卡面只留日期态呈现与克制的「+」级视觉邀请（无任何
+// 字样），锁定态连邀请圈也不渲染（写入口不存在，邀请即谎言——方向令 §18 接口
+// 名实一致在文案面的延伸）。空态呈现分流由屏层按 locked / hasJournal 直判。
 
 /**
  * 点前卡去向（锁定语义分流，纯函数供屏层与单测共用）：未锁定 / 锁定但无

@@ -12,9 +12,14 @@ function readFileSyncSafe(file: string): string {
 }
 
 /**
- * 堆叠 deck「纸 × 墨 2.0」光影语言把关（v0.4.6，用户第 1 条令「不要灰色相进、
- * 但要可以区分」）。断言的是需求侧视觉不变量：
- * - 卡面一律纸色：deckEdge 灰板壳色**全域退役**（theme/deck/trip 三源零出现）；
+ * 堆叠 deck「纸 × 墨 2.1」光影语言把关（v0.4.9，用户令「渐变深蓝什么的太丑」
+ * + 继承 v0.4.6「不要灰色相进、但要可以区分」）。断言的是需求侧视觉不变量：
+ * - 卡面一律纸色：deckEdge 灰板壳色全域退役；**整面渐变也全域退役**——
+ *   theme 不再有 From/To 渐变端点 token，trip 卡面不再 import LinearGradient；
+ * - 三态 = 纸面档位差：ongoing 亮于 surface、pending = surface 素面、settled
+ *   沉一档（两主题方向同构），档位值全部来自 ink/inkd 家族；
+ * - 状态记号只许小面积 accent：细边描色 faceAccentEdge = 本主题 accent 档，
+ *   且卡面文字/圆点/细边对底色对比 AA 硬闸（≥4.5:1，图形件 ≥3:1，双主题）；
  * - 分层靠光影：投影参数 token 化在 theme.ts，前卡档恒重于背卡档、夜面档恒
  *   重于纸面档（暗底黑影像要更浓才咬得住边界），且投影是静态 style，不得混进
  *   native driver 动画图（deck.tsx 白名单铁律）；
@@ -22,9 +27,7 @@ function readFileSyncSafe(file: string): string {
  * - 挂载纪律 v0.4.7：可见层位（0..2）全挂完整卡面（用户第 4 条令「都铺满」），
  *   隐藏位不挂 + 滞留窗卸载（0.4.6 性能红线口径保留）；
  * - 翻卡防中断（用户第 2b 条令）：两堆叠手势面拒软抢占 + terminate 补提交 +
- *   播放器面空闲闸 + 预解码档位去重；
- * - 三态渐变端点全部来自 palette（ongoing 深蓝 AA + 纵深、pending 亮起、
- *   settled 从纸面（surface）起沉——完成的卡还是纸，不是灰板）。
+ *   播放器面空闲闸 + 预解码档位去重。
  * 预期来自设计口径而非复制实现。
  */
 
@@ -33,15 +36,9 @@ const themeSource = await readFile(path.join(repoRoot, 'src/features/archive/ui/
 const deckSource = await readFile(path.join(repoRoot, 'src/features/archive/ui/deck.tsx'), 'utf8');
 const tripSource = await readFile(path.join(repoRoot, 'src/features/archive/trip-day-screen.tsx'), 'utf8');
 
-/** 卡面渐变 token（Palette 字段，LIGHT/DARK 两块都必须齐）。 */
-const FACE_TOKENS = [
-    'ongoingFrom',
-    'ongoingTo',
-    'pendingFrom',
-    'pendingTo',
-    'settledFrom',
-    'settledTo',
-] as const;
+/** 卡面三态档位 token（Palette 字段，LIGHT/DARK 两块都必须齐；v0.4.9 起
+ *  From/To 渐变端点整族退役）。 */
+const FACE_TOKENS = ['ongoingFace', 'pendingFace', 'settledFace', 'faceAccentEdge'] as const;
 
 function block(theme: 'LIGHT' | 'DARK'): string {
     return themeSource.split(`const ${theme}: Palette = {`)[1]?.split('\n};')[0] ?? '';
@@ -89,11 +86,19 @@ test('deckEdge 灰板壳色全域退役（无字段/无消费；注释史料除�
     }
 });
 
-test('卡面渐变 token + 投影参数双主题齐档', () => {
+test('卡面三态档位 token + 投影参数双主题齐档；旧渐变端点 token 退役', () => {
     for (const theme of ['LIGHT', 'DARK'] as const) {
         for (const name of FACE_TOKENS) token(name, theme);
         shadowSpec(theme, 'front');
         shadowSpec(theme, 'back');
+    }
+    // v0.4.9 退渐变：From/To 端点字段不得回潮（含注释里的旧口径复用——字段
+    // 声明面干净，Palette 契约就是契约）
+    for (const retired of ['ongoingFrom', 'ongoingTo', 'pendingFrom', 'pendingTo', 'settledFrom', 'settledTo']) {
+        assert.ok(
+            !new RegExp(`^\\s+${retired}:`, 'm').test(themeSource),
+            `theme.ts 仍声明渐变端点字段 ${retired}——v0.4.9 整面渐变已退场`,
+        );
     }
 });
 
@@ -209,56 +214,73 @@ test('翻卡防中断：两个堆叠手势面都拒绝软抢占（release 不被
     assert.ok(urlSource.includes('warmedDecodes'), 'prewarmImageDecode 缺档位去重表');
 });
 
-test('卡面三态渐变同族同向：每主题内 from 恒亮于 to（左上受光、右下沉的单一光源）', () => {
+test('三态档位序：ongoing 亮 > pending 素面 > settled 沉，双主题方向同构', () => {
+    // 「纸 × 墨 2.1」：状态区分靠纸面档位差（受光/素面/背光），不靠色场；
+    // 两主题必须走同一方向（ongoing 恒是受光最足的一张纸）
     for (const theme of ['LIGHT', 'DARK'] as const) {
-        for (const pair of ['ongoing', 'pending', 'settled'] as const) {
-            const from = luminance(token(`${pair}From`, theme));
-            const to = luminance(token(`${pair}To`, theme));
-            assert.ok(
-                from > to,
-                `${theme} ${pair} 渐变必须从亮到暗（光源方向一致），got ${from.toFixed(3)} -> ${to.toFixed(3)}`,
-            );
+        const ongoing = luminance(token('ongoingFace', theme));
+        const pending = luminance(token('pendingFace', theme));
+        const settled = luminance(token('settledFace', theme));
+        assert.ok(ongoing > pending, `${theme} ongoingFace 必须亮于 pendingFace（当前项受光档）`);
+        assert.ok(pending > settled, `${theme} pendingFace 必须亮于 settledFace（完成的卡沉一档）`);
+    }
+});
+
+test('pending = 壳色同档（素面白纸）；settled 不落退役灰板、不等于壳色', () => {
+    const retiredGray = ['#D9DDE2', '#2E3533'];
+    for (const theme of ['LIGHT', 'DARK'] as const) {
+        assert.equal(
+            token('pendingFace', theme),
+            token('surface', theme),
+            `${theme} pendingFace 必须 = surface（待进行卡与卡壳同档，克制不抢当前项）`,
+        );
+        const settled = token('settledFace', theme);
+        assert.ok(!retiredGray.includes(settled), `${theme} settledFace 不得取退役灰板档 ${settled}`);
+        assert.notEqual(settled, token('surface', theme), `${theme} settledFace 必须真的沉一档，不能与 surface 同值`);
+        assert.notEqual(settled, token('sceneBg', theme), `${theme} settledFace 不得沉到与页面底色同值（卡会隐身）`);
+    }
+});
+
+test('卡面文字 AA（硬闸）：text/secondary 在三档纸面上双主题 ≥4.5', () => {
+    // 用户口径「对比度 AA 必须守住」：卡面允许出现的文字档只有 text（标题）
+    // 与 secondary（eyebrow/描述）两档（muted 与渐变时代的白字族一并退场），
+    // 每一档必须在三张纸面上都过 4.5:1。
+    for (const theme of ['LIGHT', 'DARK'] as const) {
+        for (const face of ['ongoingFace', 'pendingFace', 'settledFace'] as const) {
+            const bg = token(face, theme);
+            for (const ink of ['text', 'secondary'] as const) {
+                const c = contrast(token(ink, theme), bg);
+                assert.ok(c >= 4.5, `${theme} ${ink} on ${face}(${bg}) 对比 ${c.toFixed(2)} < 4.5`);
+            }
         }
     }
 });
 
-test('当前项深蓝渐变：白字在亮端达标 AA，且渐变有真实纵深（不是近似平色）', () => {
+test('小面积 accent 记号 AA：eyebrow/圆点色在当前纸面 ≥4.5，细边取 accent 档且 ≥3', () => {
+    // accent 收窄为控件级小面积（v0.4.9）：卡面上的 accent 只有 eyebrow 文字、
+    // 状态圆点与细边——文字/圆点按 4.5 闸，细边是图形件按 3:1 闸。
     for (const theme of ['LIGHT', 'DARK'] as const) {
-        const from = token('ongoingFrom', theme);
-        const to = token('ongoingTo', theme);
-        assert.ok(
-            contrast(from, 'FFFFFF') >= 4.5,
-            `${theme} ongoingFrom 上纯白标题对比 ${contrast(from, 'FFFFFF').toFixed(2)} < 4.5`,
-        );
-        assert.ok(
-            luminance(from) / luminance(to) >= 2,
-            `${theme} ongoing 渐变纵深不足（亮/暗亮度比 < 2）`,
-        );
-    }
-});
-
-test('完成的卡还是纸：settled 渐变从 surface 纸面起沉，不落灰板档', () => {
-    // 需求口径（用户「不灰糊」）：settledFrom 恒 = 卡纸 surface；settledTo
-    // 比纸沉一档，但仍在 ink 家族、不得等于旧 deckEdge 灰板值回潮。
-    const retiredGray = ['#D9DDE2', '#2E3533'];
-    for (const theme of ['LIGHT', 'DARK'] as const) {
+        const ongoing = token('ongoingFace', theme);
+        const accentText = contrast(token('accent', theme), ongoing);
+        assert.ok(accentText >= 4.5, `${theme} accent eyebrow on ongoingFace 对比 ${accentText.toFixed(2)} < 4.5`);
         assert.equal(
-            token('settledFrom', theme),
-            token('surface', theme),
-            `${theme} settledFrom 必须 = surface（完成的卡是纸不是灰板）`,
+            token('faceAccentEdge', theme),
+            token('accent', theme),
+            `${theme} faceAccentEdge 必须复用 accent 档（禁散写第三蓝）`,
         );
-        const to = token('settledTo', theme);
-        assert.ok(!retiredGray.includes(to), `${theme} settledTo 不得取退役灰板档 ${to}`);
+        const edge = contrast(token('faceAccentEdge', theme), ongoing);
+        assert.ok(edge >= 3, `${theme} faceAccentEdge on ongoingFace 对比 ${edge.toFixed(2)} < 3`);
     }
 });
 
-test('trip 卡面零散落 hex：三态渐变端点全部来自 palette', () => {
+test('整面渐变全域退场：trip 卡面零散落 hex、零 LinearGradient、三态走 palette 档位', () => {
     assert.ok(
         !/["']#[0-9A-Fa-f]{3,8}["']/.test(tripSource),
         'trip-day-screen 出现硬编码 hex 字面量（色值必须收进 theme.ts）',
     );
-    assert.match(tripSource, /\[string, string\][^\n]*=\s*isCurrent/);
+    assert.ok(!tripSource.includes('LinearGradient'), 'trip-day-screen 仍在用 LinearGradient——v0.4.9 整面渐变退场');
+    assert.ok(!tripSource.includes('gradientColors'), 'trip-day-screen 残留渐变端点组装逻辑');
     for (const name of FACE_TOKENS) {
-        assert.ok(tripSource.includes(`palette.${name}`), `三态渐变未引用 palette.${name}`);
+        assert.ok(tripSource.includes(`palette.${name}`), `三态卡面未引用 palette.${name}`);
     }
 });

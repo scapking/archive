@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, ScrollView, Text, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { shouldAdoptExternalText } from './ui/ime-adoption';
 import { useRouter } from 'expo-router';
+// 深路径注记：FieldInput 未入 ui/index.ts 出口（同 event-form/trip-form 深取先例）。
+// v0.4.9 令5：药丸搜索框从「屏内手搓 uncontrolled TextInput + setNativeProps」
+// 收口到 FieldInput（IME 组合保护判定归一 ui 单点，屏层只留视觉壳与焦点态）。
+import { FieldInput } from './ui/field-input';
 import { BouncyPressable, LucideClose, LucideSearch } from '@/core/icons';
 import * as db from './db';
 import { useArchiveRevision, useArchiveStore } from './store';
@@ -68,27 +71,6 @@ export function SearchScreen() {
     const [selectedDate, setSelectedDate] = useState<string | null>(null);
     // #12/#13：无边框搜索框——border 零，底色用接近色（surface），聚焦切 raised（亮度变化）
     const [inputFocused, setInputFocused] = useState(false);
-    // native uncontrolled（IME 组合保护，口径同 FieldInput/rename-card/编辑器）
-    const NATIVE_UNCONTROLLED = Platform.OS !== 'web';
-    const searchInputRef = useRef<React.ComponentRef<typeof TextInput>>(null);
-    const shownQueryRef = useRef(query);
-    useEffect(() => {
-        if (!NATIVE_UNCONTROLLED) return;
-        if (
-            !shouldAdoptExternalText({
-                focused: inputFocused,
-                pendingCommit: false,
-                shown: shownQueryRef.current,
-                incoming: query,
-            })
-        ) {
-            return;
-        }
-        shownQueryRef.current = query;
-        (searchInputRef.current as unknown as {
-            setNativeProps?(o: { text: string }): void;
-        })?.setNativeProps?.({ text: query });
-    }, [query, inputFocused, NATIVE_UNCONTROLLED]);
 
     // ─── 日历打点数据 ────────────────────────────────────────────────────────
     // 计划打点：db.journalDates（最近 400 个有计划的日期，装饰性数据足够）；
@@ -231,17 +213,16 @@ export function SearchScreen() {
                         style={PAPER_CARD_SHADOW}
                     >
                         <LucideSearch size={18} strokeWidth={1.9} color={palette.muted} />
-                        <TextInput
-                            ref={searchInputRef}
-                            className="h-full min-w-0 flex-1 text-[16px] text-ink-text dark:text-inkd-text"
+                        {/* canvas 档（无盒透传）：药丸容器归屏层（rounded-full +
+                            焦点亮度一档），输入体填满容器剩余宽；16/24 对齐
+                            正文单行档（原 h-full flex-1 视觉逐 dp 不变） */}
+                        <FieldInput
+                            tone="canvas"
+                            containerClassName="h-full min-w-0 flex-1 justify-center"
+                            style={{ fontSize: 16, lineHeight: 24 }}
+                            value={query}
+                            onChangeText={setQuery}
                             placeholder="搜索日记、计划、行程与事件"
-                            placeholderTextColor={palette.muted}
-                            value={NATIVE_UNCONTROLLED ? undefined : query}
-                            defaultValue={NATIVE_UNCONTROLLED ? query : undefined}
-                            onChangeText={(text) => {
-                                shownQueryRef.current = text;
-                                setQuery(text);
-                            }}
                             onFocus={() => setInputFocused(true)}
                             onBlur={() => setInputFocused(false)}
                             onSubmitEditing={handleSubmit}

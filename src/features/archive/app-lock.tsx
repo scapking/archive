@@ -181,8 +181,12 @@ export function AppLockGate({ children }: { children: ReactNode }) {
             {/* 锁定覆盖层（全屏不透明，盖过全部内容与 RecordingSessionHost 的
                 悬浮 chip——zIndex 60 高于各覆盖层 z-50 档） */}
             <View className="absolute inset-0 z-[60] flex-1 items-center justify-center bg-ink-base dark:bg-inkd-base">
+                {/* v0.4.9 令5（仅视觉壳，行为零改动）：品牌字升屏题档 24——
+                    锁屏是全屏唯一声音，20 在 375 屏上比任意屏头都轻；
+                    解锁钮升主行动近黑药丸（本页唯一动作，surface 井会让
+                    它读成次级开关） */}
                 <LucidePenLine size={56} color={palette.secondary} strokeWidth={1.5} />
-                <Text className="mt-5 text-[20px] font-semibold text-ink-text dark:text-inkd-text">
+                <Text className="mt-5 text-[24px] font-semibold text-ink-text dark:text-inkd-text">
                     Archive
                 </Text>
                 <Text className="mt-1.5 text-[13px] text-ink-muted dark:text-inkd-muted">
@@ -193,20 +197,24 @@ export function AppLockGate({ children }: { children: ReactNode }) {
                         {hint}
                     </Text>
                 ) : null}
-                {/* 解锁钮：h-11 视觉盒 ≥44，px-6 自适应宽度；authenticating 禁按
+                {/* 解锁钮：h-12 视觉盒 ≥44，px-7 自适应宽度；authenticating 禁按
                     （认证弹窗在途，重复触发会被 unlock 内部 ref 守卫忽略，按钮态
-                    同步） */}
+                    同步）；主行动近黑药丸（404 页同款动作语言） */}
                 <Pressable
                     onPress={() => void unlock()}
                     disabled={authenticating}
-                    className={`mt-6 h-11 flex-row items-center justify-center gap-2 rounded-control bg-ink-surface px-6 active:bg-ink-raised dark:bg-inkd-surface dark:active:bg-inkd-raised ${
+                    className={`mt-6 h-12 flex-row items-center justify-center gap-2 rounded-full px-7 ${
                         authenticating ? 'opacity-50' : ''
                     }`}
+                    style={{ backgroundColor: palette.primaryBtn }}
                     accessibilityRole="button"
                     accessibilityLabel="解锁"
                 >
-                    <LucideLock size={16} strokeWidth={1.9} color={palette.secondary} />
-                    <Text className="text-[15px] font-medium text-ink-text dark:text-inkd-text">
+                    <LucideLock size={16} strokeWidth={1.9} color={palette.onPrimaryBtn} />
+                    <Text
+                        className="text-[16px] font-semibold"
+                        style={{ color: palette.onPrimaryBtn }}
+                    >
                         解锁
                     </Text>
                 </Pressable>

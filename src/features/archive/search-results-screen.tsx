@@ -262,7 +262,9 @@ export function SearchResultsScreen({ spec }: { spec: SearchSpec }) {
                                 <Text className="mt-2 text-[24px] font-semibold text-ink-text dark:text-inkd-text">
                                     没有匹配的记录
                                 </Text>
-                                <Text className="mt-2 text-center text-[13px] leading-5 text-ink-muted dark:text-inkd-muted">
+                                {/* v0.4.9 令5：空态引导行 muted→secondary（对比度
+                                    收口，与堆页 EmptyPile 同改同由） */}
+                                <Text className="mt-2 text-center text-[13px] leading-5 text-ink-secondary dark:text-inkd-secondary">
                                     回搜索页换个关键词，或放宽时间范围再试
                                 </Text>
                             </View>

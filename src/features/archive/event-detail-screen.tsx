@@ -78,6 +78,7 @@ import {
     formatAudioTime,
     InsertMenu,
     LoadingView,
+    PAPER_CARD_SHADOW,
     PAPER_FLOAT_SHADOW,
     safeBack,
     usePalette,
@@ -1001,10 +1002,14 @@ export function EventDetailScreen() {
         return (
             <View className="flex-1 bg-ink-base dark:bg-inkd-base">
                 <View style={{ paddingTop: insets.top }} className="flex-1">
+                    {/* v0.4.9 令5：失败裸红字行升级为 settings 同源 tinted 横幅
+                        卡——错误是设计面，不是贴在留白上的一行小字 */}
                     {error ? (
-                        <Text className="px-6 pb-2 pt-6 text-[12px] text-ink-negative dark:text-inkd-negative">
-                            {error}
-                        </Text>
+                        <View className="mx-6 mt-2 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">
+                            <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
+                                {error}
+                            </Text>
+                        </View>
                     ) : null}
                     <View className="flex-1 pt-8">
                         <EmptyState
@@ -1206,8 +1211,10 @@ export function EventDetailScreen() {
                     {/* 保存落点闪现（11 muted tabular；「N 字 · 自动保存开启」
                         常驻噪音已退役——保存过才有一行，没保存就什么都没有） */}
                     {savedText ? (
+                        // v0.4.9 令5：faint（无文字语义档）→ muted——有字就要过
+                        // 可读底线，闪现行是文字不是记号（meta 档口径）
                         <Text
-                            className="mt-2 text-[11px] text-ink-faint dark:text-inkd-faint"
+                            className="mt-2 text-[11px] text-ink-muted dark:text-inkd-muted"
                             style={{ fontVariant: ['tabular-nums'] }}
                         >
                             {savedText}
@@ -1215,10 +1222,13 @@ export function EventDetailScreen() {
                     ) : null}
                 </View>
                 {error ? (
-                    // 错误横幅下移一档（报头群 → 24dp 呼吸带，对齐 journal-edit 口径）
-                    <Text className="px-6 pb-2 pt-4 text-[12px] text-ink-negative dark:text-inkd-negative">
-                        {error}
-                    </Text>
+                    // 错误横幅（v0.4.9 令5：settings 同源 tinted 横幅卡，替换裸
+                    // 红字行；报头群 → 24dp 呼吸带节奏不变——journal-edit 同构）
+                    <View className="mx-6 mt-4 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">
+                        <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
+                            {error}
+                        </Text>
+                    </View>
                 ) : null}
 
                 <ScrollView
@@ -1250,9 +1260,11 @@ export function EventDetailScreen() {
                         pointerEvents="box-none"
                     >
                         <BouncyPressable onPress={() => setMenuOpen(true)} scaleTo={0.88}>
+                            {/* v0.4.9 令5：FAB 悬浮补 PAPER_CARD 柔影（全仓浮钮
+                                同一光影档：events / journal-edit / compose-fab） */}
                             <View
                                 className="h-14 w-14 items-center justify-center rounded-full"
-                                style={{ backgroundColor: palette.primaryBtn }}
+                                style={[{ backgroundColor: palette.primaryBtn }, PAPER_CARD_SHADOW]}
                                 accessibilityRole="button"
                                 accessibilityLabel="插入内容"
                             >

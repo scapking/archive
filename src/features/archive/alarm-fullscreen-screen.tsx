@@ -197,6 +197,11 @@ const styles = StyleSheet.create({
     description: { color: '#B8C0C8', fontSize: 15, lineHeight: 22, marginTop: 10 },
     meta: { color: '#8B939C', fontSize: 13, marginTop: 14 },
     footer: { paddingHorizontal: 28, paddingBottom: 48 },
+    // v0.4.9「退蓝」口径核对：深蓝渐变作为**整面卡底**退役，但 accent 蓝的
+    // 控件级小面积用途保留（本屏 = 唯一主行动钮）。confirm 底 = accent 档
+    // #2563EB，按压 = ink-accent-press 同档加深 #1D4ED8（白字对比 6.7:1 ≥ AA，
+    // 静置底 5.2:1 ≥ AA）——值即 theme.ts LIGHT.accent/accent-press 两档，
+    // 非新增散写蓝；全屏遮罩高对比语言不变。
     confirm: {
         backgroundColor: '#2563EB',
         borderRadius: 16,

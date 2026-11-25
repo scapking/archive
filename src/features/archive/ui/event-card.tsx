@@ -7,6 +7,7 @@ import {
     type EventStatus,
 } from '../event-logic';
 import { usePalette } from './theme';
+import { PAPER_CARD_SHADOW } from './paper-shadow';
 
 /**
  * 事件卡（v6 事件实体，/events 列表主体）+ 事件状态片（EventStatusChip）。
@@ -15,9 +16,10 @@ import { usePalette } from './theme';
  * - **工单语言来自题材本身**：左侧时间线轴（贯穿竖线 + 空心节点）是工单
  *   「一件事情被持续处理」的空间隐喻——节点的色只上状态这一数据（进行中
  *   accent / 已完成 muted faint），轴与卡面全部中性灰阶（色彩不上 chrome）；
- * - 卡片 = surface-on-base tone 分层、rounded-card 16、无描边无阴影（#13）；
+ * - 卡片 = surface-on-base tone 分层 + PAPER_CARD 静止卡影、rounded-card 16、
+ *   无描边（v0.4.9 令5：0.4.6 光影语言补齐——纵深靠影不靠线）；
  *   卡内分区靠留白不靠线（Apple Journal 卡片节奏）；
- * - 信息层级：状态片 + 标题（15 semibold 卡题档）→ 摘要（13 secondary 两行，
+ * - 信息层级：状态片 + 标题（16 semibold 卡题档，settings 行同阶）→ 摘要（13 secondary 两行，
  *   eventBlocksPreview 口径，空正文给 muted 邀请文案）→ 对象/处理人轻量行
  *   （12 secondary，GPS 有坐标时前置定位 icon）→ 时间线（11 muted tabular，
  *   event-logic.eventTimeline 口径：未编辑只报创建时刻，不渲染假更新位）；
@@ -125,8 +127,12 @@ export function EventCard({
                 时间线不断裂；末卡的尾段线属时间线收尾观感，可接受 */}
             <View className="mb-4 min-w-0 flex-1 pb-3 pl-2">
                 <BouncyPressable onPress={onPress} onLongPress={onLongPress} scaleTo={0.985}>
+                    {/* v0.4.9 令5：卡体补 PAPER_CARD 静止卡影 + 卡题升 16 档——
+                        列表卡与 settings / me 同一「纸浮于底」质感，旧
+                        「无描边无阴影 tone 分层」口径随 0.4.6 光影语言作废 */}
                     <View
                         className="rounded-card bg-ink-surface px-4 py-3.5 dark:bg-inkd-surface"
+                        style={PAPER_CARD_SHADOW}
                         accessibilityRole="button"
                         accessibilityLabel={`${event.statusLabel}事件：${event.title}，点开查看${onLongPress ? '，长按打开设置' : ''}`}
                     >
@@ -138,7 +144,7 @@ export function EventCard({
                             <EventStatusChip status={event.status} />
                             <Text
                                 numberOfLines={1}
-                                className={`min-w-0 flex-1 text-[15px] font-semibold ${
+                                className={`min-w-0 flex-1 text-[16px] font-semibold ${
                                     done
                                         ? 'text-ink-muted dark:text-inkd-muted'
                                         : 'text-ink-text dark:text-inkd-text'

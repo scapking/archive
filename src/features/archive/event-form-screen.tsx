@@ -37,7 +37,7 @@ import {
     normalizeEventSubject,
 } from './event-logic';
 import { useArchiveStore } from './store';
-import { ScreenHeader, usePalette } from './ui';
+import { PAPER_CARD_SHADOW, ScreenHeader, usePalette } from './ui';
 
 /**
  * 新建事件页（/events/new，**交互式分步**，2026-11-19 用户指令重构）：
@@ -588,7 +588,12 @@ export function EventFormScreen() {
                             <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                 已填内容
                             </Text>
-                            <View className="gap-3 rounded-card bg-ink-surface px-4 py-4 dark:bg-inkd-surface">
+                            {/* v0.4.9 令5：摘要卡补 PAPER_CARD 静止卡影——本页
+                                最后一块纸面卡，向 settings 卡片质感对齐 */}
+                            <View
+                                className="gap-3 rounded-card bg-ink-surface px-4 py-4 dark:bg-inkd-surface"
+                                style={PAPER_CARD_SHADOW}
+                            >
                                 {filledSummary.map((item) => (
                                     <View key={item.label} className="flex-row items-baseline gap-4">
                                         <Text className="w-12 shrink-0 text-[11px] text-ink-muted dark:text-inkd-muted">

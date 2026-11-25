@@ -87,6 +87,7 @@ import {
     formatAudioTime,
     InsertMenu,
     LoadingView,
+    PAPER_CARD_SHADOW,
     PENDING_MEDIA_ID,
     RenameCard,
     TRIP_ICON_DEFAULT,
@@ -94,6 +95,10 @@ import {
     type InsertAction,
     usePalette,
 } from './ui';
+// 深路径注记：块操作卡是 scrim 下悬浮层，取 PAPER_FLOAT 档（event-detail 的
+// EventBlockActionCard 同款——v0.4.9 令5 补齐本卡此前缺失的悬浮投影，两屏
+// 操作卡逐 dp 同解剖）。
+import { PAPER_FLOAT_SHADOW } from './ui/paper-shadow';
 
 /**
  * 计划空标题的展示兜底名（v0.4.6 指令 3）：计划屏头名称位恒渲染，标题列
@@ -1197,7 +1202,9 @@ export function JournalEditScreen({
                     模式）+ 名称行 + 编辑钮。命中区核算：
                     - 返回钮：CloseButton 44 圆形触感底盒 in-flow 填满 h-11 行，
                       命中区 = 视觉盒（不传 hitSlop）；
-                    - 编辑钮：36 视觉盒 + hitSlop 10 → 56×56 ≥44；
+                    - 编辑钮：v0.4.9 令5 对齐 event-detail 设置钮解剖（h-11 圆形
+                      raised 触感底盒 + hitSlop 10），描边方盒退场——报头两圆钮
+                      左右呼应的同一「回 / 改」语言跨屏成立；
                     - TripBadge 40 盒为非按压体（ml-2 停车距），无命中核算项。
                     计划模式（v0.4.6 用户指令 3「计划顶部导航栏要有计划名称，参考
                     行程列表的顶部导航栏」）：名称位**恒渲染**——空标题走兜底名
@@ -1241,9 +1248,9 @@ export function JournalEditScreen({
                                 <View
                                     accessibilityRole="button"
                                     accessibilityLabel="编辑标题"
-                                    className="h-9 w-9 items-center justify-center rounded-control border border-ink-border bg-ink-surface dark:border-inkd-border dark:bg-inkd-surface"
+                                    className="h-11 w-11 items-center justify-center rounded-full bg-ink-raised dark:bg-inkd-raised"
                                 >
-                                    <LucideType size={16} strokeWidth={1.9} color={palette.secondary} />
+                                    <LucideType size={18} strokeWidth={1.9} color={palette.secondary} />
                                 </View>
                             </BouncyPressable>
                         ) : null}
@@ -1383,9 +1390,10 @@ export function JournalEditScreen({
                         pointerEvents="box-none"
                     >
                         <BouncyPressable onPress={() => setMenuOpen(true)} scaleTo={0.88}>
+                            {/* v0.4.9 令5：浮钮补 PAPER_CARD 柔影（全仓 FAB 同光影档） */}
                             <View
                                 className="h-14 w-14 items-center justify-center rounded-full"
-                                style={{ backgroundColor: palette.primaryBtn }}
+                                style={[{ backgroundColor: palette.primaryBtn }, PAPER_CARD_SHADOW]}
                                 accessibilityRole="button"
                                 accessibilityLabel="插入内容"
                             >
@@ -1663,8 +1671,10 @@ export function DeadEndView({
             {/* 视觉语言与 ui/empty-state.tsx 逐项对齐（icon/题/hint 同规格同类），
                 仅间距按本轮反馈加大——见文件头与上注 */}
             <View className="mb-4 h-12 w-12 items-center justify-center opacity-70">{icon}</View>
-            <Text className="text-[15px] font-medium text-ink-text dark:text-inkd-text">{title}</Text>
-            <Text className="mt-1.5 text-center text-[13px] leading-5 text-ink-muted dark:text-inkd-muted">
+            {/* v0.4.9 令5：与 ui/empty-state 同步升档（题 16 semibold 卡题档、
+                hint secondary——muted 只留单点 meta），两声部一个改另一处必同改 */}
+            <Text className="text-[16px] font-semibold text-ink-text dark:text-inkd-text">{title}</Text>
+            <Text className="mt-1.5 text-center text-[13px] leading-5 text-ink-secondary dark:text-inkd-secondary">
                 {hint}
             </Text>
             {actionLabel && onAction ? (
@@ -1673,10 +1683,13 @@ export function DeadEndView({
                 // 命中区，按钮视觉盒 = 命中区，与背景层无重叠核算项）
                 <View className="mt-12">
                     <BouncyPressable onPress={handleAction} scaleTo={0.96}>
+                        {/* v0.4.9 令5：描边方钮退场，与 empty-state 动作钮同步
+                            （surface 纸钮 + PAPER_CARD 轻影——薄边线不是纵深） */}
                         <View
                             accessibilityRole="button"
                             accessibilityLabel={actionLabel}
-                            className="h-11 items-center justify-center rounded-control border border-ink-border bg-ink-surface px-6 dark:border-inkd-border dark:bg-inkd-surface"
+                            className="h-11 items-center justify-center rounded-control bg-ink-surface px-6 dark:bg-inkd-surface"
+                            style={PAPER_CARD_SHADOW}
                         >
                             <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
                                 {actionLabel}
@@ -1970,7 +1983,10 @@ function BlockActionCard({
                 onPress={onClose}
                 accessibilityLabel="关闭块操作"
             >
-                <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base">
+                <Pressable
+                    className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base"
+                    style={PAPER_FLOAT_SHADOW}
+                >
                     {/* 卡头（关闭语言统一 #8）：题 + 右上关闭钮；堆叠锚块标明
                         「这一堆」（操作语义 = 整组），单块保持「这一块」 */}
                     <View className="flex-row items-center justify-between pl-4 pr-1.5 pt-0.5">
@@ -1999,7 +2015,7 @@ function BlockActionCard({
                             >
                                 <View pointerEvents="none">{row.icon}</View>
                                 <Text
-                                    className={`flex-1 text-[15px] font-medium ${
+                                    className={`flex-1 text-[16px] font-medium ${
                                         row.danger
                                             ? 'text-ink-negative dark:text-inkd-negative'
                                             : 'text-ink-text dark:text-inkd-text'

@@ -59,7 +59,10 @@ function EmptyPile({ kind }: { kind: LibraryKind }) {
             <Text className="mt-2 text-[24px] font-semibold text-ink-text dark:text-inkd-text">
                 {kind === 'note' ? '没有进行中的计划' : '没有在途的行程'}
             </Text>
-            <Text className="mt-2 text-center text-[13px] leading-5 text-ink-muted dark:text-inkd-muted">
+            {/* v0.4.9 令5：引导行 muted→secondary——13px 连续阅读行在
+                surface 上 muted 对比不足（settings 基准：muted 只做单点
+                meta，指引句是次文本声部） */}
+            <Text className="mt-2 text-center text-[13px] leading-5 text-ink-secondary dark:text-inkd-secondary">
                 {kind === 'note'
                     ? '计划是一件要做的事——回首页点 +，起个名字就成立。'
                     : '旅途从一段日期开始——回首页点 +，建好就进堆。'}

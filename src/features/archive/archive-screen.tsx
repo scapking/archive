@@ -1,4 +1,4 @@
-import { cloneElement, isValidElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BackHandler, Image, Pressable, Text, View } from 'react-native';
 import type { LayoutChangeEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -93,12 +93,6 @@ import {
 
 /** deck 行程卡数据类型（屏侧组装的 store 装饰行）。 */
 type DeckTrip = ReturnType<typeof useArchiveStore.getState>['trips'][number];
-
-/** 首页 deck 高度区间（dp，v0.4.7 令 1 重分配）：430 = 旧首页固定档（下限，
- *  不可滚屏不得下塌出裁切外的死区），680 = 高视口封顶档（deck 卡 = 封面 16:10
- *  封顶 220 + 文字区，再高则文字稀疏——「稀疏即罪」反向的溢出档）。 */
-const DECK_MIN = 430;
-const DECK_MAX = 680;
 
 /**
  * 行程菜单行（R2）：关闭行程仅进行中可达（end_date 落今天，明日起进入回忆
@@ -207,22 +201,6 @@ export function ArchiveScreen() {
     // 计划/事件列表（deck 卡数据通道）：null = 首载未完成；revision 驱动重载
     const [notes, setNotes] = useState<JournalRow[] | null>(null);
     const [openEvents, setOpenEvents] = useState<EventRow[] | null>(null);
-
-    // deck 高度重分配（v0.4.7 令 1：入口组卡删除，首页下半整幅交还 deck——
-    // 导航职责已在 Me「我的内容」与 tab，不留重复）：deck 区容器 flex-1 吃掉
-    // 屏内剩余高度，onLayout 实测后夹紧 [DECK_MIN, DECK_MAX]：矮屏守住 430 既有
-    // 档不下塌（不滚动屏，deck 超高即溢出裁切），高桌面 680 封顶防卡面文字区
-    // 无度撑大。实测高度与 deck 内容无关（flex-1 恒铺满剩余），不构成布局反馈
-    // 环；变化 ≥2dp 才 setState（#15 引用稳定口径，防堆位 spring 无意义重跑）。
-    const [deckAreaHeight, setDeckAreaHeight] = useState<number | null>(null);
-    const onDeckAreaLayout = useCallback((event: LayoutChangeEvent) => {
-        const next = Math.round(event.nativeEvent.layout.height);
-        setDeckAreaHeight((prev) => (prev !== null && Math.abs(prev - next) < 2 ? prev : next));
-    }, []);
-    const deckHeight =
-        deckAreaHeight === null
-            ? DECK_MIN
-            : Math.max(DECK_MIN, Math.min(DECK_MAX, deckAreaHeight));
 
     // Android 返回键关弹窗（替代 Modal 的 onRequestClose 语义）
     useEffect(() => {
@@ -451,17 +429,15 @@ export function ArchiveScreen() {
                     背卡露条点按 = 提前到前位；完成态过滤见文件头）；屏边距 px-6
                     与屏头 / Me / 搜索同一口径；mt-4 顶部间距（既有口径）。
                     v0.4.7 令 1：入口组卡（事件/计划/行程）整块删除——导航职责
-                    已在 Me「我的内容」与 tab，首页不留重复入口；下半幅由 deck
-                    按剩余高度重新吃满（见上方 deckHeight 注），死白不再需要
-                    「补丁卡」填。垂直位置 = 顶对齐（2026-11-19 用户澄清：不是
-                    垂直居中），封顶余量交给 justify-center 的对称呼吸。 */}
-                <View className="mt-4 min-h-0 flex-1 px-6" onLayout={onDeckAreaLayout}>
-                    <View className="mx-auto h-full w-full max-w-[560px] justify-center">
-                        <CardDeck
-                            items={deckItems}
-                            height={deckHeight}
-                            emptyState={<DeckEmptyInvite />}
-                        />
+                    已在 Me「我的内容」与 tab，首页不留重复入口（保持已删）。
+                    高度回滚固定 430，2026-11-25 用户令：v0.4.7 的「吃满屏内
+                    剩余高度夹紧 [430,680]」机制退场，CardDeck 回到 v0.4.6 固定
+                    卡高（deck.tsx 缺省 height=430 契约）。垂直位置 = 顶对齐
+                    （2026-11-19 用户澄清：不是垂直居中）；死白由空态邀请卡
+                    （DeckEmptyInvite）与卡面本身承载，不留「补丁卡」。 */}
+                <View className="mt-4 px-6">
+                    <View className="mx-auto w-full max-w-[560px]">
+                        <CardDeck items={deckItems} emptyState={<DeckEmptyInvite />} />
                     </View>
                 </View>
             </View>

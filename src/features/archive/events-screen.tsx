@@ -504,9 +504,11 @@ export function EventsScreen() {
                         onPress={() => router.push('/events/new' as never)}
                         scaleTo={0.88}
                     >
+                        {/* v0.4.9 令5：FAB 是屏上真悬浮物，补 PAPER_CARD 柔影
+                            （纸×墨纵深：悬浮靠影不靠色，与列表卡同光影档） */}
                         <View
                             className="h-14 w-14 items-center justify-center rounded-full"
-                            style={{ backgroundColor: palette.primaryBtn }}
+                            style={[{ backgroundColor: palette.primaryBtn }, PAPER_CARD_SHADOW]}
                             accessibilityRole="button"
                             accessibilityLabel="新建事件"
                         >

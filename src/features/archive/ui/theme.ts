@@ -36,7 +36,8 @@ export interface DeckShadowSpec {
 
 /** 非 CSS 场景的语义色（值与 tailwind.config.js 的 ink/inkd 严格成对）。 */
 export interface Palette {
-    /** 数据强调（进度/进行中/连续天数）；禁上 chrome。 */
+    /** 数据强调（进度/进行中/连续天数）；禁上 chrome。v0.4.9 收窄口径：蓝只做
+        控件级小面积（开关轨道、选中芯片描边/底、卡面细边/圆点），禁大场底色。 */
     accent: string;
     onAccent: string;
     text: string;
@@ -55,24 +56,24 @@ export interface Palette {
     /** 图表网格线（SVG 场景）。 */
     grid: string;
     /**
-     * 堆叠卡面渐变端点（「纸 × 墨 2.0」，v0.4.6 重做：deckEdge 灰板壳色退役，
-     * 堆叠分层改走 deckShadow 光影档；卡面渐变仍为 **inline style only**——
-     * LinearGradient 走非 CSS 通道，无 className 镜像，值全部取 ink/inkd 家族
-     * 既有档位）：
-     * - ongoingFrom/To：当前项卡面渐变（accent-deep 蓝坠入墨黑/夜面，蓝是
-     *   「进行中」数据色，房规允许）。
-     * - pendingFrom/To：待进行卡面（纸白/raised 亮起，往 shadow 档收——两主题
-     *   同方向：左上受光、右下沉，光源恒定）。
-     * - settledFrom/To：已完成/收尾/终态卡面（**从纸面本身起沉一档**：from
-     *   恒 = surface、to 落在 surface 与页面底色之间——完成的卡还是纸，只是
-     *   光弱一档；旧口径「沉入 deckEdge 灰板」被用户否为「灰色相进」）。
+     * 行程项卡面三态**纸面档位色**（v0.4.9 梯度退场：「纸 × 墨 2.0」→ 2.1。
+     * 用户判「渐变深蓝什么的太丑」——整面渐变底（含 ongoing 蓝坠墨黑）全域
+     * 退役，纵深只靠档位差 + deckShadow 投影，状态只靠档位 + 细边 + 小面积
+     * accent 点，无一格渐变色场）。三档 = 壳色 surface 的上下各一档，两主题
+     * 方向严格一致（ongoing 亮于 surface、settled 沉于 surface）：
+     * - ongoingFace：当前项 = 受光最足的一张纸（light 纯白 base 档 / dark
+     *   夜面 raised 档），再配 faceAccentEdge 细边 + eyebrow accent 圆点；
+     * - pendingFace：待进行 = 与卡壳同档 surface（素面白纸，不抢当前项）；
+     * - settledFace：已完成/收尾/终态 = 从纸面沉一档向夜底收（完成的卡还是
+     *   纸，只是光弱一档；禁灰板实色回潮）。
+     * 卡面文字（eyebrow/标题/描述）在以上三档上双主题对比度必须 AA（≥4.5:1，
+     * tests/deck-stack-colors 把关），accent 只上 edge/圆点（控件级小面积）。
      */
-    ongoingFrom: string;
-    ongoingTo: string;
-    pendingFrom: string;
-    pendingTo: string;
-    settledFrom: string;
-    settledTo: string;
+    ongoingFace: string;
+    pendingFace: string;
+    settledFace: string;
+    /** 当前项卡面细边描色（= accent 档，1.5px 周线，非大场；禁散落第三蓝）。 */
+    faceAccentEdge: string;
     /**
      * 堆叠 deck 投影档（「纸 × 墨 2.0」层次语言：卡面一律纸色 surface，分层 =
      * 柔和投影 + 位移 + 轻缩放，deckEdge 实色灰板壳色退役——用户否「灰色相进」
@@ -115,15 +116,14 @@ const LIGHT: Palette = {
     barBorder: '#E5E8EC',
     sceneBg: '#FFFFFF',
     spinner: '#2563EB',
-    // 堆叠 deck 色阶（「纸 × 墨 2.0」：卡面恒纸色，分层靠光影；渐变端点全部
-    // 复用 ink 家族档位——deckEdge 灰板色已退役，见 Palette.deckShadow 注）
-    ongoingFrom: '#1D4ED8',
-    ongoingTo: '#171A1E',
-    pendingFrom: '#FFFFFF',
-    pendingTo: '#F7F8FA',
-    // 完成的卡 = 纸面沉一档（surface→border），不沉成灰板
-    settledFrom: '#F7F8FA',
-    settledTo: '#E5E8EC',
+    // 堆叠 deck 色阶（「纸 × 墨 2.1」v0.4.9：整面渐变退场，三态改纸面档位差 +
+    // deckShadow 光影分层；档位值全部复用 ink 家族既有档——deckEdge 灰板与
+    // ongoing 深蓝渐变端点同批退役，见 Palette.ongoingFace 注）
+    ongoingFace: '#FFFFFF',
+    pendingFace: '#F7F8FA',
+    // 完成的卡 = 纸面沉一档（raised 档向墨收），不沉成灰板实色
+    settledFace: '#F0F2F5',
+    faceAccentEdge: '#2563EB',
     // 影色 = 墨色 text 档（ink 家族的投影不是新色，是同族加深）
     deckShadow: {
         front: { color: '#171A1E', opacity: 0.18, radius: 24, offsetX: 12, offsetY: 14, elevation: 10 },
@@ -153,15 +153,13 @@ const DARK: Palette = {
     barBorder: '#1E2422',
     sceneBg: '#080A0A',
     spinner: '#5B9DFF',
-    // 堆叠 deck 色阶（深色向：夜读纸面；渐变仍从亮到暗 = 与浅色同一光源方向
-    // 的镜像；夜面上投影必须比浅色更浓才咬得住边界——opacity 翻倍档）
-    ongoingFrom: '#2E6FD9',
-    ongoingTo: '#0E1111',
-    pendingFrom: '#161B1A',
-    pendingTo: '#0E1111',
-    // 完成的卡 = 纸面沉一档（surface→surface/base 之间），不浮成灰板
-    settledFrom: '#0E1111',
-    settledTo: '#0A0D0D',
+    // 堆叠 deck 色阶（深色向：夜读纸面，档位方向与浅色严格同构——ongoing =
+    // 夜面上受光的 raised 档、settled 向夜底沉一档；夜面投影比浅色更浓才咬得
+    // 住边界——opacity 翻倍档见 deckShadow）
+    ongoingFace: '#161B1A',
+    pendingFace: '#0E1111',
+    settledFace: '#0A0D0D',
+    faceAccentEdge: '#5B9DFF',
     // 影色纯黑（夜面唯一有效的「更深一档」）
     deckShadow: {
         front: { color: '#000000', opacity: 0.62, radius: 28, offsetX: 12, offsetY: 14, elevation: 14 },

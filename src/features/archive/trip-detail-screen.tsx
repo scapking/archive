@@ -19,6 +19,7 @@ import {
     LucideChevronRight,
     LucidePenLine,
     LucidePencil,
+    LucidePlus,
     LucideTrash,
     LucideVideo,
     LucideWallpaper,
@@ -45,7 +46,6 @@ import {
 } from './trip-logic';
 import {
     dayDeckHeight,
-    dayFaceInvitation,
     dayFaceTags,
     dayFacePlanPreview,
     tripDayTarget,
@@ -85,7 +85,8 @@ import { DeadEndView } from './journal-edit-screen';
  * - 卡面 = 那一天（DayDeckFace，v0.4.7 词表/预览口径由纯逻辑文件收口并有
  *   node 单测把关）：日期行（D 序号 20 tabular + 月日 16 + 星期 12 + 今天/
  *   出发/返程徽章）→ 计划预览 ≤3 行（勾选 + 长按删与旧形态同语义）→ 日记
- *   摘要 2 行或「未写」邀请 → 底行状态词 + 「当日行程 ›」行动提示。**「行程
+ *   摘要 2 行或未写态（v0.4.9 令 2：占位文案块退场，可写态只留「+」级视觉
+ *   邀请，锁定态一行「未写」状态事实）→ 底行「当日行程 ›」行动提示。**「行程
  *   名称」依旧不上卡面**（0.4.7 既定：名称只进屏头）；
  * - 点前卡 → 该日的「行程表」页（/trip/[id]/day/[date]）；锁定行程点卡：
  *   已有日记走 /journal/[id] 只读页，无日记落行程表页只读浏览；长按（web
@@ -294,7 +295,7 @@ function PlanActionCard({
 }
 
 /**
- * 日卡卡面（堆项 node，memo）：文字卡（日期行 + 计划预览 + 摘要/邀请）/
+ * 日卡卡面（堆项 node，memo）：文字卡（日期行 + 计划预览 + 摘要/未写态）/
  * 背景卡（纯图铺满，deck 壳已负责圆角/纸面/卡影，卡面不再自套卡壳——
  * v0.4.6「卡体零自壳」堆纪律）。点卡/长按语义在 deck 壳层（DeckItem），
  * 卡面内部只保留计划行的勾选与长按删除。
@@ -362,7 +363,6 @@ const DayDeckFace = memo(function DayDeckFace({
 
     // ── 文字卡形态（v0.4.7 堆纪律：卡面无自壳，内边距即纸面留白 p-5=20；
     //    色彩只上数据——今天/进行中/勾选完成态 accent，字阶 20/16/12/11）──
-    const invitation = dayFaceInvitation(locked, data.journal != null);
     return (
         <View className="flex-1 flex-col p-5">
             {/* 日期行：D 序号是卡面的「大字锚」（堆叠扫读的节奏点），tabular
@@ -483,8 +483,10 @@ const DayDeckFace = memo(function DayDeckFace({
             ) : null}
 
             {/* 摘要区贴底（flex-1 弹垫把「那一天写了什么」压到卡面下半——
-                堆叠扫读时先见日期再见内容）；未写 = 邀请态（空态是行动邀请）；
-                锁定态无写入口 → 邀请退空（dayFaceInvitation 纯逻辑闸） */}
+                堆叠扫读时先见日期再见内容）；未写 = v0.4.9 令 2 口径：占位
+                文案块退场，可写态只留一个克制的「+」级视觉邀请（细边 + 淡墨，
+                无任何字样——空态是行动邀请，但邀请由形态承载不由句子说明）；
+                锁定态无写入口 → 邀请也不渲染，只留一行状态事实 */}
             <View className="min-h-0 flex-1 justify-end">
                 {data.journal && journalBlocks ? (
                     <>
@@ -514,20 +516,17 @@ const DayDeckFace = memo(function DayDeckFace({
                             </Text>
                         </View>
                     </>
-                ) : invitation ? (
-                    // 未写日 = 设计过的邀请块（raised 井，首页行程卡「还没写
-                    // 这一页」同源配方）：空态是行动指引，不是一行孤零零弱字
-                    <View className="rounded-control bg-ink-raised px-4 py-4 dark:bg-inkd-raised">
-                        <Text className="text-[14px] leading-5 text-ink-secondary dark:text-inkd-secondary">
-                            {invitation.title}
-                        </Text>
-                        <Text className="mt-1 text-[12px] text-ink-muted dark:text-inkd-muted">
-                            {invitation.hint}
-                        </Text>
+                ) : !locked ? (
+                    // 未写日（可写态）：日期行/计划预览照旧呈现，摘要区剩位
+                    // 中央只放一枚「+」邀请——border-ink-border 细边圆盒、
+                    // muted 淡墨笔触，纸面档位不加深（区分靠形不靠色块）
+                    <View className="flex-1 items-center justify-center">
+                        <View className="h-10 w-10 items-center justify-center rounded-full border border-ink-border dark:border-inkd-border">
+                            <LucidePlus size={18} strokeWidth={1.5} color={palette.muted} />
+                        </View>
                     </View>
                 ) : (
-                    // 锁定只读：无写入口，邀请退空（dayFaceInvitation 闸），
-                    // 留一行状态事实
+                    // 锁定只读：无写入口，「+」邀请也不渲染，留一行状态事实
                     <Text className="text-[13px] text-ink-muted dark:text-inkd-muted">未写</Text>
                 )}
             </View>
