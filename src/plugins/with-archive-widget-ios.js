@@ -123,7 +123,8 @@ private struct Provider: TimelineProvider {
                 }
             }
         }
-        times = Array(Set(times.map { $0.timeIntervalSince1970 })).sorted()
+        var seenT = Set<TimeInterval>()
+        times = times.filter { seenT.insert($0.timeIntervalSince1970).inserted }.sorted()
         if times.count > 8 { times = Array(times.prefix(8)) }
         let entries = times.map { Entry(date: $0, snapshot: snapshot) }
         let next = times.count > 1

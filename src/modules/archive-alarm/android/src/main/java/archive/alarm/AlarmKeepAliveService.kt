@@ -4,7 +4,6 @@ import android.app.Notification
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
@@ -43,11 +42,12 @@ class AlarmKeepAliveService : Service() {
             val notification = AlarmFireReceiver.ongoingNotification(
                 this, id, titleOf(intent), bodyOf(intent), fullScreen = false,
             )
-            val type = if (Build.VERSION.SDK_INT >= 34) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_ALARM
-            } else {
-                0
-            }
+            // 类型走清单声明（service 元素 android:foregroundServiceType="alarm"）：
+            // ServiceCompat 传 0 = TYPE_NONE，回落两参 startForeground 由系统按清单
+            // 读取。不在代码里引用 ServiceInfo.FOREGROUND_SERVICE_TYPE_ALARM——
+            // API 34 常量，模块 compileSdk 未必带该常量池（0.4.7 CI 实测
+            // Unresolved reference），单一声明点更稳。
+            val type = 0
             ServiceCompat.startForeground(this, AlarmFireReceiver.notificationId(id), notification, type)
         } catch (e: Exception) {
             // FGS 启动失败（厂商 ROM 限制/类型拒批）：通知呈现不受影响，服务退出
