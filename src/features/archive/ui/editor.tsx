@@ -26,6 +26,7 @@ import {
     LucideVideo,
 } from '@/core/icons';
 import { AudioLinesIcon, MoreIcon } from './editor-icons';
+import { shouldAdoptExternalText } from './ime-adoption';
 import { AudioBlock } from './audio-player';
 // 手势容器 touch-action（web 滚动仲裁免疫，与 ui/deck 堆叠同一常量单源）
 import { DECK_TOUCH_ACTION_STYLE } from './deck';
@@ -755,17 +756,28 @@ function TextBlock({
     );
     // 外部 value 采纳：不在编辑（未聚焦且无挂起提交）且与已提交基线不同才灌
     // 草稿——DB 回灌/撤销类真实外部变更照常同步 UI；编辑期间的屏层重渲
-    // （autosave 回写、revision 广播、媒体重载）零重灌、零光标扰动
+    // （autosave 回写、revision 广播、媒体重载）零重灌、零光标扰动。
+    // native 分支（v0.4.7 IME 修复）：判定走 ime-adoption 单点；草稿态之外
+    // 还要把文本一次性落位到 uncontrolled 原生编辑器（setNativeProps），
+    // 绝不在组合期间 setText。
     useEffect(() => {
         if (
-            focusedRef.current ||
-            commitTimerRef.current != null ||
-            value === committedRef.current
+            !shouldAdoptExternalText({
+                focused: focusedRef.current,
+                pendingCommit: commitTimerRef.current != null,
+                shown: committedRef.current,
+                incoming: value,
+            })
         ) {
             return;
         }
         committedRef.current = value;
         setDraft(value);
+        if (Platform.OS !== 'web') {
+            (inputRef.current as unknown as {
+                setNativeProps?(o: { text: string }): void;
+            })?.setNativeProps?.({ text: value });
+        }
     }, [value]);
 
     // 写过标记（锁存）：挂载时已有内容（重开旧计划）即为内容段；此后一旦
@@ -840,9 +852,12 @@ function TextBlock({
         <TextInput
             ref={inputRef}
             multiline
-            // value = 本地草稿（v0.4.7 受控模型：外部重灌只在不编辑时发生，
-            // 编辑中的光标/组合态归 DOM，见组件头注契约）
-            value={draft}
+            // native = uncontrolled（IME 组合保护）：value 不进原生，初值走
+            // defaultValue，外部变化只在失焦时经上方采纳 effect 一次性落位；
+            // web 维持受控 value={draft}（浏览器自管 composition）。
+            // 编辑中的光标/组合态归 DOM，契约见组件头注。
+            value={Platform.OS === 'web' ? draft : undefined}
+            defaultValue={Platform.OS === 'web' ? undefined : draft}
             editable={editable}
             onChangeText={(text) => {
                 // 写过锁存：首字落下即按内容段处理（72 → 两行固定底的唯一跳变

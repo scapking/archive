@@ -46,9 +46,9 @@ test('草稿态事实源：TextInput value 走本地 draft，不再直连受控 
 
 test('外部 value 只在不编辑时采纳：聚焦/挂起提交期间零重灌', () => {
     // 采纳闸三条件缺一不灌：未聚焦、无挂起防抖拍、外部值确实偏离已提交基线
-    assert.match(textBlockSrc, /focusedRef\.current \|\|/);
-    assert.match(textBlockSrc, /commitTimerRef\.current != null \|\|/);
-    assert.match(textBlockSrc, /value === committedRef\.current/);
+    assert.match(textBlockSrc, /shouldAdoptExternalText\(\{[\s\S]*?focused: focusedRef\.current,[\s\S]*?pendingCommit: commitTimerRef\.current != null/);
+    // 采纳落点走 uncontrolled 原生落位（IME 修复轮）：web 受控、native setNativeProps
+    assert.match(textBlockSrc, /Platform\.OS !== 'web'/);
     // 采纳落点只写草稿与基线，不动 DOM 归属（编辑中永不进这条路径）
     assert.match(textBlockSrc, /committedRef\.current = value;\s*\n\s*setDraft\(value\);/);
 });

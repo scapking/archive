@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ScrollView, Text, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Platform, ScrollView, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { shouldAdoptExternalText } from './ui/ime-adoption';
 import { useRouter } from 'expo-router';
 import { BouncyPressable, LucideClose, LucideSearch } from '@/core/icons';
 import * as db from './db';
@@ -67,6 +68,27 @@ export function SearchScreen() {
     const [selectedDate, setSelectedDate] = useState<string | null>(null);
     // #12/#13：无边框搜索框——border 零，底色用接近色（surface），聚焦切 raised（亮度变化）
     const [inputFocused, setInputFocused] = useState(false);
+    // native uncontrolled（IME 组合保护，口径同 FieldInput/rename-card/编辑器）
+    const NATIVE_UNCONTROLLED = Platform.OS !== 'web';
+    const searchInputRef = useRef<React.ComponentRef<typeof TextInput>>(null);
+    const shownQueryRef = useRef(query);
+    useEffect(() => {
+        if (!NATIVE_UNCONTROLLED) return;
+        if (
+            !shouldAdoptExternalText({
+                focused: inputFocused,
+                pendingCommit: false,
+                shown: shownQueryRef.current,
+                incoming: query,
+            })
+        ) {
+            return;
+        }
+        shownQueryRef.current = query;
+        (searchInputRef.current as unknown as {
+            setNativeProps?(o: { text: string }): void;
+        })?.setNativeProps?.({ text: query });
+    }, [query, inputFocused, NATIVE_UNCONTROLLED]);
 
     // ─── 日历打点数据 ────────────────────────────────────────────────────────
     // 计划打点：db.journalDates（最近 400 个有计划的日期，装饰性数据足够）；
@@ -210,11 +232,16 @@ export function SearchScreen() {
                     >
                         <LucideSearch size={18} strokeWidth={1.9} color={palette.muted} />
                         <TextInput
+                            ref={searchInputRef}
                             className="h-full min-w-0 flex-1 text-[16px] text-ink-text dark:text-inkd-text"
                             placeholder="搜索日记、计划、行程与事件"
                             placeholderTextColor={palette.muted}
-                            value={query}
-                            onChangeText={setQuery}
+                            value={NATIVE_UNCONTROLLED ? undefined : query}
+                            defaultValue={NATIVE_UNCONTROLLED ? query : undefined}
+                            onChangeText={(text) => {
+                                shownQueryRef.current = text;
+                                setQuery(text);
+                            }}
                             onFocus={() => setInputFocused(true)}
                             onBlur={() => setInputFocused(false)}
                             onSubmitEditing={handleSubmit}

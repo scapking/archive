@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { BackHandler, Pressable, Text, TextInput, View } from 'react-native';
+import { BackHandler, Platform, Pressable, Text, TextInput, View } from 'react-native';
 import { LucideCheck, LucideClose } from '@/core/icons';
+import { shouldAdoptExternalText } from './ime-adoption';
 import { CloseButton } from './close-button';
 import { PAPER_FLOAT_SHADOW } from './paper-shadow';
 import { usePalette } from './theme';
@@ -46,6 +47,28 @@ export function RenameCard({
     const palette = usePalette();
     const [title, setTitle] = useState(initialTitle);
     const [focused, setFocused] = useState(false);
+    // native uncontrolled（IME 组合保护，判定单源 ime-adoption；与 FieldInput/
+    // BlockEditor 同款口径）：value 不进原生，失焦后的外部初值变化才落位
+    const NATIVE_UNCONTROLLED = Platform.OS !== 'web';
+    const inputRef = useRef<React.ComponentRef<typeof TextInput>>(null);
+    const shownRef = useRef(title);
+    useEffect(() => {
+        if (!NATIVE_UNCONTROLLED) return;
+        if (
+            !shouldAdoptExternalText({
+                focused,
+                pendingCommit: false,
+                shown: shownRef.current,
+                incoming: title,
+            })
+        ) {
+            return;
+        }
+        shownRef.current = title;
+        (inputRef.current as unknown as { setNativeProps?(o: { text: string }): void })?.setNativeProps?.({
+            text: title,
+        });
+    }, [title, focused, NATIVE_UNCONTROLLED]);
     // 保存失败标记：错误文案只在失败后就地展示，避免打开卡片时旧错误串场
     const [saveFailed, setSaveFailed] = useState(false);
     const savingRef = useRef(false);
@@ -112,8 +135,13 @@ export function RenameCard({
                         }`}
                     >
                         <TextInput
-                            value={title}
-                            onChangeText={setTitle}
+                            ref={inputRef}
+                            value={NATIVE_UNCONTROLLED ? undefined : title}
+                            defaultValue={NATIVE_UNCONTROLLED ? shownRef.current : undefined}
+                            onChangeText={(text) => {
+                                shownRef.current = text;
+                                setTitle(text);
+                            }}
                             onFocus={() => setFocused(true)}
                             onBlur={() => setFocused(false)}
                             onSubmitEditing={() => void save()}

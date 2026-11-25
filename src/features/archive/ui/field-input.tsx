@@ -1,5 +1,6 @@
-import { useRef, useState, type ComponentRef } from 'react';
+import { useEffect, useRef, useState, type ComponentRef } from 'react';
 import {
+    Platform,
     TextInput,
     View,
     type StyleProp,
@@ -7,6 +8,7 @@ import {
     type TextStyle,
 } from 'react-native';
 import { usePalette } from './theme';
+import { shouldAdoptExternalText } from './ime-adoption';
 
 /** RN 0.88 的 TextInput 实例类型（React 19 ref 语义下用 ComponentRef 解析，
  *  与 date-input 同一解析口径）。 */
@@ -202,6 +204,28 @@ export function FieldInput({
     const inputRef = useRef<TextInputRef>(null);
     // 焦点态本地持有（容器亮度变化驱动；canvas 无视觉，状态闲置无害）
     const [focused, setFocused] = useState(false);
+    // native 走 uncontrolled（IME 组合保护，判定收口 ime-adoption 单点）：
+    // 挂载后 value 不再进 EditText，外部文本变化只在失焦且与展示基线不同时
+    // 经 setNativeProps 一次性落位；web 保持受控（浏览器自管 composition）。
+    const NATIVE_UNCONTROLLED = Platform.OS !== 'web';
+    const shownRef = useRef(value);
+    useEffect(() => {
+        if (!NATIVE_UNCONTROLLED) return;
+        if (
+            !shouldAdoptExternalText({
+                focused,
+                pendingCommit: false,
+                shown: shownRef.current,
+                incoming: value,
+            })
+        ) {
+            return;
+        }
+        shownRef.current = value;
+        (inputRef.current as unknown as { setNativeProps?(opts: { text: string }): void })?.setNativeProps?.({
+            text: value,
+        });
+    }, [value, focused, NATIVE_UNCONTROLLED]);
     // canvas = 画布无盒：容器零视觉（连圆角/内边距都不给），只透传布局 className。
     // 盒装容器改 row 布局（交叉轴 stretch 默认）：输入体填满容器内容区（见
     // INPUT_FILL_STYLE 注），容器高度语义不变（min-h-11 / 调用方 h-* 照旧）；
@@ -227,8 +251,14 @@ export function FieldInput({
         >
             <TextInput
                 ref={inputRef}
-                value={value}
-                onChangeText={onChangeText}
+                // native：value 缺席 + defaultValue 定初值（uncontrolled）；
+                // web：维持受控 value（IME 兼容性判定见 ime-adoption 头注）
+                value={NATIVE_UNCONTROLLED ? undefined : value}
+                defaultValue={NATIVE_UNCONTROLLED ? value : undefined}
+                onChangeText={(text) => {
+                    shownRef.current = text;
+                    onChangeText(text);
+                }}
                 placeholder={placeholder}
                 placeholderTextColor={palette.muted}
                 multiline={multiline}
