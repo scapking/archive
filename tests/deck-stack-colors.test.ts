@@ -284,3 +284,43 @@ test('整面渐变全域退场：trip 卡面零散落 hex、零 LinearGradient�
         assert.ok(tripSource.includes(`palette.${name}`), `三态卡面未引用 palette.${name}`);
     }
 });
+
+/** 卡面段（TripItemCardFace 函数体；槽位谎报与稀疏版式的把关范围）。 */
+function cardFaceSection(): string {
+    const start = tripSource.indexOf('const TripItemCardFace = memo(');
+    const end = tripSource.indexOf('/* 时间编辑');
+    assert.ok(start > 0 && end > start, '卡面段定位失败（结构变了口径同步）');
+    return tripSource.slice(start, end);
+}
+
+test('状态记号绑 ongoing 阶段而非堆叠槽位（CDP 实拍证伪 index===0 谎报后立约）', () => {
+    // 缺陷 1 回归闸：accent 细边/亮档/圆点必须来自 tripItemPhaseMap 的
+    // 'ongoing' 派生——前卡槽位不再参与判定，全 pending 日零蓝。
+    const face = cardFaceSection();
+    assert.match(face, /const isCurrent = phase === 'ongoing';/, 'isCurrent 未由 ongoing 阶段派生');
+    assert.ok(!tripSource.includes('isCurrent={index === 0}'), '细边仍绑槽位 index===0（谎报回潮）');
+    assert.ok(!tripSource.includes('isCurrent={'), '卡面仍接收槽位侧 isCurrent prop（记号必须自派生）');
+    // 细边渲染点只认阶段派生变量
+    const edgeSrc = face.split('accent 细边')[1] ?? '';
+    assert.ok(edgeSrc.includes('isCurrent ?') && edgeSrc.includes('palette.faceAccentEdge'), '细边条件/色源缺失');
+    // deckItems 出卡：phase 单源喂入，index 不再入卡面
+    const deckItemsSrc = tripSource.split('const deckItems: DeckItem[]')[1]?.split('onLongPress')[0] ?? '';
+    assert.ok(deckItemsSrc.includes("phase={phaseById.get(item.id) ?? 'pending'}"), '卡面未接 phaseById 单源阶段');
+    assert.ok(!deckItemsSrc.includes('index'), 'deckItems 卡面节点仍消费 map index');
+});
+
+test('卡面填实（纸 × 墨 2.1 版式）：30 报时 → 18 标题 → 16 备注两行 → mt-auto meta 行；settled 弱一档仍走 AA 档', () => {
+    // 缺陷 2 回归闸（稀疏即罪）：430 高卡不允许只有 eyebrow+标题两行。
+    // 版式契约：报时主角 30px tabular、标题 18 semibold、备注 16/24 两行截断、
+    // meta 行 mt-auto 贴底（状态字 + 备注/图/视频小记号）；settled 仅降
+    // 报时到 secondary（禁 muted——三档纸面 AA 由上一条目把关）。
+    const face = cardFaceSection();
+    assert.match(face, /fontSize: 30[\s\S]*?tabular-nums/, '报时未升为 30px tabular 主角');
+    assert.ok(face.includes('{item.time}'), '报时未直接呈现 item.time');
+    assert.match(face, /text-\[18px\] font-semibold/, '标题未走 18 semibold');
+    assert.match(face, /numberOfLines=\{2\}[\s\S]*?text-\[16px\] leading-6/, '备注未走 16 正文两行截断');
+    assert.ok(face.includes('mt-auto'), 'meta 行未贴底（mt-auto）');
+    assert.match(face, /isSettled \? palette\.secondary : palette\.text/, 'settled 弱化未走 secondary 档');
+    assert.ok(!face.includes('text-ink-muted') && !face.includes('text-inkd-muted'), '卡面出现 muted（AA 不达标色档回潮）');
+    assert.ok(!face.includes('text-white'), '卡面出现白字族（旧渐变底记号回潮）');
+});

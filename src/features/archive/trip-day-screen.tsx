@@ -25,6 +25,7 @@ import {
     LucideClock,
     LucideImage,
     LucidePackageCheck,
+    LucideStickyNote,
     LucideTrash,
     LucideVideo,
 } from '@/core/icons';
@@ -86,12 +87,13 @@ import { DeadEndView } from './journal-edit-screen';
  * - deck 前卡 = 「当前应进行的项」（ongoing 段最早到点在前；v0.4.4 阶段机，
  *   见 trip-item-logic）；进入收尾/到点自动完成后该项沉入收尾段，前卡自动
  *   前进到下一项（deck 以卡序签名重挂收口，见 deckEpoch）；
- * - 卡面（v0.4.9「纸 × 墨 2.1」：整面渐变退场，用户判深蓝渐变丑）：eyebrow =
- *   `${time} · 状态文案`（当前进行中 accent 色 + accent 圆点）；标题 15
- *   semibold；描述（留言/备注）；有关联图片时显示首图封面（useFileUrlState
- *   三态，缺文件降级不渲染）。三态区分 = 纸面档位差（ongoing 亮档 / pending
- *   素面 / settled 沉一档，theme 卡面档位色）+ 当前卡 accent 细边 + 投影，
- *   卡面文字恒走 text/secondary/accent 三档（AA 把关见 deck-stack-colors）；
+ * - 卡面（v0.4.9「纸 × 墨 2.1」：整面渐变退场，用户判深蓝渐变丑）：30px
+ *   tabular 报时 + 18 semibold 标题 + 16 备注两行截断 + 首图封面 +
+ *   mt-auto meta 行（状态字 + 备注/图/视频小记号）填实版面（稀疏即罪）。
+ *   三态记号**绑阶段不绑槽位**（CDP 实拍证伪旧 index===0 绑定：待进行前卡
+ *   谎报进行中）：ongoing = 亮档纸 + accent 细边 + 圆点（无论落哪个层位），
+ *   pending = surface 素面，settled = 沉一档同版式弱化；卡面文字恒走
+ *   text/secondary/accent 三档（AA 把关见 deck-stack-colors）；
  * - 长按前卡 → 操作卡（ActionMenuCard）：进入收尾（done）/ 结束收尾（wrap）/
  *   添加图片 / 添加视频（done 与 wrap 都可补媒体，用户指令 #8）/ 删除此行程
  *   ——手动「标记完成/失败」退役（v0.4.4），阶段由 trip-item-logic 派生；
@@ -117,6 +119,9 @@ const DECK_HEIGHT = 430;
 /** 应用内闹钟的检查节拍（ms）：到点检测粒度，15s 对「分钟级」的行程时刻足够。 */
 const ALARM_TICK_MS = 15_000;
 
+/** 无媒体项的稳定空表引用（memo 契约：每次新建 [] 会让卡面白重渲）。 */
+const NO_MEDIA: readonly db.TripMediaRow[] = [];
+
 /** 行程项时刻 → epoch ms（本地时区；store 同源纯函数的轻量包装，读法统一）。 */
 function itemDueAt(item: db.TripItemRow): number {
     return tripItemDueAt(item.local_date, item.time);
@@ -129,10 +134,16 @@ const FACE_EDGE_RADIUS = 16;
  * 行程项卡面（deck item.node）：deck 统一绘制 surface 圆角壳，本卡面只负责
  * 内容填充。**v0.4.9「纸 × 墨 2.1」三态语言（用户判「渐变深蓝太丑」，整面
  * 渐变全域退场）**：
- * - 进行中（isCurrent）= ongoingFace 亮档纸 + accent 细边（1.5px 周线，
- *   绝对层零布局影响）+ eyebrow accent 圆点与文字——状态信号全部小面积；
+ * - 状态记号绑定**阶段**而非堆叠槽位（CDP 实拍证伪旧 index===0 绑定的谎报：
+ *   前卡是「待进行」也挂蓝边、真 ongoing 在背位却零信号）——ongoing 恒 =
+ *   ongoingFace 亮档纸 + accent 细边（1.5px 周线绝对层，零布局影响）+ meta
+ *   行 accent 圆点/文字；全 pending（无 ongoing）日任何卡都无蓝；
  * - 待进行 = pendingFace（= 壳色 surface 素面，克制不抢当前项）；
- * - 完成/收尾/终态 = settledFace（从纸面沉一档，完成的卡还是纸、只是光弱）；
+ * - 完成/收尾/终态 = settledFace（从纸面沉一档），同版式弱一档（报时落
+ *   secondary 档，仍 AA）；
+ * - 填实版式（稀疏即罪，430 高卡不再只有两行）：30px tabular 报时 → 18
+ *   semibold 标题（2 行截断）→ 16 正文备注（2 行截断）→ 首图封面 →
+ *   mt-auto meta 行贴底（状态字 + 备注/图片/视频小记号）；
  * - 卡面文字只允许 text/secondary/accent 三档（muted 与旧渐变白字退役——
  *   muted 在任何纸面档上不足 AA，tests/deck-stack-colors 按新契约把关）。
  * 三档底色走 inline palette（禁散写 hex，色值收口 theme.ts）。
@@ -140,68 +151,70 @@ const FACE_EDGE_RADIUS = 16;
 const TripItemCardFace = memo(function TripItemCardFace({
     item,
     phase,
-    isCurrent,
     cover,
+    media,
 }: {
     item: db.TripItemRow;
-    /** 派生阶段（tripItemPhaseMap，与 deck 排序同源）。 */
+    /** 派生阶段（tripItemPhaseMap，与 deck 排序同源）；卡面记号唯一依据。 */
     phase: TripItemPhase;
-    /** 前卡（当前应进行的项）：亮档纸面 + accent 细边 + eyebrow accent。 */
-    isCurrent: boolean;
     /** 首图封面媒体行（无关联图片为 null，不渲染封面）。 */
     cover: db.TripMediaRow | null;
+    /** 该项全部媒体行（meta 行图/视频记号计数；无媒体传稳定空表）。 */
+    media: readonly db.TripMediaRow[];
 }) {
     const coverState = useFileUrlState(cover?.file_key ?? null);
     const palette = usePalette();
 
+    // 记号唯一依据 = 派生阶段（与 deck 排序同源，槽位不参与判定）
+    const isCurrent = phase === 'ongoing';
     const isSettled = phase === 'done' || phase === 'wrap' || phase === 'terminal';
     const faceBg = isCurrent
         ? palette.ongoingFace
         : isSettled
           ? palette.settledFace
           : palette.pendingFace;
-    // eyebrow：accent 只上「当前/收尾」两个数据态（wrap = 已 done 未归档，
-    // 仍是待办信号），done/terminal 落 secondary——纸面档上 secondary 达 AA，
-    // 旧 muted 档退场
-    const eyebrowTone = isCurrent || phase === 'wrap'
+    // 报时主角：settled 弱一档到 secondary（三档纸面上仍 AA），不再降 muted
+    const timeTone = isSettled ? palette.secondary : palette.text;
+    // 状态字：accent 只上「进行中/收尾」两个待办态（wrap = 已 done 未归档，
+    // 仍是待办信号），done/terminal/pending 落 secondary
+    const phaseTone = isCurrent || phase === 'wrap'
         ? 'text-ink-accent dark:text-inkd-accent'
         : 'text-ink-secondary dark:text-inkd-secondary';
+    const imageCount = media.filter((mediaRow) => mediaRow.kind === 'image').length;
+    const videoCount = media.filter((mediaRow) => mediaRow.kind === 'video').length;
 
     return (
         <View
             style={{
                 flex: 1,
                 paddingHorizontal: 24,
-                paddingTop: 20,
-                paddingBottom: 12,
+                paddingTop: 24,
+                paddingBottom: 30,
                 backgroundColor: faceBg,
             }}
         >
-            <View className="flex-row items-center">
-                {isCurrent ? (
-                    // 当前项状态圆点（小面积 accent 点，与细边同语）
-                    <View
-                        className="mr-1.5 h-1.5 w-1.5 rounded-full"
-                        style={{ backgroundColor: palette.accent }}
-                    />
-                ) : null}
-                <Text
-                    className={`text-[12px] font-medium ${eyebrowTone}`}
-                    style={{ fontVariant: ['tabular-nums'] }}
-                >
-                    {`${item.time} · ${TRIP_ITEM_PHASE_LABEL[phase]}`}
-                </Text>
-            </View>
+            {/* 报时主角（30px tabular，日记卡日期刻度同感；负字距收紧数字） */}
+            <Text
+                style={{
+                    fontSize: 30,
+                    fontWeight: '600',
+                    letterSpacing: -0.5,
+                    color: timeTone,
+                    fontVariant: ['tabular-nums'],
+                }}
+            >
+                {item.time}
+            </Text>
             <Text
                 numberOfLines={2}
-                className="mt-2 text-[15px] font-semibold text-ink-text dark:text-inkd-text"
+                className="mt-2 text-[18px] font-semibold text-ink-text dark:text-inkd-text"
             >
                 {item.title}
             </Text>
             {item.description ? (
                 <Text
-                    numberOfLines={3}
-                    className="mt-1.5 text-[13px] leading-5 text-ink-secondary dark:text-inkd-secondary"
+                    numberOfLines={2}
+                    className="mt-2 text-[16px] leading-6 text-ink-secondary dark:text-inkd-secondary"
                 >
                     {item.description}
                 </Text>
@@ -214,8 +227,34 @@ const TripItemCardFace = memo(function TripItemCardFace({
                     resizeMode="cover"
                 />
             ) : null}
-            {/* 当前卡 accent 细边：绝对铺满层（pointerEvents none 不挡卡面），
-                半径与壳的 rounded-card 同值，贴 overflow-hidden 裁切边成周线 */}
+            {/* meta 行贴卡底（mt-auto；deck 页码居中在更下方底缘，不冲突）：
+                状态字（ongoing 圆点+accent）+ 内容小记号（备注/图/视频） */}
+            <View className="mt-auto flex-row items-center justify-between" style={{ paddingTop: 16 }}>
+                <View className="flex-row items-center">
+                    {isCurrent ? (
+                        <View
+                            className="mr-1.5 h-1.5 w-1.5 rounded-full"
+                            style={{ backgroundColor: palette.accent }}
+                        />
+                    ) : null}
+                    <Text className={`text-[12px] font-medium ${phaseTone}`}>
+                        {TRIP_ITEM_PHASE_LABEL[phase]}
+                    </Text>
+                </View>
+                <View className="flex-row items-center" style={{ gap: 10 }}>
+                    {item.description ? (
+                        <LucideStickyNote size={13} strokeWidth={1.9} color={palette.secondary} />
+                    ) : null}
+                    {imageCount > 0 ? (
+                        <LucideImage size={13} strokeWidth={1.9} color={palette.secondary} />
+                    ) : null}
+                    {videoCount > 0 ? (
+                        <LucideVideo size={13} strokeWidth={1.9} color={palette.secondary} />
+                    ) : null}
+                </View>
+            </View>
+            {/* ongoing accent 细边：绑阶段不绑槽位；绝对铺满层（pointerEvents
+                none 不挡卡面），半径与壳的 rounded-card 同值贴裁切边成周线 */}
             {isCurrent ? (
                 <View
                     pointerEvents="none"
@@ -843,7 +882,7 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
     // 提前到前位，前卡点按无动作；长按 = 操作卡入口，锁定态关断）
     const deckItems: DeckItem[] = useMemo(
         () =>
-            orderedItems.map((item, index) => ({
+            orderedItems.map((item) => ({
                 key: item.id,
                 // v0.4.9 渐变底退场：三态卡面都是纸面档，页码恒走默认 muted
                 //（'light' 白字档只属于深底卡面，本屏不再产生）
@@ -851,8 +890,8 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
                     <TripItemCardFace
                         item={item}
                         phase={phaseById.get(item.id) ?? 'pending'}
-                        isCurrent={index === 0}
                         cover={coverFor(item.id)}
+                        media={mediaByItem.get(item.id) ?? NO_MEDIA}
                     />
                 ),
                 onLongPress: locked
@@ -863,7 +902,7 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
                       },
                 accessibilityLabel: `${item.time} ${item.title}，${TRIP_ITEM_PHASE_LABEL[phaseById.get(item.id) ?? 'pending']}`,
             })),
-        [orderedItems, phaseById, locked, coverFor],
+        [orderedItems, phaseById, locked, coverFor, mediaByItem],
     );
 
     /** 创建表单提交通道：store 校验失败 resolve false（表单就地展示可重试）。 */
