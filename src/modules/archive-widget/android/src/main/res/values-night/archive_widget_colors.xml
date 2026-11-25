@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 深色档同名换值（与 layout-night 的历史手工配色同值） -->
+<resources>
+    <color name="archive_widget_bg">#0E1111</color>
+    <color name="archive_widget_text">#E7EAE9</color>
+    <color name="archive_widget_secondary">#7A827F</color>
+    <color name="archive_widget_muted">#9AA3AB</color>
+    <color name="archive_widget_accent">#5B9DFF</color>
+</resources>

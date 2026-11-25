@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- widget 分档色板（v0.4.7 行程内容堆叠层次）：values-night 同名换值，
+     provider 经 ContextCompat.getColor 取用——RemoteViews.setTextColor 传
+     解析后的 ARGB，夜间档随资源限定符自动切换 -->
+<resources>
+    <color name="archive_widget_bg">#F7F8FA</color>
+    <color name="archive_widget_text">#171A1E</color>
+    <color name="archive_widget_secondary">#8B939C</color>
+    <color name="archive_widget_muted">#5A626B</color>
+    <color name="archive_widget_accent">#2563EB</color>
+</resources>

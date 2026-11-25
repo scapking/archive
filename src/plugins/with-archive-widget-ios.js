@@ -31,6 +31,34 @@ private struct SnapshotItem: Identifiable {
     let id: UUID
     let time: String
     let title: String
+    let phase: String
+    /// 阶段机 key（pending/ongoing/done/wrap/terminal）——堆叠视觉分档用
+    let status: String
+    /// 到点时刻 epoch 秒（0 = 未知）——时间派生档就地重推导 + 定点时间线
+    let dueAt: Double
+}
+
+/// 完成窗口（JS trip-item-logic DONE_WINDOW_MS / Android provider 同值镜像）：
+/// pending→ongoing（dueAt）与 ongoing→done（dueAt+窗口）是纯时间派生档，
+/// 渲染侧按条目时刻重推导；done/wrap/terminal 为 DB 持久态保留推送值。
+private let doneWindowSeconds = 30 * 60.0
+
+private func effectiveStatus(_ item: SnapshotItem, at date: Date) -> String {
+    if item.status != "pending" && item.status != "ongoing" { return item.status }
+    guard item.dueAt > 0 else { return item.status }
+    let t = date.timeIntervalSince1970
+    if t < item.dueAt { return "pending" }
+    if t < item.dueAt + doneWindowSeconds { return "ongoing" }
+    return "done"
+}
+
+private func phaseLabel(_ status: String, fallback: String) -> String {
+    switch status {
+    case "pending": return "待进行"
+    case "ongoing": return "进行中"
+    case "done": return "完成"
+    default: return fallback
+    }
 }
 
 private struct Snapshot {
@@ -51,7 +79,14 @@ private func loadSnapshot() -> Snapshot? {
     let tripTitle = root["tripTitle"] as? String ?? "行程"
     let rawItems = root["items"] as? [[String: Any]] ?? []
     let items = rawItems.prefix(4).map { dict in
-        SnapshotItem(id: UUID(), time: dict["time"] as? String ?? "", title: dict["title"] as? String ?? "")
+        SnapshotItem(
+            id: UUID(),
+            time: dict["time"] as? String ?? "",
+            title: dict["title"] as? String ?? "",
+            phase: dict["phase"] as? String ?? "",
+            status: dict["status"] as? String ?? "pending",
+            dueAt: (dict["dueAt"] as? NSNumber)?.doubleValue ?? 0
+        )
     }
     return Snapshot(tripId: tripId, tripTitle: tripTitle, items: items)
 }
@@ -71,9 +106,66 @@ private struct Provider: TimelineProvider {
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<Entry>) -> Void) {
-        let entry = Entry(date: Date(), snapshot: loadSnapshot())
-        let next = Calendar.current.date(byAdding: .minute, value: 30, to: Date()) ?? Date().addingTimeInterval(1800)
-        completion(Timeline(entries: [entry], policy: .after(next)))
+        let snapshot = loadSnapshot()
+        let now = Date()
+        // 定点条目（v0.4.7）：时间派生档切换点 dueAt / dueAt+窗口（24h 内、
+        // ≤8 条），行样式按条目时刻重推导——无需等待 push 即翻「进行中/完成」；
+        // 主 app 每次 push 仍经 WidgetCenter.reloadTimelines 即时刷新，
+        // 无切换点时回退 30min 周期档（WidgetKit 刷新预算由系统调度，如实边界）。
+        var times: [Date] = [now]
+        if let snapshot {
+            let nowT = now.timeIntervalSince1970
+            let horizon = nowT + 24 * 3600
+            for item in snapshot.items where item.status == "pending" || item.status == "ongoing" {
+                guard item.dueAt > 0 else { continue }
+                for t in [item.dueAt, item.dueAt + doneWindowSeconds] where t > nowT && t < horizon {
+                    times.append(Date(timeIntervalSince1970: t))
+                }
+            }
+        }
+        times = Array(Set(times.map { $0.timeIntervalSince1970 })).sorted()
+        if times.count > 8 { times = Array(times.prefix(8)) }
+        let entries = times.map { Entry(date: $0, snapshot: snapshot) }
+        let next = times.count > 1
+            ? times[times.count - 1].addingTimeInterval(60)
+            : Calendar.current.date(byAdding: .minute, value: 30, to: now) ?? now.addingTimeInterval(1800)
+        completion(Timeline(entries: entries, policy: .after(next)))
+    }
+}
+
+/// 行分档样式（v0.4.7 堆叠视觉层次，语义与 Android provider 一致）：
+/// ongoing = 强调（蓝色时间 + 加重字重）；pending = 常规；done/wrap = 弱化；
+/// terminal = 最弱。status/phase 按条目时刻经 effectiveStatus 就地重推导。
+private struct ItemRow: View {
+    let item: SnapshotItem
+    let date: Date
+
+    var body: some View {
+        let status = effectiveStatus(item, at: date)
+        HStack(spacing: 8) {
+            Text(item.time)
+                .font(status == "ongoing"
+                      ? .system(size: 12, weight: .semibold).monospacedDigit()
+                      : .system(size: 12).monospacedDigit())
+                .foregroundStyle(status == "ongoing"
+                                 ? Color.blue
+                                 : status == "pending"
+                                   ? Color.secondary
+                                   : Color.secondary.opacity(0.7))
+            Text(item.title)
+                .font(.system(size: status == "ongoing" ? 14 : 13,
+                              weight: status == "ongoing" ? .semibold : .regular))
+                .foregroundStyle(status == "terminal" || status == "done" || status == "wrap"
+                                 ? Color.secondary
+                                 : Color.primary)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Text(phaseLabel(status, fallback: item.phase))
+                .font(.system(size: 10))
+                .foregroundStyle(status == "ongoing" ? Color.blue : Color.secondary)
+                .lineLimit(1)
+        }
+        .opacity(status == "terminal" ? 0.55 : 1.0)
     }
 }
 
@@ -87,14 +179,7 @@ private struct ArchiveWidgetEntryView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                 ForEach(snapshot.items) { item in
-                    HStack(spacing: 8) {
-                        Text(item.time)
-                            .font(.system(size: 12).monospacedDigit())
-                            .foregroundStyle(.blue)
-                        Text(item.title)
-                            .font(.system(size: 13))
-                            .lineLimit(1)
-                    }
+                    ItemRow(item: item, date: entry.date)
                 }
                 if snapshot.items.isEmpty {
                     Text("今天没有安排")

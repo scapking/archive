@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 浅色档 widget 卡面（深色档 layout-night 同构换色）。行结构固定 4 行 +
-     头部行程名——RemoteViews 集合列表要 RemoteViewsService，静态行对
-     「自动显示最新行程 + 行程项列表」足够且零服务开销 -->
+<!-- 浅色档 widget 卡面（深色档 layout-night + values-night 同构换色）。v0.4.7：每行 = 时间 / 标题 / 阶段徽章三段（堆叠视觉层次，
+     分档颜色由 provider 按 status 用 setTextColor 上色，色板见 values/-night archive_widget_colors.xml）。点击深链
+     archive://trip/<id>（路径参数，AGENTS.md 偏差表）。 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/widget_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:padding="14dp"
-    android:background="#F7F8FA">
+    android:background="@color/archive_widget_bg">
 
     <TextView
         android:id="@+id/widget_trip_title"
@@ -16,7 +16,7 @@
         android:layout_height="wrap_content"
         android:textSize="13sp"
         android:textStyle="bold"
-        android:textColor="#171A1E"
+        android:textColor="@color/archive_widget_text"
         android:maxLines="1"
         android:ellipsize="end"
         android:text="行程" />
@@ -27,7 +27,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="6dp"
         android:textSize="12sp"
-        android:textColor="#8B939C"
+        android:textColor="@color/archive_widget_secondary"
         android:text="打开 Archive，行程会出现在这里" />
 
     <LinearLayout
@@ -42,7 +42,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:textSize="12sp"
-            android:textColor="#2563EB"
+            android:textColor="@color/archive_widget_secondary"
             android:fontFeatureSettings="tnum"
             android:paddingEnd="10dp" />
         <TextView
@@ -51,9 +51,17 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:textSize="13sp"
-            android:textColor="#171A1E"
+            android:textColor="@color/archive_widget_text"
             android:maxLines="1"
             android:ellipsize="end" />
+        <TextView
+            android:id="@+id/widget_row_0_phase"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="10sp"
+            android:textColor="@color/archive_widget_muted"
+            android:maxLines="1"
+            android:paddingStart="8dp" />
     </LinearLayout>
 
     <LinearLayout
@@ -68,7 +76,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:textSize="12sp"
-            android:textColor="#8B939C"
+            android:textColor="@color/archive_widget_secondary"
             android:fontFeatureSettings="tnum"
             android:paddingEnd="10dp" />
         <TextView
@@ -77,9 +85,17 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:textSize="13sp"
-            android:textColor="#5A626B"
+            android:textColor="@color/archive_widget_text"
             android:maxLines="1"
             android:ellipsize="end" />
+        <TextView
+            android:id="@+id/widget_row_1_phase"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="10sp"
+            android:textColor="@color/archive_widget_muted"
+            android:maxLines="1"
+            android:paddingStart="8dp" />
     </LinearLayout>
 
     <LinearLayout
@@ -94,7 +110,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:textSize="12sp"
-            android:textColor="#8B939C"
+            android:textColor="@color/archive_widget_secondary"
             android:fontFeatureSettings="tnum"
             android:paddingEnd="10dp" />
         <TextView
@@ -103,9 +119,17 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:textSize="13sp"
-            android:textColor="#5A626B"
+            android:textColor="@color/archive_widget_text"
             android:maxLines="1"
             android:ellipsize="end" />
+        <TextView
+            android:id="@+id/widget_row_2_phase"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="10sp"
+            android:textColor="@color/archive_widget_muted"
+            android:maxLines="1"
+            android:paddingStart="8dp" />
     </LinearLayout>
 
     <LinearLayout
@@ -120,7 +144,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:textSize="12sp"
-            android:textColor="#8B939C"
+            android:textColor="@color/archive_widget_secondary"
             android:fontFeatureSettings="tnum"
             android:paddingEnd="10dp" />
         <TextView
@@ -129,8 +153,16 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:textSize="13sp"
-            android:textColor="#5A626B"
+            android:textColor="@color/archive_widget_text"
             android:maxLines="1"
             android:ellipsize="end" />
+        <TextView
+            android:id="@+id/widget_row_3_phase"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="10sp"
+            android:textColor="@color/archive_widget_muted"
+            android:maxLines="1"
+            android:paddingStart="8dp" />
     </LinearLayout>
 </LinearLayout>

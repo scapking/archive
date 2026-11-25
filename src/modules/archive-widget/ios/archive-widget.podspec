@@ -21,6 +21,9 @@ Pod::Spec.new do |s|
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES'
   }
+  # v0.4.7：push 后 WidgetCenter.reloadTimelines 即时刷桌面卡（iOS14+ API，
+  # 部署目标 16.4 恒可用）——需链接 WidgetKit 系统框架
+  s.frameworks     = 'WidgetKit'
   # pod 名是 ExpoModulesCore（大驼峰）——写成 expo-modules-core 会让 CocoaPods
   # 去 trunk CDN 找不存在的 spec（v0.4.4 门禁构建实测报错）
   s.dependency 'ExpoModulesCore'
