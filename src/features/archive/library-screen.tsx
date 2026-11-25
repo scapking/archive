@@ -5,11 +5,14 @@ import { useRouter } from 'expo-router';
 import * as db from './db';
 import type { JournalRow } from './db';
 import { useArchiveRevision, useArchiveStore, type TripCard } from './store';
-import { formatEventDateTime } from './event-logic';
 import { isPlanOpen } from './plan-logic';
-import { formatTripSpan, tripDisplayTitle } from './trip-logic';
-import { CardDeck, LoadingView, safeBack, type DeckItem } from './ui';
-import { CloseButton } from './ui';
+import { tripDisplayTitle } from './trip-logic';
+import { CardDeck, CloseButton, LoadingView, safeBack, type DeckItem } from './ui';
+// 深路径注记（v0.4.6 指令 4/7）：堆叠卡面与首页**同一实现源**——行程卡/计划卡
+// 直接复用 archive-screen 导出的 TripCard / NoteDeckCard（屏间深取，同
+// trip-detail ← DeadEndView 先例；两屏均在本组改动权限内）。首页卡面口径
+// 「行程名不上卡面」（即使命名也不显示）经共用组件天然传导到本堆。
+import { NoteDeckCard, TripCard as TripDeckCard } from './archive-screen';
 
 /**
  * 堆叠库（v8，/notes 与 /trips 两个路由壳共用本屏，kind 区分——2026-11-19
@@ -22,12 +25,35 @@ import { CloseButton } from './ui';
  * useArchiveRevision() 驱动重载（计划 mutation 只 bump revision）；行程读
  * store.trips（任一版本前进即重跑 loadAll，行程卡统计不滞留旧值）。
  *
- * 卡面从简（2026-11-19 用户指令）：只给标题 + 一行 meta（身份信息），不渲染
- * 计划内容/行程详情；卡高由 CardPile 按竖版相纸比例自适应（长卡居中）。
+ * 卡面（v0.4.6 指令 4/7 重样）：**与首页 deck 共用同一卡面组件**——行程卡
+ * = 封面 + eyebrow（类型 + 区间/今天）+ 状态片 + 描述 + 统计（进度/已写），
+ * 不再渲染行程名（兜底「未命名行程」一并退场）；计划卡 = eyebrow（类型 +
+ * 建立日期）+ 题 + 引导行 + 正文预算，「更新于 …」「N 字」冗余串退场。
+ * 空堆给设计过的邀请态（deck emptyState 槽），不再是一片死白。
+ * 卡高由 CardPile 520 竖版档承担（首页 430 不受影响）。
  */
 
 /** 库类型（路由壳注入）：note = 计划堆 / trip = 行程堆。 */
 export type LibraryKind = 'note' | 'trip';
+
+/** 空堆邀请态（deck emptyState 槽）：空区是行动指引，不是空白。 */
+function EmptyPile({ kind }: { kind: LibraryKind }) {
+    return (
+        <View className="items-center px-6">
+            <Text className="text-[11px] text-ink-muted dark:text-inkd-muted">
+                {kind === 'note' ? '计划' : '行程'}
+            </Text>
+            <Text className="mt-2 text-[24px] font-semibold text-ink-text dark:text-inkd-text">
+                {kind === 'note' ? '没有进行中的计划' : '没有在途的行程'}
+            </Text>
+            <Text className="mt-2 text-center text-[13px] leading-5 text-ink-muted dark:text-inkd-muted">
+                {kind === 'note'
+                    ? '计划是一件要做的事——回首页点 +，起个名字就成立。'
+                    : '旅途从一段日期开始——回首页点 +，建好就进堆。'}
+            </Text>
+        </View>
+    );
+}
 
 export function LibraryScreen({ kind }: { kind: LibraryKind }) {
     const router = useRouter();
@@ -77,89 +103,32 @@ export function LibraryScreen({ kind }: { kind: LibraryKind }) {
     const items = useMemo<DeckItem[]>(() => {
         if (kind === 'trip') {
             // 只显进行中（2026-11-19 用户指令「历史的都放在搜索」）：planning +
-            // ongoing，finished（回忆）不进堆
+            // ongoing，finished（回忆）不进堆。卡面 = 首页 TripCard 同一实现
+            // （无长按菜单面，点按由 deck 壳层承担）
             return trips
                 .filter((trip: TripCard) => trip.status !== 'finished')
                 .map((trip: TripCard): DeckItem => ({
-                key: `trip-${trip.id}`,
-                onPress: () => router.push({ pathname: '/trip/[id]', params: { id: trip.id } }),
-                // 卡面内容（卡壳与页码由 deck 统一绘制）：eyebrow 类型行 → 题 → 描述 → meta 行
-                node: (
-                    <View className="flex-1 flex-col px-6 py-5">
-                        <Text
-                            numberOfLines={1}
-                            className="text-[11px] text-ink-muted dark:text-inkd-muted"
-                            style={{ fontVariant: ['tabular-nums'] }}
-                        >
-                            {'行程 · '}
-                            {formatTripSpan(trip)}
-                        </Text>
-                        <Text
-                            numberOfLines={2}
-                            className="mt-1 text-[15px] font-semibold text-ink-text dark:text-inkd-text"
-                        >
-                            {tripDisplayTitle(trip.title)}
-                        </Text>
-                        {trip.description.trim() ? (
-                            <Text
-                                numberOfLines={6}
-                                className="mt-2 text-[13px] leading-5 text-ink-muted dark:text-inkd-muted"
-                            >
-                                {trip.description}
-                            </Text>
-                        ) : null}
-                        <View className="min-h-0 flex-1" />
-                        <Text
-                            className="text-[11px] text-ink-muted dark:text-inkd-muted"
-                            style={{ fontVariant: ['tabular-nums'] }}
-                        >
-                            {`已写 ${trip.journalDays} 天`}
-                        </Text>
-                    </View>
-                ),
-            }));
+                    key: `trip-${trip.id}`,
+                    accessibilityLabel: `打开行程：${tripDisplayTitle(trip.title)}`,
+                    onPress: () => router.push({ pathname: '/trip/[id]', params: { id: trip.id } }),
+                    node: (
+                        <TripDeckCard
+                            trip={trip}
+                            onOpen={() => router.push({ pathname: '/trip/[id]', params: { id: trip.id } })}
+                        />
+                    ),
+                }));
         }
-        // 计划堆只显进行中（已完成/已失败进搜索）——比较收口 plan-logic.isPlanOpen
+        // 计划堆只显进行中（已完成/已失败进搜索）——比较收口 plan-logic.isPlanOpen；
+        // 卡面 = 首页 NoteDeckCard 同一实现
         return (notes ?? [])
             .filter(isPlanOpen)
             .map((note): DeckItem => ({
-            key: `note-${note.id}`,
-            onPress: () => router.push({ pathname: '/plan/[id]', params: { id: note.id } } as never),
-            // 卡面内容（卡壳与页码由 deck 统一绘制）：eyebrow 类型行 → 题 → 描述 → meta 行
-            node: (
-                <View className="flex-1 flex-col px-6 py-5">
-                    <Text
-                        numberOfLines={1}
-                        className="text-[11px] text-ink-muted dark:text-inkd-muted"
-                        style={{ fontVariant: ['tabular-nums'] }}
-                    >
-                        {'计划 · '}
-                        {`更新于 ${formatEventDateTime(note.updated_at)}`}
-                    </Text>
-                    <Text
-                        numberOfLines={2}
-                        className="mt-1 text-[15px] font-semibold text-ink-text dark:text-inkd-text"
-                    >
-                        {note.title?.trim() || '未命名计划'}
-                    </Text>
-                    {note.description?.trim() ? (
-                        <Text
-                            numberOfLines={6}
-                            className="mt-2 text-[13px] leading-5 text-ink-muted dark:text-inkd-muted"
-                        >
-                            {note.description}
-                        </Text>
-                    ) : null}
-                    <View className="min-h-0 flex-1" />
-                    <Text
-                        className="text-[11px] text-ink-muted dark:text-inkd-muted"
-                        style={{ fontVariant: ['tabular-nums'] }}
-                    >
-                        {`${note.word_count} 字`}
-                    </Text>
-                </View>
-            ),
-        }));
+                key: `note-${note.id}`,
+                accessibilityLabel: note.title?.trim() ? `打开计划：${note.title}` : '打开未命名计划',
+                onPress: () => router.push({ pathname: '/plan/[id]', params: { id: note.id } } as never),
+                node: <NoteDeckCard note={note} />,
+            }));
     }, [kind, notes, trips, router]);
 
     if (!ready) return <LoadingView />;
@@ -167,13 +136,13 @@ export function LibraryScreen({ kind }: { kind: LibraryKind }) {
     return (
         <View className="flex-1 bg-ink-base dark:bg-inkd-base">
             <View style={{ paddingTop: insets.top }} className="flex-1">
-                {/* 屏头内联（trip-detail 同规格）：CloseButton back + 题，无副标 */}
+                {/* 屏头内联（trip-detail 同规格，v0.4.6 字阶纪律屏题档 24），无副标 */}
                 <View className="px-6 pb-3 pt-2">
                     <View className="h-11 flex-row items-center">
                         <CloseButton icon="back" onPress={safeBack} />
                         <Text
                             numberOfLines={1}
-                            className="ml-2.5 min-w-0 flex-1 text-[20px] font-semibold text-ink-text dark:text-inkd-text"
+                            className="ml-2.5 min-w-0 flex-1 text-[24px] font-semibold text-ink-text dark:text-inkd-text"
                         >
                             {kind === 'note' ? '计划' : '行程'}
                         </Text>
@@ -187,10 +156,10 @@ export function LibraryScreen({ kind }: { kind: LibraryKind }) {
 
                 {/* deck 主体（重叠露条多卡泛化，长卡 520——首页 430 不受影响）；
                     水平居中（mx-auto 阅读列）+ 左右屏边距 px-6（用户指令「卡片
-                    要有左右边距」），垂直位置照旧不居中 */}
+                    要有左右边距」）；空堆走 emptyState 邀请态 */}
                 <View className="mx-auto w-full max-w-[560px] pt-4">
                     <View className="px-6">
-                        <CardDeck items={items} height={520} />
+                        <CardDeck items={items} height={520} emptyState={<EmptyPile kind={kind} />} />
                     </View>
                 </View>
             </View>

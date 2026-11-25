@@ -407,7 +407,7 @@ const DayCard = memo(function DayCard({
                         >
                             {`D${data.dayNo}`}
                         </Text>
-                        <Text className="ml-2.5 text-[15px] font-semibold text-ink-text dark:text-inkd-text">
+                        <Text className="ml-2.5 text-[16px] font-semibold text-ink-text dark:text-inkd-text">
                             {monthDay}
                         </Text>
                         <Text className="ml-2 text-[12px] text-ink-muted dark:text-inkd-muted">{weekday}</Text>
@@ -438,7 +438,7 @@ const DayCard = memo(function DayCard({
                                     ) : null}
                                 </View>
                                 <Text
-                                    className={`ml-2.5 flex-1 text-[14px] ${
+                                    className={`ml-2.5 flex-1 text-[16px] ${
                                         plan.done === 1
                                             ? 'text-ink-muted line-through dark:text-inkd-muted'
                                             : 'text-ink-text dark:text-inkd-text'
@@ -476,7 +476,7 @@ const DayCard = memo(function DayCard({
                                     ) : null}
                                 </View>
                                 <Text
-                                    className={`ml-2.5 flex-1 text-[14px] ${
+                                    className={`ml-2.5 flex-1 text-[16px] ${
                                         plan.done === 1
                                             ? 'text-ink-muted line-through dark:text-inkd-muted'
                                             : 'text-ink-text dark:text-inkd-text'
@@ -503,7 +503,7 @@ const DayCard = memo(function DayCard({
                             <>
                                 <Text
                                     numberOfLines={3}
-                                    className="text-[14px] leading-6 text-ink-secondary dark:text-inkd-secondary"
+                                    className="text-[16px] leading-6 text-ink-secondary dark:text-inkd-secondary"
                                 >
                                     {previewText(journalBlocks) || '[图片与视频]'}
                                 </Text>
@@ -891,7 +891,7 @@ export function TripDetailScreen() {
                         </View>
                         <Text
                             numberOfLines={1}
-                            className="ml-2.5 min-w-0 flex-1 text-[20px] font-semibold text-ink-text dark:text-inkd-text"
+                            className="ml-2.5 min-w-0 flex-1 text-[24px] font-semibold text-ink-text dark:text-inkd-text"
                         >
                             {tripDisplayTitle(trip.title)}
                         </Text>
@@ -920,7 +920,7 @@ export function TripDetailScreen() {
                         <StatusChip status={trip.status} />
                         <Text
                             numberOfLines={1}
-                            className="min-w-0 flex-1 text-[13px] text-ink-secondary dark:text-inkd-secondary"
+                            className="min-w-0 flex-1 text-[12px] text-ink-secondary dark:text-inkd-secondary"
                             style={{ fontVariant: ['tabular-nums'] }}
                         >
                             {`${formatTripSpan(trip)} · ${writtenLabel}`}
@@ -958,7 +958,7 @@ export function TripDetailScreen() {
                                 </View>
                             ) : null}
                             {trip.description ? (
-                                <Text className="mb-4 text-[13px] leading-5 text-ink-secondary dark:text-inkd-secondary">
+                                <Text className="mb-4 text-[16px] leading-6 text-ink-secondary dark:text-inkd-secondary">
                                     {trip.description}
                                 </Text>
                             ) : null}
@@ -986,7 +986,7 @@ export function TripDetailScreen() {
                             ) : null}
                             {/* 逐日区头：日卡列的开场白（open 无固定分母不报天数） */}
                             <View className="mb-2.5 mt-1 flex-row items-baseline">
-                                <Text className="text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                <Text className="text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                     逐日
                                 </Text>
                                 {!openEnded ? (

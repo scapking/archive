@@ -30,10 +30,12 @@ import {
     planFormStepAt,
     planTitleValid,
 } from './plan-logic';
-import { ScreenHeader, usePalette } from './ui';
+import { CloseButton, safeBack, usePalette } from './ui';
 // 深路径注记：FieldInput 未入 ui/index.ts 出口（该文件不在本组改动权限内），
 // 域内深取；ui/index.ts 出口扩充时收口（同 close-button / editor-icons 先例）。
 import { FieldInput } from './ui/field-input';
+import { PLAN_TITLE_FALLBACK } from './journal-edit-screen';
+import { formatDateParts, todayLocal } from './trip-logic';
 
 /**
  * 新建计划页（/plan/new，**交互式分步**，v0.4.5 对齐事件建页向导）：
@@ -46,10 +48,15 @@ import { FieldInput } from './ui/field-input';
  *   校验同源），空标题时两个动作禁用；步骤指示「X / 2」（tabular，与事件
  *   「X / 7」、deck 页码同语言）；步进状态机收口在 plan-logic 纯函数
  *   （node 测试直接覆盖）；
- * - **页头带描述（v0.4.5 用户点名口径）**：ScreenHeader「新建计划」+ 一行
- *   subtitle 说明计划是什么、怎么用——历史「描述性副标全线退役」口径由本轮
- *   用户指令为本屏恢复，复用 ScreenHeader 既有 subtitle 槽（搜索结果页同款
- *   几何），不另造页头；
+ * - **页头带描述（v0.4.5 用户点名口径；v0.4.6 指令 3 字阶同步）**：内联屏头
+ *   （trip-detail / 计划编辑同一几何 px-6 pb-3 pt-2 + h-11 + CloseButton 返回
+ *   钮）+ 屏题「新建计划」24 档 + 一行 16 档说明（起名字、补描述、随时续写
+ *   标记完成——描述价值保留、措辞收紧，「计划是一件要做的事」由下方卡面预览
+ *   的画面自证，不再全说在字上）；ScreenHeader（agent C 资产，20 档屏题）
+ *   不再用于本屏，避免向导页头与编辑/详情页头字阶漂移；
+ * - **卡面预览（v0.4.6 指令 7「稀疏即罪」）**：页底一块与首页/计划堆同语言
+ *   的计划卡静态预览，随输入实时更新——向导下半死白收进真实反馈内容，且
+ *   「建完会进堆」的因果一眼可见；
  * - **换步滑动过渡**：StepPane（key={step} 换步重挂）挂载即播滑入——前进
  *   自右、200ms ease-out + 淡入；动画层与布局层分离（Animated.View 只挂内联
  *   动画 style，className 恒在外层普通 View——css-interop web 端静默丢弃
@@ -210,14 +217,24 @@ export function PlanFormScreen() {
             className="flex-1 bg-ink-base dark:bg-inkd-base"
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
-            {/* 屏头固定带（journal-edit / trip-detail / search / 事件建页同一
-                几何口径）：ScreenHeader 在滚动容器之外，px-6 与字段列对齐；
-                subtitle 走组件既有槽（2026-11-25 用户口径：本屏恢复一行描述） */}
+            {/* 屏头固定带（v0.4.6 指令 3 字阶纪律）：与计划编辑 / trip-detail /
+                library 内联屏头同一几何（px-6 pb-3 pt-2 + h-11 行 + CloseButton
+                44 钮 + 屏题 24 semibold），副行 16 档 */}
             <View style={{ paddingTop: insets.top }}>
-                <ScreenHeader
-                    title="新建计划"
-                    subtitle="计划是一件要做的事：起个名字、补句描述，之后随时续写与标记完成。"
-                />
+                <View className="px-6 pb-3 pt-2">
+                    <View className="h-11 flex-row items-center">
+                        <CloseButton icon="back" onPress={safeBack} />
+                        <Text
+                            numberOfLines={1}
+                            className="ml-2.5 min-w-0 flex-1 text-[24px] font-semibold text-ink-text dark:text-inkd-text"
+                        >
+                            新建计划
+                        </Text>
+                    </View>
+                    <Text className="mt-1 text-[16px] leading-6 text-ink-secondary dark:text-inkd-secondary">
+                        起个名字、补句描述，之后随时续写与标记完成。
+                    </Text>
+                </View>
             </View>
             <ScrollView
                 className="flex-1"
@@ -239,9 +256,10 @@ export function PlanFormScreen() {
                     </Text>
                 ) : null}
 
-                {/* 步骤指示（与事件「X / 7」、deck 页码同语言：X / 2，tabular） */}
+                {/* 步骤指示（与事件「X / 7」、deck 页码同语言：X / 2，tabular
+                    11 eyebrow 档；与上方副行拉开一档呼吸） */}
                 <Text
-                    className="mb-2 text-[11px] text-ink-muted dark:text-inkd-muted"
+                    className="mb-3 mt-4 text-[11px] text-ink-muted dark:text-inkd-muted"
                     style={{ fontVariant: ['tabular-nums'] }}
                 >
                     {`${step + 1} / ${PLAN_FORM_STEP_TOTAL}`}
@@ -254,7 +272,9 @@ export function PlanFormScreen() {
                     坑，事件屏同款注）── */}
                 <StepPane key={step} direction={stepDirection} animate={step > 0}>
                     <View>
-                        <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                        {/* 字段题 = 正文声部 16（v0.4.6 字阶纪律：一步一题，
+                            题不是 eyebrow 不该用弱档小字） */}
+                        <Text className="mb-2 text-[16px] font-medium text-ink-text dark:text-inkd-text">
                             {PLAN_FORM_STEP_LABELS[stepKey]}
                         </Text>
                         {stepKey === PLAN_FORM_STEPS[0] ? (
@@ -291,7 +311,7 @@ export function PlanFormScreen() {
                     （事件建页同款布局语言：h-12 flex-1 gap-3）——标题未填双禁用；
                     直接创建随时可用已填内容创建（「默认只要输入计划名称即可创建」
                     用户口径沿事件）；最后一步主钮即创建 ── */}
-                <View className="mt-6 flex-row gap-3">
+                <View className="mt-8 flex-row gap-3">
                     <Pressable
                         onPress={() => void submit()}
                         disabled={!titleValid || submitting}
@@ -301,7 +321,7 @@ export function PlanFormScreen() {
                         accessibilityRole="button"
                         accessibilityLabel="直接创建"
                     >
-                        <Text className="text-[15px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                        <Text className="text-[16px] font-medium text-ink-secondary dark:text-inkd-secondary">
                             直接创建
                         </Text>
                     </Pressable>
@@ -317,13 +337,50 @@ export function PlanFormScreen() {
                             <ActivityIndicator size="small" color={palette.onPrimaryBtn} />
                         ) : (
                             <Text
-                                className="text-[15px] font-semibold"
+                                className="text-[16px] font-semibold"
                                 style={{ color: palette.onPrimaryBtn }}
                             >
                                 {isLastStep ? '创建计划' : '继续填写'}
                             </Text>
                         )}
                     </Pressable>
+                </View>
+
+                {/* 卡面预览（v0.4.6 指令 7「稀疏即罪」）：页底死白收进一块真实
+                    反馈——与首页 / 计划堆同语言的静态计划卡（eyebrow = 类型 +
+                    今天日期、题 16 semibold、引导行 16、右下状态词），随输入
+                    实时更新。非交互装饰件：pointerEvents 关闭，页码位留给
+                    文案本身（不做假卡页码）。 */}
+                <View className="mt-12" pointerEvents="none">
+                    <Text className="mb-3 text-[11px] text-ink-muted dark:text-inkd-muted">卡片预览</Text>
+                    <View className="rounded-card bg-ink-surface px-6 py-5 dark:bg-inkd-surface">
+                        <Text
+                            className="text-[11px] text-ink-muted dark:text-inkd-muted"
+                            style={{ fontVariant: ['tabular-nums'] }}
+                        >
+                            {'计划 · '}
+                            {formatDateParts(todayLocal()).monthDay}
+                        </Text>
+                        <Text
+                            numberOfLines={1}
+                            className="mt-1 text-[16px] font-semibold text-ink-text dark:text-inkd-text"
+                        >
+                            {title.trim() || PLAN_TITLE_FALLBACK}
+                        </Text>
+                        <Text
+                            numberOfLines={2}
+                            className={`mt-2.5 text-[16px] leading-6 ${
+                                description.trim()
+                                    ? 'text-ink-text dark:text-inkd-text'
+                                    : 'text-ink-muted dark:text-inkd-muted'
+                            }`}
+                        >
+                            {description.trim() || '描述可以留空，进计划页后随时补。'}
+                        </Text>
+                        <Text className="mt-4 text-right text-[12px] font-medium text-ink-accent dark:text-inkd-accent">
+                            进行中
+                        </Text>
+                    </View>
                 </View>
             </ScrollView>
         </KeyboardAvoidingView>

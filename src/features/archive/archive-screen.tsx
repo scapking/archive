@@ -12,12 +12,11 @@ import {
     LucideChevronRight,
     LucideClose,
     LucideFlag,
-    LucidePenLine,
     LucidePencil,
     LucidePlay,
-    LucidePlus,
     LucideRoute,
     LucideListPlus,
+    LucideListTodo,
     LucideTrash,
     LucideType,
 } from '@/core/icons';
@@ -30,10 +29,11 @@ import { useDataRevision } from './data-revision';
 import * as db from './db';
 import type { EventRow, JournalBlock, JournalRow } from './db';
 import { formatDateGroupLabel, isEditable, parseBlocks, previewText } from './journal-logic';
-import { formatEventDateTime } from './event-logic';
 // 计划纯逻辑（v11）：在堆判定收口派生函数，禁散落 status 字面量比较
 import { isPlanOpen } from './plan-logic';
+import { PLAN_TITLE_FALLBACK } from './journal-edit-screen';
 import {
+    formatDateParts,
     formatTripSpan,
     todayLocal,
     tripDisplayTitle,
@@ -63,10 +63,13 @@ import {
  * 显示，不再固定两张」）——日记（今天）/ 行程 / 事件 / 计划四类实体的活跃项
  * 全部进同一个图片堆（ui/card-pile 共享组件），左右滑动翻看，点前卡进内容
  * （卡序 = 用户优先级指令：日记 > 行程 > 事件 > 计划）。
- * **卡片 UI 样式 = 原 deck 卡样式原样保留**（2026-11-19 用户澄清「没说改变
- * 首页的卡片 ui 样式，只是增加多几个卡片」）：日记/行程卡沿用原 JournalCard /
- * TripCard（封面、状态片、进度条全套），计划/事件卡按同一卡面语言新增
- * （eyebrow / 标题 / 描述 / meta 行，见 NoteDeckCard / EventDeckCard）。
+ * **卡面语言统一（v0.4.6 指令 4/7 重样）**：eyebrow（类型二字 + 最小必要
+ * meta）/ 标题或正文 / 底部统计 + CTA 三段式，字阶 16/13/12/11。**行程名
+ * 不上卡面**（指令 4：即使命名也不显示，兜底「未命名行程」一并退场——封面/
+ * 日期/节奏/统计承担区分，名字只在屏头与详情出现）；「更新于 …」「0 字」类
+ * 冗余串退场（指令 7）。见 TripCard / NoteDeckCard / EventDeckCard；首页与
+ * /plans、/trips 堆共用 TripCard、NoteDeckCard（library-screen 深取，同
+ * DeadEndView 先例）。
  *
  * - **进入口径（完成态不显示，用户指令）**：日记 = 今天不存在或 open（已收笔
  *   不显示）；计划 = 仅 open（v11 计划状态机：closed/failed 离堆、历史在搜索
@@ -297,16 +300,15 @@ export function ArchiveScreen() {
                 accessibilityLabel: `写今天的日记，${journalLabel.monthDay}`,
                 onPress: () => router.push('/write'),
                 node: (
-                    <View className="flex-1 flex-col">
-                        <View className="flex-1 items-center justify-center gap-2 px-6 py-5">
-                            <LucidePenLine size={34} color={palette.muted} strokeWidth={1.5} />
-                            <Text className="text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                日记
-                            </Text>
-                            <Text className="text-[15px] font-medium text-ink-text dark:text-inkd-text">
+                    // 邀请卡（v0.4.6 指令 7 重样）：空态是行动邀请——今天日期升为
+                    // 卡面屏题档（24），邀请语 16，CTA 收 accent；笔 icon 轻收尾。
+                    <View className="flex-1 flex-col px-7 py-6">
+                        <Text className="text-[11px] text-ink-muted dark:text-inkd-muted">日记</Text>
+                        <View className="min-h-0 flex-1 justify-center gap-2">
+                            <Text className="text-[24px] font-semibold text-ink-text dark:text-inkd-text">
                                 {journalLabel.monthDay} {journalLabel.weekday}
                             </Text>
-                            <Text className="text-[13px] text-ink-muted dark:text-inkd-muted">
+                            <Text className="text-[16px] text-ink-secondary dark:text-inkd-secondary">
                                 今天的一页还没写
                             </Text>
                             <View className="mt-1 flex-row items-center">
@@ -402,12 +404,13 @@ export function ArchiveScreen() {
     return (
         <View className="flex-1 bg-ink-base dark:bg-inkd-base">
             <View style={{ paddingTop: insets.top }} className="flex-1">
+                {/* 屏头（v0.4.6 字阶纪律：屏题 24 / 正文行 16 / meta 12 / eyebrow 11） */}
                 <View className="px-6 pb-1 pt-2">
-                    <Text className="text-[20px] font-semibold text-ink-text dark:text-inkd-text">
+                    <Text className="text-[24px] font-semibold text-ink-text dark:text-inkd-text">
                         Archive
                     </Text>
                     <Text
-                        className="mt-1 text-[13px] text-ink-secondary dark:text-inkd-secondary"
+                        className="mt-1 text-[16px] text-ink-secondary dark:text-inkd-secondary"
                         style={{ fontVariant: ['tabular-nums'] }}
                     >
                         {metrics.streak > 0 ? `连续记录 ${metrics.streak} 天` : '今天的记录都在这里'}
@@ -427,14 +430,14 @@ export function ArchiveScreen() {
                 <View className="mt-4 px-6">
                     <View className="mx-auto w-full max-w-[560px]">
                         <CardDeck items={deckItems} />
-                        {/* 换位指示点（原 deck 区下方装饰，UI 原样保留） */}
-                        <View className="mt-3 flex-row items-center justify-center gap-1.5">
-                            <View className="h-1.5 w-1.5 rounded-full bg-ink-accent dark:bg-inkd-accent" />
-                            <View className="h-1.5 w-1.5 rounded-full bg-ink-faint dark:bg-inkd-faint" />
-                        </View>
-                        {/* 事件入口卡（原样保留 → /events 列表；deck 内的事件卡是
-                            单卡直达，此入口是列表页） */}
-                        <EventsEntryCard />
+                        {/* v0.4.6 指令 7：原「两枚指示点」是假数据（恒 2 点，与
+                            卡数无关），退场——deck 卡底页码「X / N」已诚实承载
+                            堆位信息，不再叠装饰。入口组卡（事件/计划/行程）填补
+                            首页下半死白（「稀疏即罪」：空区收进真实导航内容），
+                            与 Me 内容卡同一容器语言：一张 surface 卡、单容器行组、
+                            行间零线条、行级 active 高亮。deck 内的事件/计划卡是
+                            单卡直达，这里是列表/堆页入口。 */}
+                        <EntriesCard />
                     </View>
                 </View>
             </View>
@@ -715,33 +718,62 @@ export function ArchiveScreen() {
 }
 
 /**
- * 事件入口卡（v6 事件实体，deck 区下方）：整卡即命中盒（≥44，hitSlop 0，四周
- * 无相邻命中元素），按压反馈走 active: 体系（Me 页入口卡同口径）；icon 用
- * LucideFlag（事件/工单语义标）。→ /events 列表页。
+ * 入口组卡（v0.4.6 指令 7：首页下半死白收进真实导航）：事件 / 计划 / 行程三行
+ * 并作一张 surface 卡（单容器行组、零线条、行级 active 高亮——Me 内容卡同一
+ * 语言）。原 EventsEntryCard 单行事件入口是其前身；deck 卡是单卡直达、这里
+ * 是列表/堆页入口。行解剖：图标（40 raised 底）+ 题 16 + 一句说明 12 + chevron。
  */
-function EventsEntryCard() {
+function EntriesCard() {
     const router = useRouter();
     const palette = usePalette();
+    const rows = [
+        {
+            key: 'events',
+            icon: <LucideFlag size={18} strokeWidth={1.9} color={palette.secondary} />,
+            title: '事件',
+            hint: '要跟的事记成工单，跟到完成',
+            onPress: () => router.push('/events' as never),
+        },
+        {
+            key: 'plans',
+            icon: <LucideListTodo size={18} strokeWidth={1.9} color={palette.secondary} />,
+            title: '计划',
+            hint: '进行中的计划，堆里翻',
+            onPress: () => router.push('/plans' as never),
+        },
+        {
+            key: 'trips',
+            icon: <LucideCalendar size={18} strokeWidth={1.9} color={palette.secondary} />,
+            title: '行程',
+            hint: '在途与计划中的旅行',
+            onPress: () => router.push('/trips' as never),
+        },
+    ];
     return (
-        <Pressable
-            onPress={() => router.push('/events' as never)}
-            className="mt-4 flex-row items-center gap-3 rounded-card bg-ink-surface px-4 py-3 active:bg-ink-raised dark:bg-inkd-surface dark:active:bg-inkd-raised"
-            accessibilityRole="button"
-            accessibilityLabel="事件"
-        >
-            <View className="h-10 w-10 items-center justify-center rounded-control bg-ink-raised dark:bg-inkd-raised">
-                <LucideFlag size={18} strokeWidth={1.9} color={palette.secondary} />
-            </View>
-            <View className="min-w-0 flex-1">
-                <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
-                    事件
-                </Text>
-                <Text numberOfLines={1} className="mt-0.5 text-[12px] text-ink-muted dark:text-inkd-muted">
-                    要跟的事记成工单，跟到完成
-                </Text>
-            </View>
-            <LucideChevronRight size={16} strokeWidth={1.9} color={palette.faint} />
-        </Pressable>
+        <View className="mt-6 overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface">
+            {rows.map((row) => (
+                <Pressable
+                    key={row.key}
+                    onPress={row.onPress}
+                    className="flex-row items-center gap-3 px-4 py-3 active:bg-ink-raised dark:active:bg-inkd-raised"
+                    accessibilityRole="button"
+                    accessibilityLabel={row.title}
+                >
+                    <View className="h-10 w-10 items-center justify-center rounded-control bg-ink-raised dark:bg-inkd-raised">
+                        {row.icon}
+                    </View>
+                    <View className="min-w-0 flex-1">
+                        <Text className="text-[16px] font-medium text-ink-text dark:text-inkd-text">
+                            {row.title}
+                        </Text>
+                        <Text numberOfLines={1} className="mt-0.5 text-[12px] text-ink-muted dark:text-inkd-muted">
+                            {row.hint}
+                        </Text>
+                    </View>
+                    <LucideChevronRight size={16} strokeWidth={1.9} color={palette.faint} />
+                </Pressable>
+            ))}
+        </View>
     );
 }
 
@@ -967,14 +999,14 @@ function JournalCard({
                 {journal.title ? (
                     <Text
                         numberOfLines={1}
-                        className="mt-1 text-[15px] font-semibold text-ink-text dark:text-inkd-text"
+                        className="mt-1 text-[16px] font-semibold text-ink-text dark:text-inkd-text"
                     >
                         {journal.title}
                     </Text>
                 ) : null}
                 <Text
                     numberOfLines={1}
-                    className={`mt-2.5 text-[15px] leading-6 ${summaryParts.lead ? 'text-ink-text dark:text-inkd-text' : 'text-ink-muted dark:text-inkd-muted'}`}
+                    className={`mt-2.5 text-[16px] leading-6 ${summaryParts.lead ? 'text-ink-text dark:text-inkd-text' : 'text-ink-muted dark:text-inkd-muted'}`}
                 >
                     {summaryParts.lead || '还没写字，插入一张图也算。'}
                 </Text>
@@ -989,13 +1021,18 @@ function JournalCard({
                         </SummaryText>
                     ) : null}
                 </View>
+                {/* 底行：字数零值不上屏（「0 字」噪音，指令 7），CTA 恒在右 */}
                 <View className="flex-row items-center justify-between pt-3">
-                    <Text
-                        className="text-[11px] text-ink-muted dark:text-inkd-muted"
-                        style={{ fontVariant: ['tabular-nums'] }}
-                    >
-                        {journal.word_count} 字
-                    </Text>
+                    {journal.word_count > 0 ? (
+                        <Text
+                            className="text-[11px] text-ink-muted dark:text-inkd-muted"
+                            style={{ fontVariant: ['tabular-nums'] }}
+                        >
+                            {journal.word_count} 字
+                        </Text>
+                    ) : (
+                        <View />
+                    )}
                     <View className="flex-row items-center">
                         <Text className="text-[12px] font-medium text-ink-accent dark:text-inkd-accent">
                             继续写
@@ -1009,11 +1046,15 @@ function JournalCard({
 }
 
 /**
- * 行程卡（原样式原样保留）：封面（首图/首视频/徽章占位）+ eyebrow（类型前缀 +
- * 时间/区间）+ 标题/状态 + 描述 + 进度；封面按卡查询（useTripCover）。
- * 交互：点击 → /trip/[id]；长按 → 行程菜单卡。
+ * 行程卡（v0.4.6 指令 4 重样）：封面（首图/首视频/徽章占位）+ eyebrow（类型 +
+ * 时间/区间，右端状态片）+ 描述正文 + 统计（计划进度 / 已写天数）——**行程名
+ * 不上卡面**（即使命名也不显示：兜底「未命名行程」与真名一并退场，区分度全部
+ * 交给日期/节奏/封面/统计；名字只在屏头与详情出现）。首页与 /trips 堆共用本
+ * 卡（library-screen 深取，同 DeadEndView 先例）。
+ * 交互：点击 → /trip/[id]；onRequestMenu 给出时长按 → 行程菜单卡（首页），
+ * 不给时（堆页）卡面无内层按压体，点按由 deck 壳层承担。
  */
-function TripCard({
+export function TripCard({
     trip,
     onOpen,
     onRequestMenu,
@@ -1021,19 +1062,74 @@ function TripCard({
     trip: DeckTrip;
     /** 点击进入行程（屏层给 router.push）。 */
     onOpen: () => void;
-    /** 长按/双击 → 行程菜单卡（屏层持 setTripMenu）。 */
-    onRequestMenu: () => void;
+    /** 长按/双击 → 行程菜单卡（屏层持 setTripMenu；缺省 = 无菜单面）。 */
+    onRequestMenu?: () => void;
 }) {
     const palette = usePalette();
     const cover = useTripCover(trip.id);
-    const { maxLines, onLayout } = useSummaryLineBudget(20);
     const gestures = useBlockActionGestures({
-        enabled: true,
+        enabled: onRequestMenu != null,
         onBlockAction: onRequestMenu,
         onSinglePress: onOpen,
     });
     // 时间 eyebrow（R5 常住今天）：持续性行程出发后锚定今天（M月D日 · 第 N 天）
     const todayLabel = tripTodayLabel(trip);
+    const desc = trip.description.trim();
+    const textZone = (
+        <>
+            {/* eyebrow 行（11 档）：类型 + 区间/今天节奏在左，状态片在右
+                （色彩只上状态数据） */}
+            <View className="flex-row items-center justify-between">
+                <Text
+                    numberOfLines={1}
+                    className="mr-2 min-w-0 flex-1 text-[11px] text-ink-muted dark:text-inkd-muted"
+                    style={{ fontVariant: ['tabular-nums'] }}
+                >
+                    {'行程 · '}
+                    {todayLabel ?? formatTripSpan(trip)}
+                    {todayLabel == null && trip.dayCount != null ? ` · ${trip.dayCount} 天` : ''}
+                </Text>
+                <StatusChip status={trip.status} />
+            </View>
+            {/* 描述 = 卡面正文声部（16 档）；空描述是邀请不是空白（文案口径） */}
+            <Text
+                numberOfLines={3}
+                className={`mt-3 text-[16px] leading-6 ${
+                    desc ? 'text-ink-text dark:text-inkd-text' : 'text-ink-muted dark:text-inkd-muted'
+                }`}
+            >
+                {desc || '还没写这一页，点开补一句。'}
+            </Text>
+            <View className="min-h-0 flex-1" />
+            {trip.plansTotal > 0 ? (
+                <View className="mb-2">
+                    <ProgressBar done={trip.plansDone} total={trip.plansTotal} />
+                    <Text
+                        className="mt-1 text-[11px] text-ink-muted dark:text-inkd-muted"
+                        style={{ fontVariant: ['tabular-nums'] }}
+                    >
+                        计划完成 {trip.plansDone}/{trip.plansTotal}
+                    </Text>
+                </View>
+            ) : null}
+            <View className="flex-row items-center justify-between">
+                <Text
+                    className="text-[12px] text-ink-muted dark:text-inkd-muted"
+                    style={{ fontVariant: ['tabular-nums'] }}
+                >
+                    {trip.dayCount == null
+                        ? `已写 ${trip.journalDays} 天`
+                        : `已写 ${trip.journalDays}/${trip.dayCount} 天`}
+                </Text>
+                <View className="flex-row items-center">
+                    <Text className="text-[12px] font-medium text-ink-accent dark:text-inkd-accent">
+                        查看行程
+                    </Text>
+                    <LucideChevronRight size={13} color={palette.accent} strokeWidth={2} />
+                </View>
+            </View>
+        </>
+    );
     return (
         <View className="flex-1 flex-col">
             {cover ? (
@@ -1054,72 +1150,22 @@ function TripCard({
                     <TripBadge icon={trip.icon} size="deck" />
                 </DeckCoverPlaceholder>
             )}
-            {/* 文字区 Pressable（原结构保留） */}
-            <Pressable
-                onPress={gestures.onPress}
-                onLongPress={gestures.onLongPress}
-                className="flex-1 flex-col px-6 py-5"
-                accessibilityRole="button"
-                accessibilityLabel="打开行程，长按操作"
-            >
-                {/* eyebrow：类型前缀（行程）+ 时间/区间（持续性感知） */}
-                <Text
-                    numberOfLines={1}
-                    className="text-[11px] text-ink-muted dark:text-inkd-muted"
-                    style={{ fontVariant: ['tabular-nums'] }}
+            {/* 文字区：首页带长按菜单时内层 Pressable 承担手势（deck 外层
+                PanResponder 只认领水平拖拽，两套手势并存的既有口径不变）；
+                堆页无菜单时退化为纯 View，点按交给 deck 壳层 */}
+            {onRequestMenu ? (
+                <Pressable
+                    onPress={gestures.onPress}
+                    onLongPress={gestures.onLongPress}
+                    className="flex-1 flex-col px-6 py-5"
+                    accessibilityRole="button"
+                    accessibilityLabel="打开行程，长按操作"
                 >
-                    {'行程 · '}
-                    {todayLabel ?? formatTripSpan(trip)}
-                    {todayLabel == null && trip.dayCount != null ? ` · ${trip.dayCount} 天` : ''}
-                </Text>
-                <View className="mt-1 flex-row items-center justify-between">
-                    <Text
-                        numberOfLines={1}
-                        className="mr-2 flex-1 text-[15px] font-semibold text-ink-text dark:text-inkd-text"
-                    >
-                        {tripDisplayTitle(trip.title)}
-                    </Text>
-                    <StatusChip status={trip.status} />
-                </View>
-                <View className="mt-2.5 min-h-0 flex-1 overflow-hidden" onLayout={onLayout}>
-                    <SummaryText
-                        maxLines={maxLines}
-                        lineClass="text-[13px] leading-5"
-                        textClass="text-ink-secondary dark:text-inkd-secondary"
-                    >
-                        {trip.description}
-                    </SummaryText>
-                </View>
-                <View className="pt-3">
-                    {trip.plansTotal > 0 ? (
-                        <View className="mb-2">
-                            <ProgressBar done={trip.plansDone} total={trip.plansTotal} />
-                            <Text
-                                className="mt-1 text-[11px] text-ink-muted dark:text-inkd-muted"
-                                style={{ fontVariant: ['tabular-nums'] }}
-                            >
-                                计划完成 {trip.plansDone}/{trip.plansTotal}
-                            </Text>
-                        </View>
-                    ) : null}
-                    <View className="flex-row items-center justify-between">
-                        <Text
-                            className="text-[11px] text-ink-muted dark:text-inkd-muted"
-                            style={{ fontVariant: ['tabular-nums'] }}
-                        >
-                            {trip.dayCount == null
-                                ? `已写 ${trip.journalDays} 天`
-                                : `已写 ${trip.journalDays}/${trip.dayCount} 天`}
-                        </Text>
-                        <View className="flex-row items-center">
-                            <Text className="text-[12px] font-medium text-ink-accent dark:text-inkd-accent">
-                                查看行程
-                            </Text>
-                            <LucideChevronRight size={13} color={palette.accent} strokeWidth={2} />
-                        </View>
-                    </View>
-                </View>
-            </Pressable>
+                    {textZone}
+                </Pressable>
+            ) : (
+                <View className="flex-1 flex-col px-6 py-5">{textZone}</View>
+            )}
         </View>
     );
 }
@@ -1137,13 +1183,14 @@ function DeckCoverPlaceholder({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * 计划卡（2026-11-19 设计打磨，卡面语言 = 日记卡同构）：eyebrow（类型 +
- * 更新时间，tabular）→ 题（15 semibold，无题回退「未命名计划」）→ 引导行
- * （15 text 色 1 行 = 描述或正文首段，无则 muted 占位）→ 正文预算行（13
- * muted）→ 底 meta（字数 + 打开 CTA）。两级声部与日记卡同构——原来单槽
- * 描述的「矮胖」观感根因是缺引导行层级。
+ * 计划卡（v0.4.6 指令 7 重样，首页与 /plans 计划堆共用——library 深取）：
+ * eyebrow（类型 + 建立日期）→ 题（16 semibold，无题回退「未命名计划」）→
+ * 引导行（16 text 1 行 = 描述或正文首段，无则 muted 邀请）→ 正文预算行
+ * （13 muted）→ 底部只留打开 CTA。**「更新于 2026-11-25 08:25」「N 字」
+ * 两类冗余串退场**（方向文档字阶纪律点名的噪音）——计划身份由名字 +
+ * 建立日期 + 内容本身承担，堆里的计划恒为「进行中」，状态词也不重复上卡面。
  */
-function NoteDeckCard({ note }: { note: JournalRow }) {
+export function NoteDeckCard({ note }: { note: JournalRow }) {
     const palette = usePalette();
     const blocks = useMemo(() => parseBlocks(note.blocks), [note]);
     // 引导行回退链：描述（未填跳过）→ 正文首段；正文 = 其余段落 13 muted 预算
@@ -1160,6 +1207,7 @@ function NoteDeckCard({ note }: { note: JournalRow }) {
         return rest.length > 140 ? `${rest.slice(0, 140)}…` : rest;
     }, [note, parts]);
     const { maxLines, onLayout } = useSummaryLineBudget(20);
+    const created = formatDateParts(note.local_date);
     return (
         <View className="flex-1 flex-col">
             <View className="flex-1 flex-col px-6 py-5">
@@ -1169,17 +1217,17 @@ function NoteDeckCard({ note }: { note: JournalRow }) {
                     style={{ fontVariant: ['tabular-nums'] }}
                 >
                     {'计划 · '}
-                    {`更新于 ${formatEventDateTime(note.updated_at)}`}
+                    {created.monthDay} {created.weekday}
                 </Text>
                 <Text
                     numberOfLines={1}
-                    className="mt-1 text-[15px] font-semibold text-ink-text dark:text-inkd-text"
+                    className="mt-1 text-[16px] font-semibold text-ink-text dark:text-inkd-text"
                 >
-                    {note.title?.trim() || '未命名计划'}
+                    {note.title?.trim() || PLAN_TITLE_FALLBACK}
                 </Text>
                 <Text
                     numberOfLines={1}
-                    className={`mt-2.5 text-[15px] leading-6 ${lead ? 'text-ink-text dark:text-inkd-text' : 'text-ink-muted dark:text-inkd-muted'}`}
+                    className={`mt-2.5 text-[16px] leading-6 ${lead ? 'text-ink-text dark:text-inkd-text' : 'text-ink-muted dark:text-inkd-muted'}`}
                 >
                     {lead || '还没有内容，点开写一点。'}
                 </Text>
@@ -1194,13 +1242,7 @@ function NoteDeckCard({ note }: { note: JournalRow }) {
                         </SummaryText>
                     ) : null}
                 </View>
-                <View className="flex-row items-center justify-between pt-3">
-                    <Text
-                        className="text-[11px] text-ink-muted dark:text-inkd-muted"
-                        style={{ fontVariant: ['tabular-nums'] }}
-                    >
-                        {note.word_count} 字
-                    </Text>
+                <View className="flex-row items-center justify-end pt-3">
                     <View className="flex-row items-center">
                         <Text className="text-[12px] font-medium text-ink-accent dark:text-inkd-accent">
                             打开计划
@@ -1214,8 +1256,9 @@ function NoteDeckCard({ note }: { note: JournalRow }) {
 }
 
 /**
- * 事件卡（新增，卡面语言对齐原 deck 卡）：eyebrow（类型前缀 + 更新时间）+
- * 标题 + 短描述 + 底 meta。点击 → /events/[id]；无菜单（R3）。
+ * 事件卡（v0.4.6 指令 7 重样）：eyebrow 类型词 + 标题 + 描述 + 打开 CTA。
+ * 「更新于 …」时间串与「进行中」（deck 恒为 open 事件，状态零信息量）随
+ * 冗余串清理退场。点击 → /events/[id]；无菜单（R3）。
  */
 function EventDeckCard({ event }: { event: EventRow }) {
     const palette = usePalette();
@@ -1223,17 +1266,10 @@ function EventDeckCard({ event }: { event: EventRow }) {
     return (
         <View className="flex-1 flex-col">
             <View className="flex-1 flex-col px-6 py-5">
-                <Text
-                    numberOfLines={1}
-                    className="text-[11px] text-ink-muted dark:text-inkd-muted"
-                    style={{ fontVariant: ['tabular-nums'] }}
-                >
-                    {'事件 · '}
-                    {`更新于 ${formatEventDateTime(event.updated_at)}`}
-                </Text>
+                <Text className="text-[11px] text-ink-muted dark:text-inkd-muted">事件</Text>
                 <Text
                     numberOfLines={2}
-                    className="mt-1 text-[15px] font-semibold text-ink-text dark:text-inkd-text"
+                    className="mt-1 text-[16px] font-semibold text-ink-text dark:text-inkd-text"
                 >
                     {event.title}
                 </Text>
@@ -1250,13 +1286,7 @@ function EventDeckCard({ event }: { event: EventRow }) {
                 ) : (
                     <View className="min-h-0 flex-1" />
                 )}
-                <View className="flex-row items-center justify-between pt-3">
-                    <Text
-                        className="text-[11px] text-ink-muted dark:text-inkd-muted"
-                        style={{ fontVariant: ['tabular-nums'] }}
-                    >
-                        进行中
-                    </Text>
+                <View className="flex-row items-center justify-end pt-3">
                     <View className="flex-row items-center">
                         <Text className="text-[12px] font-medium text-ink-accent dark:text-inkd-accent">
                             打开事件

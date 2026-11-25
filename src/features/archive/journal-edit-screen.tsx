@@ -74,7 +74,7 @@ import {
 } from './journal-logic';
 import { formatDateParts, tripDisplayTitle } from './trip-logic';
 // 计划状态派生（v11）：锁页横幅按终态分文案，禁屏内散落 status 字面量
-import { isPlanFailed } from './plan-logic';
+import { isPlanFailed, planStatusLabel } from './plan-logic';
 import { getJournal, getTrip, mediaByJournalIds } from './db';
 import type { JournalMediaRow, JournalRow, TripRow } from './db';
 import { safeBack } from './ui';
@@ -94,6 +94,14 @@ import {
     type InsertAction,
     usePalette,
 } from './ui';
+
+/**
+ * 计划空标题的展示兜底名（v0.4.6 指令 3）：计划屏头名称位恒渲染，标题列
+ * 空串/纯空白时回退此名——模式对齐 trip-logic.tripDisplayTitle 的
+ * TRIP_TITLE_FALLBACK（行程卡面另有口径：行程名不上堆叠卡面，指令 4；
+ * 计划名上卡面不受影响）。录制归属标签同源复用（见 journalTitleLabel 注）。
+ */
+export const PLAN_TITLE_FALLBACK = '未命名计划';
 
 /**
  * 计划模式的 + 选择器行词表（v8）：全行裁「完成收笔」——收笔/24:00 是日记
@@ -768,7 +776,7 @@ export function JournalEditScreen({
         const current = journalRef.current;
         const label = current?.title?.trim();
         if (label) return label;
-        return current?.kind === 'note' ? '未命名计划' : `${monthDay} 日记`;
+        return current?.kind === 'note' ? PLAN_TITLE_FALLBACK : `${monthDay} 日记`;
     };
 
     /**
@@ -1183,12 +1191,16 @@ export function JournalEditScreen({
                 {/* 屏头（#3 回退：日期行恢复第六轮之前的排版——30px 日期 + 右侧
                     状态同一基线行，整体上移到报头最紧位置）。结构：CloseButton 返回
                     （离开 = 录制中自动停录落库，见 handleLeave）+ TripBadge（trip
-                    模式）+ 名称行（**有标题才渲染**）+ 编辑钮。命中区核算：
+                    模式）+ 名称行 + 编辑钮。命中区核算：
                     - 返回钮：CloseButton 44 圆形触感底盒 in-flow 填满 h-11 行，
                       命中区 = 视觉盒（不传 hitSlop）；
                     - 编辑钮：36 视觉盒 + hitSlop 10 → 56×56 ≥44；
-                    - TripBadge 40 盒为非按压体（ml-2 停车距），无命中核算项。 */}
-                <View className="px-6 pb-2 pt-2">
+                    - TripBadge 40 盒为非按压体（ml-2 停车距），无命中核算项。
+                    计划模式（v0.4.6 用户指令 3「计划顶部导航栏要有计划名称，参考
+                    行程列表的顶部导航栏」）：名称位**恒渲染**——空标题走兜底名
+                    （对齐 trip-detail 屏头的 tripDisplayTitle 模式，见
+                    PLAN_TITLE_FALLBACK 注），24px 屏题档与行程详情屏头等档。 */}
+                <View className={`px-6 pt-2 ${isPlan ? 'pb-3' : 'pb-2'}`}>
                     <View className="h-11 flex-row items-center">
                         <CloseButton icon="back" onPress={handleLeave} />
                         {trip ? (
@@ -1196,7 +1208,14 @@ export function JournalEditScreen({
                                 <TripBadge icon={trip.icon} size="detail" />
                             </View>
                         ) : null}
-                        {title ? (
+                        {isPlan ? (
+                            <Text
+                                numberOfLines={1}
+                                className="ml-2.5 min-w-0 flex-1 text-[24px] font-semibold text-ink-text dark:text-inkd-text"
+                            >
+                                {title || PLAN_TITLE_FALLBACK}
+                            </Text>
+                        ) : title ? (
                             <Text
                                 numberOfLines={1}
                                 className="ml-2.5 min-w-0 flex-1 text-[20px] font-semibold text-ink-text dark:text-inkd-text"
@@ -1204,7 +1223,9 @@ export function JournalEditScreen({
                                 {title}
                             </Text>
                         ) : (
-                            // 无标题：名称位退场，弹性占位把编辑钮推到右缘
+                            // 日记档无标题：名称位退场，弹性占位把编辑钮推到右缘
+                            // （日期行 30px 即本屏屏题，标题槽只是可选别名——计划档
+                            // 无日期行，屏题职责由计划名承担，故计划档恒渲染名称位）
                             <View className="flex-1" />
                         )}
                         {editable ? (
@@ -1245,11 +1266,21 @@ export function JournalEditScreen({
                             </Text>
                         </View>
                     )}
-                    {/* meta 行（#3）：随机安慰话 + 字数/保存状态（tabular-nums 房规）。
-                        安慰话是日记档的情绪装饰，计划档退场（同日期行口径），
-                        字数/保存状态保留 */}
+                    {/* meta 行（#3）：日记档 = 随机安慰话 + 字数/保存状态；计划档
+                        （v0.4.6 指令 3，对齐 trip-detail 屏头两行解剖）= 状态词 +
+                        保存状态。「0 字」类零值噪音不上屏（方向文档字阶纪律）。 */}
                     <View className="mt-0.5 flex-row items-baseline justify-between">
-                        {isPlan ? <View className="flex-1" /> : (
+                        {isPlan ? (
+                            <Text
+                                className={`text-[12px] font-medium ${
+                                    editable
+                                        ? 'text-ink-accent dark:text-inkd-accent'
+                                        : 'text-ink-muted dark:text-inkd-muted'
+                                }`}
+                            >
+                                {planStatusLabel(journal.status)}
+                            </Text>
+                        ) : (
                             <Text
                                 numberOfLines={1}
                                 className="text-[13px] text-ink-secondary dark:text-inkd-secondary"
@@ -1262,16 +1293,28 @@ export function JournalEditScreen({
                             style={{ fontVariant: ['tabular-nums'] }}
                         >
                             {editable
-                                ? `${chars} 字 · ${
+                                ? `${chars > 0 ? `${chars} 字 · ` : ''}${
                                       captureProgress != null
                                           ? `保存中 ${Math.round(captureProgress * 100)}%`
                                           : saving
                                             ? '保存中…'
                                             : savedLabel
                                   }`
-                                : `${chars} 字`}
+                                : chars > 0
+                                  ? `${chars} 字`
+                                  : ''}
                         </Text>
                     </View>
+                    {/* 终态提示行（v0.4.6 指令 3：与 trip-detail 锁定提示同位置同
+                        语言——收进屏头带内，不再悬在屏头下方的独立横幅位）；仅计划档，
+                        日记档收笔横幅保持原位原措辞 */}
+                    {isPlan && !editable ? (
+                        <Text className="mt-1 text-[12px] text-ink-muted dark:text-inkd-muted">
+                            {isPlanFailed(journal)
+                                ? '该计划已标记失败，内容不可再修改。'
+                                : '该计划已完成，内容不可再修改。'}
+                        </Text>
+                    ) : null}
                     {/* 行程上下文行（保留：icon + 行程名，trip 模式） */}
                     {trip ? (
                         <Text
@@ -1290,16 +1333,12 @@ export function JournalEditScreen({
                         {error}
                     </Text>
                 ) : null}
-                {!editable ? (
-                    // 锁页横幅分实体文案（v11）：日记 = 收笔口径不变；计划 =
-                    // 三态终态口径（完成 closed / 失败 failed，标记入口在首页
-                    // 计划卡菜单），「收笔」是日记词表不借给计划
+                {!editable && !isPlan ? (
+                    // 锁页横幅（v11 拆分 → v0.4.6 指令 3 收口）：日记 = 收笔口径不变，
+                    // 仍悬于屏头之下；计划的终态提示上移进屏头带（见上方 meta 行后的
+                    // 提示行），此处不再给计划渲染第二条
                     <Text className="px-6 pb-3 text-[12px] text-ink-muted dark:text-inkd-muted">
-                        {isPlan
-                            ? journal && isPlanFailed(journal)
-                                ? '该计划已标记失败，内容不可再修改。'
-                                : '该计划已完成，内容不可再修改。'
-                            : '本页已收笔，内容不可再修改。'}
+                        本页已收笔，内容不可再修改。
                     </Text>
                 ) : null}
 

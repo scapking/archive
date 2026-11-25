@@ -6,9 +6,9 @@ import { useArchiveStore, type TripCard } from './store';
 import { parseBlocks, previewText, type JournalRow } from './journal-logic';
 // 事件结果：store.searchEvents 返回已装饰行（decorateEvent 在 store 内统一做，
 // 与 /events 列表同口径），此处只消费 Event 类型与状态片。
-import { formatEventDateTime, type Event } from './event-logic';
+import { type Event } from './event-logic';
 import { planStatusLabel } from './plan-logic';
-import { formatDateParts, formatTripSpan, tripDisplayTitle } from './trip-logic';
+import { formatDateParts, formatTripSpan, toLocalDate, tripDisplayTitle } from './trip-logic';
 import { CardDeck, type DeckItem } from './ui';
 import { LoadingView, ScreenHeader } from './ui';
 
@@ -143,7 +143,7 @@ export function SearchResultsScreen({ spec }: { spec: SearchSpec }) {
                     <SearchFace
                         type="日记"
                         status={row.status === 'open' ? '进行中' : '已收笔'}
-                        title={row.title?.trim() || previewText(parseBlocks(row.blocks), 40) || '[媒体]'}
+                        title={row.title?.trim() || previewText(parseBlocks(row.blocks), 40) || '图片与视频'}
                         body={undefined}
                         meta={`${monthDay} ${weekday}`}
                     />
@@ -161,7 +161,7 @@ export function SearchResultsScreen({ spec }: { spec: SearchSpec }) {
                         // 计划三态词表走 plan-logic 单源（v11 起有 failed，
                         // 不再沿用日记「已收笔」二分误标）
                         status={planStatusLabel(row.status)}
-                        title={row.title?.trim() || previewText(parseBlocks(row.blocks), 40) || '[媒体]'}
+                        title={row.title?.trim() || previewText(parseBlocks(row.blocks), 40) || '图片与视频'}
                         body={row.description?.trim() ? row.description : undefined}
                         meta={`${monthDay} ${weekday}`}
                     />
@@ -193,7 +193,9 @@ export function SearchResultsScreen({ spec }: { spec: SearchSpec }) {
                         status={event.statusLabel}
                         title={event.title}
                         body={event.description ?? undefined}
-                        meta={`更新于 ${formatEventDateTime(event.updated_at)}`}
+                        // 「更新于 2026-11-25 08:25」全时间戳退场（指令 7 冗余串）——
+                        // 词表里日期给到日即够（eyebrow 已有状态词，时间只补「何时」）
+                        meta={formatDateParts(toLocalDate(new Date(event.updated_at))).monthDay}
                     />
                 ),
             });
@@ -254,9 +256,10 @@ const TRIP_STATUS_LABELS: Record<TripCard['status'], string> = {
 };
 
 /**
- * 搜索结果卡面（deck 消费，卡壳与页码由 deck 统一绘制；自 search-screen 原样
- * 迁入）：eyebrow = 类型 + 状态（全状态可见——搜索不限完成状态）→ 题 →
- * 描述/预览（可选）→ meta。
+ * 搜索结果卡面（deck 消费，卡壳与页码由 deck 统一绘制；v0.4.6 字阶纪律重排）：
+ * eyebrow（类型 + 状态，全状态可见——搜索不限完成状态）→ 题（16 档）→
+ * 描述/预览（13 档可选）→ meta（12 档）。搜索结果里行程/计划以名字为导航
+ * 主线索，保留标题位（指令 4 退场的是堆叠卡面的行程名，不是搜索词表）。
  */
 function SearchFace({
     type,
@@ -280,17 +283,17 @@ function SearchFace({
             >
                 {status ? `${type} · ${status}` : type}
             </Text>
-            <Text numberOfLines={2} className="mt-1 text-[15px] font-semibold text-ink-text dark:text-inkd-text">
+            <Text numberOfLines={2} className="mt-1 text-[16px] font-semibold text-ink-text dark:text-inkd-text">
                 {title}
             </Text>
             {body ? (
-                <Text numberOfLines={5} className="mt-2 text-[13px] leading-5 text-ink-muted dark:text-inkd-muted">
+                <Text numberOfLines={5} className="mt-2 text-[13px] leading-5 text-ink-secondary dark:text-inkd-secondary">
                     {body}
                 </Text>
             ) : null}
             <View className="min-h-0 flex-1" />
             <Text
-                className="text-[11px] text-ink-muted dark:text-inkd-muted"
+                className="text-[12px] text-ink-muted dark:text-inkd-muted"
                 style={{ fontVariant: ['tabular-nums'] }}
             >
                 {meta}
