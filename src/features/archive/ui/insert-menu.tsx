@@ -15,6 +15,7 @@ import { tintIcon } from './editor-icons';
 import { CloseButton } from './close-button';
 import { isRecordingSupported } from './recorder-overlay';
 import { isVideoCaptureSupported } from './camera-overlay';
+import { PAPER_FLOAT_SHADOW } from './paper-shadow';
 import { usePalette } from './theme';
 
 /**
@@ -151,14 +152,18 @@ export function InsertMenu({
                 className="flex-1 items-center justify-center bg-ink-scrim px-10 dark:bg-inkd-scrim"
                 onPress={onClose}
             >
-                {/* 卡片本体：无边框规范（#13）——border 零，base 底 + 圆角卡 */}
-                <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base">
+                {/* 卡片本体：无边框规范（#13）——border 零，base 底 + 圆角卡；
+                    v0.4.6 容器收紧：p-3/max-w-sm 口径不动，加悬浮投影 */}
+                <Pressable
+                    className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base"
+                    style={PAPER_FLOAT_SHADOW}
+                >
                     {confirming ? (
                         <>
                             {/* 卡头：标题 + 右上关闭（关闭语言统一：X = 关闭整个选择器，
                                 「再写一会儿」钮 = 同义动作的显式确认路径） */}
                             <View className="flex-row items-center justify-between">
-                                <Text className="text-[15px] font-semibold text-ink-text dark:text-inkd-text">
+                                <Text className="text-[16px] font-semibold text-ink-text dark:text-inkd-text">
                                     确认收笔？
                                 </Text>
                                 <CloseButton onPress={onClose} />
@@ -207,7 +212,7 @@ export function InsertMenu({
                         <>
                             {/* 卡头：标题 + 右上关闭（关闭语言统一，替代旧底部取消行） */}
                             <View className="flex-row items-center justify-between">
-                                <Text className="text-[15px] font-semibold text-ink-text dark:text-inkd-text">
+                                <Text className="text-[16px] font-semibold text-ink-text dark:text-inkd-text">
                                     插入什么？
                                 </Text>
                                 <CloseButton onPress={onClose} />
@@ -271,7 +276,7 @@ export function InsertMenu({
                                         accessibilityLabel={row.title}
                                     >
                                         <View pointerEvents="none">{tintIcon(row.icon, palette.secondary)}</View>
-                                        <Text className="flex-1 text-[15px] font-medium text-ink-text dark:text-inkd-text">
+                                        <Text className="flex-1 text-[16px] font-medium text-ink-text dark:text-inkd-text">
                                             {row.title}
                                         </Text>
                                     </Pressable>

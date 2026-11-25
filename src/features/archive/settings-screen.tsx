@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
     ActivityIndicator,
-    Animated,
     KeyboardAvoidingView,
     Platform,
     Pressable,
@@ -34,7 +33,7 @@ import {
     useAppLockMode,
     type AppLockMode,
 } from './app-lock';
-import { ScreenHeader, usePalette, useThemePref, type ThemePref } from './ui';
+import { PAPER_CARD_SHADOW, ScreenHeader, Segmented, usePalette, useThemePref, type ThemePref } from './ui';
 // 深路径注记：useMediaAlignPref/MediaAlign 未入 ui/index.ts 出口（theme.ts 在
 // 本组改动权限外的既有先例——me-screen 同款深取），域内深取。
 import { useMediaAlignPref, type MediaAlign } from './ui/theme';
@@ -43,8 +42,10 @@ import { useMediaAlignPref, type MediaAlign } from './ui/theme';
  * 设置页（新1：Me 的 导出 / App 锁 / 外观 三块合并收口）：入口 = Me 页
  * 「我的内容」卡的「设置」行（点按进入本页），区块自上而下——
  *
- * - **外观**：主题三档 + 图片对齐三档（与 Me 页原外观卡同一行语言：label 左
- *   14px medium + CompactSegmented 右，卡内零 hairline）；
+ * **v0.4.6 重样（方向令 §2/§5，apple 参考）**：iOS 分组列表解剖——
+ * - **外观**：主题三档 + 图片对齐三档（行 label 左 16px + 统一 Segmented 右，
+ *   卡内零 hairline；分段从本页私有 CompactSegmented 收口到 ui/segmented，
+ *   选中态由「换色」改「白块浮起 + 近距投影」）；
  * - **安全**：App 锁三档分段（关闭 / 平衡 / 激进；离开 off 档前探测本机认证
  *   手段，不支持就地说明——放行一个必然把人锁在门外的配置没有意义）；
  * - **备份与恢复（置底，用户指令「导出必须是最底部的」）**：导出全量备份
@@ -53,10 +54,19 @@ import { useMediaAlignPref, type MediaAlign } from './ui/theme';
  *   分享/文件面板；成功静默 + 就地完成横幅（导入有计数反馈），失败进
  *   store.error 红字横幅（屏头下方，可重试）。
  *
+ * 卡与卡的关系靠光影不靠色块（方向令 §1）：surface 纸卡 + PAPER_CARD 柔和
+ * 投影浮在 base 页底上；区块题走 eyebrow 档（11 secondary），页底留一条
+ * 版本号 meta（12 muted）收口最后一段空白——「稀疏即罪」的 settings 落法。
+ *
  * **传输面注记**：跨设备 = 分享面板传同一个 zip 包（AirDrop/网盘/IM 任选）；
  * 局域网设备直传依赖常驻 HTTP 服务，Expo Go 运行时无此能力（见 export.ts
  * 头注），未实现。
  */
+
+/** 打包版本号（页脚 meta 用）：package.json 由 metro JSON 导入直读，只显
+ *  version 一段防映射表整体进包。 */
+import packageJson from '../../package.json';
+const APP_VERSION: string = (packageJson as { version: string }).version;
 
 /** 导入在途/完成横幅自动消退时长（ms）：完成态确认是一次性反馈非常驻状态。 */
 const IMPORT_NOTICE_TTL_MS = 6000;
@@ -207,20 +217,26 @@ export function SettingsScreen() {
                 <ScrollView
                     contentContainerStyle={{
                         paddingHorizontal: 24,
-                        paddingBottom: insets.bottom + 32,
+                        paddingBottom: insets.bottom + 40,
                     }}
                     keyboardShouldPersistTaps="handled"
                 >
-                    {/* store.error 通道（App 锁探测/备份失败等）统一在此可见 */}
+                    {/* store.error 通道（App 锁探测/备份失败等）统一在此可见：
+                        红字裸行升级为 tinted 横幅卡（方向令 §7——错误是设计面，
+                        不是贴在留白上的一行小字） */}
                     {storeError ? (
-                        <Text className="mt-3 text-[12px] text-ink-negative dark:text-inkd-negative">
-                            {storeError}
-                        </Text>
+                        <View className="mt-2 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">
+                            <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
+                                {storeError}
+                            </Text>
+                        </View>
                     ) : null}
                     {importNotice ? (
-                        <Text className="mt-3 text-[12px] text-ink-secondary dark:text-inkd-secondary">
-                            {importNotice.text}
-                        </Text>
+                        <View className="mt-2 rounded-control bg-ink-surface px-4 py-3 dark:bg-inkd-surface">
+                            <Text className="text-[13px] leading-5 text-ink-secondary dark:text-inkd-secondary">
+                                {importNotice.text}
+                            </Text>
+                        </View>
                     ) : null}
 
                     <AppearanceSection />
@@ -230,42 +246,49 @@ export function SettingsScreen() {
                     />
 
                     {/* 备份与恢复（用户指令：导出置底——区块排在页面最末） */}
-                    <View className="mt-6">
-                        <Text className="mb-3 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                            备份与恢复
-                        </Text>
-                        <View className="rounded-card bg-ink-surface dark:bg-inkd-surface">
-                            {rows.map((row, index) => {
-                                const busy = busyAction === row.action;
-                                const locked = busyAction != null;
-                                return (
-                                    <Pressable
-                                        key={row.action}
-                                        onPress={() => void runBackupAction(row.action)}
-                                        disabled={locked}
-                                        // 行级 active 高亮（iOS 设置列表式，同 Me 内容卡
-                                        // 统一按压语言）；行间贴靠 px-4 左缘统一
-                                        className={`flex-row items-center gap-3 px-4 py-3.5 active:bg-ink-raised dark:active:bg-inkd-raised ${
-                                            index === 0 ? '' : 'mt-0.5'
-                                        } ${locked && !busy ? 'opacity-40' : ''}`}
-                                        accessibilityRole="button"
-                                        accessibilityLabel={row.title}
-                                    >
-                                        <View className="w-6 items-center">
-                                            {row.icon}
-                                        </View>
-                                        <Text className="min-w-0 flex-1 text-[14px] font-medium text-ink-text dark:text-inkd-text">
-                                            {row.title}
-                                        </Text>
-                                        {busy ? (
-                                            // in-flight：行尾 spinner（动作可见）
-                                            <ActivityIndicator size="small" color={palette.secondary} />
-                                        ) : null}
-                                    </Pressable>
-                                );
-                            })}
-                        </View>
+                    <SectionEyebrow label="备份与恢复" />
+                    <View className="rounded-card bg-ink-surface px-2.5 py-1.5 dark:bg-inkd-surface" style={PAPER_CARD_SHADOW}>
+                        {rows.map((row) => {
+                            const busy = busyAction === row.action;
+                            const locked = busyAction != null;
+                            return (
+                                <Pressable
+                                    key={row.action}
+                                    onPress={() => void runBackupAction(row.action)}
+                                    disabled={locked}
+                                    // 行级 active 高亮（iOS 设置列表式，同 Me 内容卡
+                                    // 统一按压语言）；行贴靠零线条；px 内缩让按压
+                                    // 高亮块带圆角收在卡缘内
+                                    className={`flex-row items-center gap-4 rounded-control px-2.5 py-3 active:bg-ink-raised dark:active:bg-inkd-raised ${
+                                        locked && !busy ? 'opacity-40' : ''
+                                    }`}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={row.title}
+                                >
+                                    <View className="w-6 items-center">
+                                        {row.icon}
+                                    </View>
+                                    <Text className="min-w-0 flex-1 text-[16px] text-ink-text dark:text-inkd-text">
+                                        {row.title}
+                                    </Text>
+                                    {busy ? (
+                                        // in-flight：行尾 spinner（动作可见）
+                                        <ActivityIndicator size="small" color={palette.secondary} />
+                                    ) : null}
+                                </Pressable>
+                            );
+                        })}
                     </View>
+
+                    {/* 页脚版本 meta（12 muted 档收口）：备份区之下的死白由这行
+                        最小必要信息收尾（方向令 §2「eyebrow 二字类型词 + 最小必要
+                        meta」；v0.4.6 起页脚版本号也是排障口径的落点） */}
+                    <Text
+                        className="mt-8 text-center text-[12px] text-ink-faint dark:text-inkd-faint"
+                        style={{ fontVariant: ['tabular-nums'] }}
+                    >
+                        {`Archive ${APP_VERSION}`}
+                    </Text>
                 </ScrollView>
             </View>
         </KeyboardAvoidingView>
@@ -273,9 +296,26 @@ export function SettingsScreen() {
 }
 
 /**
- * 外观卡（自 Me 页外观卡原样迁入：主题三档 + 图片对齐三档两行，卡内零
- * hairline；CompactSegmented 同文件私有——Me 页外观块已整体迁入本页，原
- * 私有实现随迁，两页不再共用此组件）。
+ * 区块 eyebrow（方向令 §2 字阶档：11 / secondary / medium，区块题一律二字或短语）。
+ * `first` = 首个区块：屏头 pb-3 已给 12dp，顶距收到 2（mb-2 之外只差 2dp 节奏）；
+ * 其余区块用 mt-7（28dp）拉开分组呼吸带。
+ */
+function SectionEyebrow({ label, first = false }: { label: string; first?: boolean }) {
+    return (
+        <Text
+            className={`mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary ${
+                first ? 'mt-0.5' : 'mt-7'
+            }`}
+        >
+            {label}
+        </Text>
+    );
+}
+
+/**
+ * 外观卡（主题三档 + 图片对齐三档两行，卡内零 hairline）：v0.4.6 起分段
+ * 控件收口到 ui/segmented（本页私有 CompactSegmented 退役——Me 页外观块
+ * 早已整体迁入本页，两页不共用组件的旧注随之作废）。
  */
 function AppearanceSection() {
     const [pref, setPref] = useThemePref();
@@ -291,34 +331,29 @@ function AppearanceSection() {
         { key: 'right', label: '靠右' },
     ];
     return (
-        <View className="mt-4">
-            <Text className="mb-3 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                外观
-            </Text>
-            <View className="rounded-card bg-ink-surface dark:bg-inkd-surface">
-                <View className="flex-row items-center justify-between px-4 pt-4">
-                    <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">主题</Text>
-                    <CompactSegmented options={themeOptions} value={pref} onChange={setPref} labelPrefix="主题" />
+        <>
+            <SectionEyebrow label="外观" first />
+            <View className="rounded-card bg-ink-surface px-5 py-1 dark:bg-inkd-surface" style={PAPER_CARD_SHADOW}>
+                <View className="flex-row items-center justify-between gap-3 py-2.5">
+                    <Text className="text-[16px] text-ink-text dark:text-inkd-text">主题</Text>
+                    <Segmented<ThemePref> options={themeOptions} value={pref} onChange={setPref} labelPrefix="主题" />
                 </View>
-                <View className="mb-1 mt-2 flex-row items-center justify-between px-4 pb-3">
-                    <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">图片对齐</Text>
-                    <CompactSegmented options={alignOptions} value={align} onChange={setAlign} labelPrefix="图片对齐" />
+                <View className="flex-row items-center justify-between gap-3 py-2.5">
+                    <Text className="text-[16px] text-ink-text dark:text-inkd-text">图片对齐</Text>
+                    <Segmented<MediaAlign> options={alignOptions} value={align} onChange={setAlign} labelPrefix="图片对齐" />
                 </View>
             </View>
-        </View>
+        </>
     );
 }
 
 /**
- * 安全卡（App 锁三档分段 + 防截屏两档，两行同构：图标+label 左、CompactSegmented
- * 右，行结构与 padding 照抄 AppearanceSection 的主题/图片对齐两行——2026-11-20
- * 回归同行排版：分段控件已收窄（CompactSegmented 紧凑几何），App 锁/防截屏
- * label 均为短词且 modeHint 长说明行已删，同行不再有溢出/挤压风险，与外观卡
- * 完全对齐，弃用 2026-11-19 为溢出临时改的上下两段结构）。
- * 切档即存（archiveConfig 持久化）：App 锁由 AppLockGate 订阅同一生效档即时
- * 生效，离开 off 档的探测在屏层 setAppLockMode 完成，不支持时经 store.error
- * 通道说明、不写配置；防截屏由屏层 setPreventCapture 先执行系统能力、成功才
- * 写档（失败分段保持原档），冷启生效由根级 effect 读档应用（接线见 _layout）。
+ * 安全卡（App 锁三档分段 + 防截屏两档，两行同构：图标+label 左、Segmented
+ * 右，行解剖与外观卡逐 dp 相同）。切档即存（archiveConfig 持久化）：App 锁由
+ * AppLockGate 订阅同一生效档即时生效，离开 off 档的探测在屏层 setAppLockMode
+ * 完成，不支持时经 store.error 通道说明、不写配置；防截屏由屏层
+ * setPreventCapture 先执行系统能力、成功才写档（失败分段保持原档），冷启生效
+ * 由根级 effect 读档应用（接线见 _layout）。
  */
 function SecuritySection({
     onChange,
@@ -342,41 +377,27 @@ function SecuritySection({
         { key: 'on', label: '开启' },
     ];
     return (
-        <View className="mt-6">
-            <Text className="mb-3 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                安全
-            </Text>
-            {/* 卡体不带 px/py（同外观卡）：上下边距由首行 pt-4 / 末行 mb-1 pb-3
-                承担，行结构照抄 AppearanceSection 两行 */}
-            <View className="rounded-card bg-ink-surface dark:bg-inkd-surface">
-                {/* App 锁行（同主题行排版：label 左、分段右同一行；左侧图标+
-                    label 组是相对外观行唯一差异——无图标容器、无两行说明） */}
-                <View className="flex-row items-center justify-between px-4 pt-4">
+        <>
+            <SectionEyebrow label="安全" />
+            <View className="rounded-card bg-ink-surface px-5 py-1 dark:bg-inkd-surface" style={PAPER_CARD_SHADOW}>
+                {/* App 锁行（label 左、分段右同一行；图标 18 secondary 是相对
+                    外观行的唯一差异——安全语义的图标锚，无两行说明） */}
+                <View className="flex-row items-center justify-between gap-3 py-2.5">
                     <View className="flex-row items-center gap-3">
                         <LucideLock size={18} strokeWidth={1.9} color={palette.secondary} />
-                        <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
-                            App 锁
-                        </Text>
+                        <Text className="text-[16px] text-ink-text dark:text-inkd-text">App 锁</Text>
                     </View>
-                    <CompactSegmented
-                        options={modeOptions}
-                        value={mode}
-                        onChange={onChange}
-                        labelPrefix="App 锁"
-                    />
+                    <Segmented options={modeOptions} value={mode} onChange={onChange} labelPrefix="App 锁" />
                 </View>
-                {/* 防截屏行（同图片对齐行排版，与 App 锁行同构：图标+label 左、
-                    分段右）。平台差异不就地形文案（分段内不放长说明）：
-                    Android 真防，iOS 近似防护，web 仅存档，能力注与 config
-                    字段注已写 */}
-                <View className="mb-1 mt-2 flex-row items-center justify-between px-4 pb-3">
+                {/* 防截屏行（与 App 锁行同构）。平台差异不就地形文案（分段内不放
+                    长说明）：Android 真防，iOS 近似防护，web 仅存档，能力注与
+                    config 字段注已写 */}
+                <View className="flex-row items-center justify-between gap-3 py-2.5">
                     <View className="flex-row items-center gap-3">
                         <LucideShield size={18} strokeWidth={1.9} color={palette.secondary} />
-                        <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
-                            防截屏
-                        </Text>
+                        <Text className="text-[16px] text-ink-text dark:text-inkd-text">防截屏</Text>
                     </View>
-                    <CompactSegmented
+                    <Segmented
                         options={captureOptions}
                         value={preventCapture ? 'on' : 'off'}
                         onChange={(key) => onSetPreventCapture(key === 'on')}
@@ -384,102 +405,6 @@ function SecuritySection({
                     />
                 </View>
             </View>
-        </View>
-    );
-}
-
-/**
- * 紧凑分段滑块（自 Me 页原样迁入，几何/命中/动画取舍注释见原实现——逐段
- * 实测宽度 + 内联 style 滑块 + 轨道 overflow-hidden；Animated 系组件的
- * className 在 web 被 css-interop 静默丢弃，几何一律内联 style）。
- */
-function CompactSegmented<T extends string>({
-    options,
-    value,
-    onChange,
-    labelPrefix,
-}: {
-    options: Array<{ key: T; label: string }>;
-    value: T;
-    onChange: (key: T) => void;
-    labelPrefix: string;
-}) {
-    const [segWidths, setSegWidths] = useState<number[]>([]);
-    const placedRef = useRef(false);
-    const sliderX = useRef(new Animated.Value(0)).current;
-    const activeIndex = Math.max(0, options.findIndex((option) => option.key === value));
-    // 逐段实测：offsets = 前缀和（段间零间隙，实测段宽和恒等于轨道内容区宽）
-    const measured = segWidths.length === options.length && segWidths.every((width) => width > 0);
-    let acc = 0;
-    const offsets = options.map((_, index) => {
-        const offset = acc;
-        acc += segWidths[index] ?? 0;
-        return offset;
-    });
-    const segW = measured ? segWidths[activeIndex] : 0;
-    useEffect(() => {
-        if (!measured) return;
-        const target = offsets[activeIndex];
-        if (!placedRef.current) {
-            placedRef.current = true;
-            sliderX.setValue(target);
-            return;
-        }
-        const spring = Animated.spring(sliderX, { toValue: target, friction: 9, useNativeDriver: true });
-        spring.start();
-        return () => spring.stop();
-        // offsets 随 segWidths 派生（O(段数) 每渲染直算），activeIndex 选中变更即重瞄准
-    }, [activeIndex, measured, offsets, sliderX]);
-    return (
-        <View className="flex-row overflow-hidden rounded-control bg-ink-border p-1 dark:bg-inkd-border">
-            {/* 滑块：纯视觉层先渲染（段落文字浮其上），几何内联 style（web 可靠性
-                见组件注），涂装在内层普通 View；实测未就绪时宽 0 不可见 */}
-            <Animated.View
-                pointerEvents="none"
-                style={{
-                    position: 'absolute',
-                    top: 4,
-                    bottom: 4,
-                    left: 4,
-                    width: segW,
-                    transform: [{ translateX: sliderX }],
-                }}
-            >
-                <View className="h-full w-full rounded-thumb bg-ink-base dark:bg-inkd-base" />
-            </Animated.View>
-            {options.map((option, index) => {
-                const active = value === option.key;
-                return (
-                    <Pressable
-                        key={option.key}
-                        onPress={() => onChange(option.key)}
-                        hitSlop={{ top: 4, bottom: 4, left: 0, right: 0 }}
-                        className="h-8 items-center justify-center px-4"
-                        onLayout={(event) =>
-                            setSegWidths((prev) => {
-                                const width = event.nativeEvent.layout.width;
-                                if (prev[index] === width) return prev;
-                                const next = [...prev];
-                                next[index] = width;
-                                return next;
-                            })
-                        }
-                        accessibilityRole="button"
-                        accessibilityState={{ selected: active }}
-                        accessibilityLabel={`${labelPrefix}：${option.label}`}
-                    >
-                        <Text
-                            className={`text-[12px] ${
-                                active
-                                    ? 'font-medium text-ink-text dark:text-inkd-text'
-                                    : 'text-ink-muted dark:text-inkd-muted'
-                            }`}
-                        >
-                            {option.label}
-                        </Text>
-                    </Pressable>
-                );
-            })}
-        </View>
+        </>
     );
 }

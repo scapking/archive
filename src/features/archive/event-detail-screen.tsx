@@ -69,7 +69,6 @@ import {
     removeBlock,
     removeBlocks,
     resolvePendingBlock,
-    wordCount,
     type JournalBlock,
 } from './journal-logic';
 import {
@@ -79,6 +78,7 @@ import {
     formatAudioTime,
     InsertMenu,
     LoadingView,
+    PAPER_FLOAT_SHADOW,
     safeBack,
     usePalette,
     type InsertAction,
@@ -91,14 +91,16 @@ import { EventSettingsCard } from './ui/event-settings-card';
 /**
  * 事件详情编辑页（/events/[id]，计划编辑式 + 工单状态头 + 设置卡）：
  *
- * - **状态头（工单语言，展示 + 编辑入口）**：标题行（**只读展示**——标题编辑
- *   收进设置卡，编辑后经 refreshMeta 权威回读即时刷新）+ 设置钮（LucideSettings，
- *   36 视觉盒 + hitSlop 10 → 56×56 ≥44，journal-edit 屏头编辑钮同款几何）+
- *   状态片（点按打开设置卡——元信息编辑统一收口，不再直切）+ 时间线（创建/
- *   最近更新，event-logic.eventTimeline 单一口径）+ GPS 坐标行（**点按复制**
- *   clipboard——只读快捷动作保留，编辑（重定位/清除）在设置卡）+ 处理人/对象
- *   行（点按打开设置卡）+ 手机号/邮箱行（v7，有值才显示——独立联系方式字段，
- *   文字前缀「电话/邮箱」同一轻量解剖，点按打开设置卡）+ 字数/保存 meta 行；
+ * - **状态头（工单语言，展示 + 编辑入口，v0.4.6 收敛）**：标题行（**只读展示**
+ *   ——标题编辑收进设置卡，编辑后经 refreshMeta 权威回读即时刷新；屏题档
+ *   24 semibold，与 ScreenHeader 同字阶）+ 设置钮（LucideSettings，44 圆形
+ *   触感底盒 + hitSlop 10，与返回钮同解剖左右呼应）+ 状态片（点按打开设置卡
+ *   ——元信息编辑统一收口，不再直切）+ 时间线（只留「创建」一档，方向令 §2
+ *   「更新于 …」冗余串退役；更新事实在设置卡时间线只读位）+ 轻量 meta 行
+ *   （GPS 坐标 **点按复制** / 处理人 / 对象 / 电话 / 邮箱——**只展示有值的
+ *   字段**，「未设置/未定位」占位噪音退役，全缺位整行不渲染；点按打开设置卡
+ *   编辑）+ 保存落点闪现行（仅 savedAt 后一行「已保存 HH:mm」，字数与
+ *   「自动保存开启」常驻串退役）；
  * - **正文 = BlockEditor 复用**（事件 blocks 与 journal 块模型同构，JournalBlock
  *   不变；mediaId → event_media 行经 toJournalMediaRow 适配器喂编辑器的
  *   mediaById 契约——行结构同构，仅 journal_id 槽位以 event_id 占位）：
@@ -591,7 +593,6 @@ export function EventDetailScreen() {
     const pickingRef = useRef(false);
 
     const mediaById = useMemo(() => new Map(media.map((row) => [row.id, row])), [media]);
-    const chars = useMemo(() => wordCount(blocks), [blocks]);
 
     /**
      * 插入流本体（**后台异步并行**）：pending 占位**同步**插入（即时反馈），
@@ -1021,15 +1022,15 @@ export function EventDetailScreen() {
 
     if (!event) return <LoadingView />;
 
+    // 冗余串收敛（方向令 §2）：报头时间线只留「创建」一档（「更新于 …」串
+    // 退役——更新事实在设置卡时间线只读位查），未设置字段不再顶「未设置」
+    // 占位；「N 字 · 自动保存开启」整行退役，仅保存落点闪现「已保存 HH:mm」。
     const timeline = eventTimeline(event);
-    const timelineText = timeline.edited
-        ? `创建 ${timeline.createdText} · 更新 ${timeline.updatedText}`
-        : `创建 ${timeline.createdText}`;
     const hasGps = event.gps_lat != null && event.gps_lng != null;
     const gpsText = hasGps ? `${event.gps_lat}, ${event.gps_lng}` : '';
-    const savedLabel = savedAt
+    const savedText = savedAt
         ? `已保存 ${String(new Date(savedAt).getHours()).padStart(2, '0')}:${String(new Date(savedAt).getMinutes()).padStart(2, '0')}`
-        : '自动保存开启';
+        : null;
 
     return (
         <KeyboardAvoidingView
@@ -1053,12 +1054,13 @@ export function EventDetailScreen() {
                         <CloseButton icon="back" onPress={handleLeave} />
                         <Text
                             numberOfLines={1}
-                            className="ml-2.5 min-w-0 flex-1 text-[20px] font-semibold text-ink-text dark:text-inkd-text"
+                            className="ml-2.5 min-w-0 flex-1 text-[24px] font-semibold text-ink-text dark:text-inkd-text"
                         >
                             {event.title}
                         </Text>
-                        {/* 设置入口（全部元信息编辑的统一门）：journal-edit
-                            屏头编辑钮同款几何（36 盒 + hitSlop 10） */}
+                        {/* 设置入口（全部元信息编辑的统一门）：v0.4.6 起与
+                            CloseButton 同一圆钮解剖（44 触感底盒 + 裸图标，
+                            描边方盒退役——报头两个圆钮左右呼应，一个回一个调） */}
                         <BouncyPressable
                             onPress={() => setSettingsOpen(true)}
                             scaleTo={0.9}
@@ -1067,15 +1069,15 @@ export function EventDetailScreen() {
                             <View
                                 accessibilityRole="button"
                                 accessibilityLabel="事件设置"
-                                className="h-9 w-9 items-center justify-center rounded-control border border-ink-border bg-ink-surface dark:border-inkd-border dark:bg-inkd-surface"
+                                className="h-11 w-11 items-center justify-center rounded-full bg-ink-raised dark:bg-inkd-raised"
                             >
-                                <LucideSettings size={16} strokeWidth={1.9} color={palette.secondary} />
+                                <LucideSettings size={18} strokeWidth={1.9} color={palette.secondary} />
                             </View>
                         </BouncyPressable>
                     </View>
-                    {/* 状态 + 时间线行：状态片点按打开设置卡（状态编辑统一收口
-                        设置卡——快切直改已收编，避免双编辑面漂移）；时间线
-                        tabular-nums */}
+                    {/* 状态 + 创建时间行：状态片点按打开设置卡（状态编辑统一收口
+                        设置卡——快切直改已收编，避免双编辑面漂移）；时间线只留
+                        「创建」一档（方向令 §2 冗余串退役），tabular-nums */}
                     <View className="mt-2 flex-row items-center gap-2">
                         <BouncyPressable
                             onPress={() => setSettingsOpen(true)}
@@ -1094,97 +1096,79 @@ export function EventDetailScreen() {
                             className="min-w-0 flex-1 text-[11px] text-ink-muted dark:text-inkd-muted"
                             style={{ fontVariant: ['tabular-nums'] }}
                         >
-                            {timelineText}
+                            {`创建 ${timeline.createdText}`}
                         </Text>
                     </View>
-                    {/* 三段轻量展示行（各自独立命中体）：GPS（有坐标点按复制——
-                        只读快捷动作；无坐标只读 muted 段）、处理人、对象（点按
-                        打开设置卡编辑）；hitSlop 6 = 12px 命中外扩，段间距 12
-                        ≥ 6+6 相切不重叠 */}
-                    <View className="mt-2 flex-row items-center gap-3">
-                        {hasGps ? (
-                            <Pressable
-                                onPress={() => void copyGps()}
-                                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                                className="flex-row items-center gap-1.5 active:opacity-70"
-                                accessibilityRole="button"
-                                accessibilityLabel="复制坐标"
-                            >
-                                <LucideMapPin size={13} strokeWidth={1.9} color={palette.accent} />
-                                <Text
-                                    numberOfLines={1}
-                                    className="text-[12px] text-ink-secondary dark:text-inkd-secondary"
-                                    style={{ fontVariant: ['tabular-nums'] }}
+                    {/* 轻量 meta 行（v0.4.6 收敛）：只展示**已有值**的字段（GPS
+                        点按复制 / 处理人 / 对象 / 电话 / 邮箱），未设置不再顶
+                        「未设置/未定位」占位噪音（方向令 §2「最小必要 meta」）；
+                        全部缺位时整行不渲染。各段独立命中体，hitSlop 6 = 12px
+                        外扩，段间距 gap-3(12) ≥ 6+6 相切不重叠（旧核算保留） */}
+                    {hasGps || event.handled_by || (event.subject_kind && event.subject_value) || event.phone || event.email ? (
+                        <View className="mt-2 flex-row flex-wrap items-center gap-x-3 gap-y-1">
+                            {hasGps ? (
+                                <Pressable
+                                    onPress={() => void copyGps()}
+                                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                    className="flex-row items-center gap-1.5 active:opacity-70"
+                                    accessibilityRole="button"
+                                    accessibilityLabel="复制坐标"
                                 >
-                                    {gpsText}
-                                </Text>
-                                {gpsCopied ? (
-                                    <View className="ml-0.5" pointerEvents="none">
-                                        <LucideCheck size={12} strokeWidth={2} color={palette.accent} />
-                                    </View>
-                                ) : null}
-                            </Pressable>
-                        ) : (
-                            // 无坐标：只读 muted 段（非按压体——点了没反应是可感知缺陷）
-                            <View className="flex-row items-center gap-1.5">
-                                <LucideMapPin size={13} strokeWidth={1.9} color={palette.muted} />
-                                <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">
-                                    未定位
-                                </Text>
-                            </View>
-                        )}
-                        <Pressable
-                            onPress={() => setSettingsOpen(true)}
-                            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                            className="min-w-0 flex-row items-center active:opacity-70"
-                            accessibilityRole="button"
-                            accessibilityLabel={`处理人：${event.handled_by ?? '未设置'}，点按在设置中编辑`}
-                        >
-                            <Text
-                                numberOfLines={1}
-                                className="shrink text-[12px] text-ink-secondary dark:text-inkd-secondary"
-                            >
-                                {event.handled_by ? `处理人 ${event.handled_by}` : '处理人 未设置'}
-                            </Text>
-                        </Pressable>
-                        <Pressable
-                            onPress={() => setSettingsOpen(true)}
-                            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                            className="min-w-0 flex-1 flex-row items-center active:opacity-70"
-                            accessibilityRole="button"
-                            accessibilityLabel={`对象：${
-                                event.subject_kind && event.subject_value
-                                    ? `${
-                                          eventSubjectKindLabel(event.subject_kind)
-                                              ? `${eventSubjectKindLabel(event.subject_kind)} `
-                                              : ''
-                                      }${event.subject_value}`
-                                    : '未设置'
-                            }，点按在设置中编辑`}
-                        >
-                            <Text
-                                numberOfLines={1}
-                                className="shrink text-[12px] text-ink-secondary dark:text-inkd-secondary"
-                            >
-                                {event.subject_kind && event.subject_value
-                                    ? `对象 ${
-                                          eventSubjectKindLabel(event.subject_kind)
-                                              ? `${eventSubjectKindLabel(event.subject_kind)} `
-                                              : ''
-                                      }${event.subject_value}`
-                                    : '对象 未设置'}
-                            </Text>
-                        </Pressable>
-                    </View>
-                    {/* 手机号/邮箱展示行（v7，有值才显示——独立联系方式字段，
-                        与处理人/对象行同一轻量解剖：文字前缀「电话/邮箱」+
-                        12px secondary 档 + 点按打开设置卡编辑；core/icons 无
-                        LucidePhone/LucideMail，不自造图标沿用文字前缀；三端
-                        纯文本展示，不做 tel:/mailto: 链接——展示口径一致）：
-                        hitSlop 6 = 12px 命中外扩，段间距 gap-3(12) ≥ 6+6 相切
-                        不重叠（与上行同口径） */}
-                    {event.phone || event.email ? (
-                        <View className="mt-2 flex-row items-center gap-3">
+                                    <LucideMapPin size={13} strokeWidth={1.9} color={palette.accent} />
+                                    <Text
+                                        numberOfLines={1}
+                                        className="text-[12px] text-ink-secondary dark:text-inkd-secondary"
+                                        style={{ fontVariant: ['tabular-nums'] }}
+                                    >
+                                        {gpsText}
+                                    </Text>
+                                    {gpsCopied ? (
+                                        <View className="ml-0.5" pointerEvents="none">
+                                            <LucideCheck size={12} strokeWidth={2} color={palette.accent} />
+                                        </View>
+                                    ) : null}
+                                </Pressable>
+                            ) : null}
+                            {event.handled_by ? (
+                                <Pressable
+                                    onPress={() => setSettingsOpen(true)}
+                                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                    className="min-w-0 flex-row items-center active:opacity-70"
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`处理人：${event.handled_by}，点按在设置中编辑`}
+                                >
+                                    <Text
+                                        numberOfLines={1}
+                                        className="shrink text-[12px] text-ink-secondary dark:text-inkd-secondary"
+                                    >
+                                        {`处理人 ${event.handled_by}`}
+                                    </Text>
+                                </Pressable>
+                            ) : null}
+                            {event.subject_kind && event.subject_value ? (
+                                <Pressable
+                                    onPress={() => setSettingsOpen(true)}
+                                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                    className="min-w-0 flex-row items-center active:opacity-70"
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`对象：${
+                                        eventSubjectKindLabel(event.subject_kind)
+                                            ? `${eventSubjectKindLabel(event.subject_kind)} `
+                                            : ''
+                                    }${event.subject_value}，点按在设置中编辑`}
+                                >
+                                    <Text
+                                        numberOfLines={1}
+                                        className="shrink text-[12px] text-ink-secondary dark:text-inkd-secondary"
+                                    >
+                                        {`对象 ${
+                                            eventSubjectKindLabel(event.subject_kind)
+                                                ? `${eventSubjectKindLabel(event.subject_kind)} `
+                                                : ''
+                                        }${event.subject_value}`}
+                                    </Text>
+                                </Pressable>
+                            ) : null}
                             {event.phone ? (
                                 <Pressable
                                     onPress={() => setSettingsOpen(true)}
@@ -1205,7 +1189,7 @@ export function EventDetailScreen() {
                                 <Pressable
                                     onPress={() => setSettingsOpen(true)}
                                     hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                                    className="min-w-0 flex-1 flex-row items-center active:opacity-70"
+                                    className="min-w-0 flex-row items-center active:opacity-70"
                                     accessibilityRole="button"
                                     accessibilityLabel={`邮箱：${event.email}，点按在设置中编辑`}
                                 >
@@ -1219,13 +1203,16 @@ export function EventDetailScreen() {
                             ) : null}
                         </View>
                     ) : null}
-                    {/* meta 行：字数 + 保存状态（journal masthead meta 同语言） */}
-                    <Text
-                        className="mt-2 text-[11px] text-ink-muted dark:text-inkd-muted"
-                        style={{ fontVariant: ['tabular-nums'] }}
-                    >
-                        {`${chars} 字 · ${savedLabel}`}
-                    </Text>
+                    {/* 保存落点闪现（11 muted tabular；「N 字 · 自动保存开启」
+                        常驻噪音已退役——保存过才有一行，没保存就什么都没有） */}
+                    {savedText ? (
+                        <Text
+                            className="mt-2 text-[11px] text-ink-faint dark:text-inkd-faint"
+                            style={{ fontVariant: ['tabular-nums'] }}
+                        >
+                            {savedText}
+                        </Text>
+                    ) : null}
                 </View>
                 {error ? (
                     // 错误横幅下移一档（报头群 → 24dp 呼吸带，对齐 journal-edit 口径）
@@ -1585,7 +1572,12 @@ function EventBlockActionCard({
                 onPress={onClose}
                 accessibilityLabel="关闭块操作"
             >
-                <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base">
+                {/* 容器收紧（v0.4.6）：max-w-sm p-3 口径不动，卡身加悬浮投影
+                    ——scrim 之下的真悬浮物才有影（taste 房规同款豁免） */}
+                <Pressable
+                    className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base"
+                    style={PAPER_FLOAT_SHADOW}
+                >
                     {/* 卡头（关闭语言统一 #8）：题 + 右上关闭钮；堆叠锚块标明
                         「这一堆」（操作语义 = 整组），单块保持「这一块」 */}
                     <View className="flex-row items-center justify-between pl-4 pr-1.5 pt-0.5">
@@ -1616,7 +1608,7 @@ function EventBlockActionCard({
                             >
                                 <View pointerEvents="none">{row.icon}</View>
                                 <Text
-                                    className={`flex-1 text-[15px] font-medium ${
+                                    className={`flex-1 text-[16px] font-medium ${
                                         row.danger
                                             ? 'text-ink-negative dark:text-inkd-negative'
                                             : 'text-ink-text dark:text-inkd-text'

@@ -18,11 +18,12 @@ type TextInputRef = ComponentRef<typeof TextInput>;
  * （月首位 ≥2、日首位 ≥4），满位跳段保留，失焦对单数字段补零——自然输入
  * 2026 2 28 全程自动归一为 '2026-02-28'。
  *
- * 无边框输入（#13 输入框规范）：border 零、bg-ink-surface 接近色底；聚焦态
- * 底色切 raised 亮度变化（浅色加深 / 深色提亮，双主题同一 token 对）。聚焦
- * 用 onFocus/onBlur 本地状态而非 css-interop 的 focus: 伪类——与 trip-form
- * BorderlessInput 同一实现口径，三端行为确定不赌编译产物。条件三元两侧
- * 变量集恒等（bg + dark:bg 同槽位成对），符合 className 铁律。
+ * 无边框输入（#13 输入框规范）：border 零、raised 浅井底（v0.4.6 字阶轮
+ * 统一：与搜索药丸 / 表单卡内 FieldInput tone='raised' 同档——纸卡上的
+ * 字段一律「井」不是「面」）；聚焦态底色再深一档（浅色加深 / 深色提亮，
+ * 双主题同一 token 对）。聚焦用 onFocus/onBlur 本地状态而非 css-interop
+ * 的 focus: 伪类——三端行为确定不赌编译产物。条件三元两侧变量集恒等
+ * （bg + dark:bg 同槽位成对），符合 className 铁律。
  */
 export function DateInput({
     value,
@@ -85,12 +86,11 @@ export function DateInput({
                     <TextInput
                         ref={seg.ref}
                         className={`h-11 min-w-0 flex-1 rounded-control text-center text-[15px] ${
-                            // 无边框规范（#13）：border 零，聚焦 raised / 失焦 surface
-                            //（亮度变化语言，双主题 token 对成对；写法参照 trip-form
-                            // BorderlessInput 的 onFocus/onBlur 本地状态模式）
+                            // 无边框规范（#13）：border 零，聚焦 border / 失焦 raised
+                            //（一档亮度变化语言，双主题 token 对成对）
                             focusedKey === seg.key
-                                ? 'bg-ink-raised dark:bg-inkd-raised'
-                                : 'bg-ink-surface dark:bg-inkd-surface'
+                                ? 'bg-ink-border dark:bg-inkd-border'
+                                : 'bg-ink-raised dark:bg-inkd-raised'
                         } text-ink-text dark:text-inkd-text`}
                         style={{ fontVariant: ['tabular-nums'] }}
                         value={seg.val}

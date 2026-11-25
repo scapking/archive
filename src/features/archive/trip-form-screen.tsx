@@ -37,8 +37,10 @@ import {
     DateInput,
     EmptyState,
     isDateInputComplete,
+    PAPER_CARD_SHADOW,
     PrimaryButton,
     ScreenHeader,
+    Segmented,
     TRIP_ICON_DEFAULT,
     TripBadge,
     TripCoverVideo,
@@ -52,62 +54,6 @@ import type { TripRow } from './db';
  * 首位 🧭 与 TRIP_ICON_DEFAULT 同值，仅为展示顺序——默认值来源是具名常量，不是「取第一个」。
  */
 const ICON_CHOICES = ['🧭', '⛰️', '🌊', '🏛️', '🏙️', '🚗', '✈️', '🚄', '🏕️', '🍜', '📷', '🎡', '⛷️', '🏝️', '🧳', '🗺️'];
-
-/**
- * 结束日期语义分段切换（DEV.md #4：结束日期可选，默认「持续进行」）。
- * 轨道 = surface 底；选中段 = raised 底 + 主文本色（亮度变化语言，不上彩——
- * 颜色只上数据，选中是交互态不是数据）。相邻两段 gap-1（4px）且均不传 hitSlop
- * （0）：命中区 == 视觉盒（h-11 ≥44 规范），4px 为停车距，无重叠核算项。
- * 按压范式收敛（一致性审计轮）：分段控制的按压反馈统一为 active: 底色一档
- * （与 Me 外观分段 / 搜索范围分段同一轨道 + 同一亮度语言），不再走 Bouncy 弹跳。
- */
-function EndModeSwitch({
-    mode,
-    onChange,
-}: {
-    mode: 'open' | 'fixed';
-    onChange(mode: 'open' | 'fixed'): void;
-}) {
-    const options = [
-        { key: 'open' as const, label: '持续进行' },
-        { key: 'fixed' as const, label: '设定结束' },
-    ];
-    return (
-        <View
-            className="flex-row gap-1 rounded-control bg-ink-surface p-1 dark:bg-inkd-surface"
-            accessibilityRole="radiogroup"
-        >
-            {options.map((option) => {
-                const active = mode === option.key;
-                return (
-                    // 分段本体即按压体（flex-1 撑等宽两段；结构对齐 ThemeSection 分段）
-                    <Pressable
-                        key={option.key}
-                        onPress={() => onChange(option.key)}
-                        accessibilityRole="radio"
-                        accessibilityLabel={option.label}
-                        accessibilityState={{ selected: active }}
-                        className={`h-11 flex-1 items-center justify-center rounded-control active:bg-ink-raised dark:active:bg-inkd-raised ${
-                            active
-                                ? 'bg-ink-raised dark:bg-inkd-raised'
-                                : 'bg-ink-surface dark:bg-inkd-surface'
-                        }`}
-                    >
-                        <Text
-                            className={`text-[15px] font-medium ${
-                                active
-                                    ? 'text-ink-text dark:text-inkd-text'
-                                    : 'text-ink-secondary dark:text-inkd-secondary'
-                            }`}
-                        >
-                            {option.label}
-                        </Text>
-                    </Pressable>
-                );
-            })}
-        </View>
-    );
-}
 
 /**
  * 删除钮（二次确认态由父级持有）：普通表单危险区与锁定只读态共用同一决策点，
@@ -151,7 +97,11 @@ function DeleteTripControl({
  *
  * 极简化口径（用户需求「较少不必要的描述、减少步骤」）：
  * - 无分区标题：名称/日期/描述字段全部自说明（placeholder、分段标签、入口文案
- *   即说明），Section 标题属「不必要的描述」整层移除；留白节奏 = 字段组间 mt-5；
+ *   即说明），Section 标题属「不必要的描述」整层移除。v0.4.6 大胆重样（方向令
+ *   §1/§3/§5，apple 参考）：三段各归一张 surface 纸卡 + PAPER_CARD 投影
+ *   （卡间 mt-4 呼吸，卡内字段一律 raised 井——base-tripnew 的「大片空白」
+ *   重排成有节奏的分组表单），字段文字 16/24 正文档、日期题 eyebrow 11 档，
+ *   结束语义开关收口 ui/segmented（私有 EndModeSwitch 退役）；
  * - 图标 = 默认徽章 + 点击换：当前图标以 TripBadge 常驻名称行左侧，点徽章展开
  *   一行横滑选择格（选完即收，一步完成）——替代旧 2 行 16 格平铺（首屏高度 -56，
  *   选择是低频动作，不该常驻两行）；
@@ -394,7 +344,7 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                 （其他三屏固定）。修后逐项对齐：几何带 = insets.top + pt-2(8) +
                 h-11(44) 与四屏相等；返回钮 = CloseButton 'back' 44 圆形触感底
                 盒（hitSlop 0，命中 = 视觉盒）、左缘 24 与表单字段同列对齐；
-                标题 20px semibold ml-2.5；safeBack 退出——全部经 ScreenHeader
+                标题 24px semibold（v0.4.6 屏题档）ml-2.5；safeBack 退出——全部经 ScreenHeader
                 单点收口，两态（新建/编辑）零分叉。 */}
             <View style={{ paddingTop: insets.top }}>
                 {/* 副标已删（2026-11-19 简洁化口径：屏头描述性副标全线退役——字段
@@ -412,30 +362,35 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                     徽章 44×44 即命中盒（Pressable hitSlop 0，右邻输入容器非按压体）；
                     按压反馈走 active: 体系（TripBadge 不透明底会盖住 active:bg，
                     整格降透明度，与旧选择格同口径） */}
-                <View className="flex-row items-center gap-2.5">
-                    <Pressable
-                        onPress={() => setIconPickerOpen((open) => !open)}
-                        className="active:opacity-80"
-                        accessibilityRole="button"
-                        accessibilityLabel={iconPickerOpen ? '收起图标选择' : '更换图标'}
-                        accessibilityState={{ expanded: iconPickerOpen }}
-                    >
-                        <TripBadge icon={icon} size="cell" />
-                    </Pressable>
-                    <View className="flex-1">
-                        {/* #1 推广收口：标题输入走 FieldInput（tone surface，容器承载
-                            视觉 + 聚焦亮度一档 + 平台 props 单点收口）。容器 h-14（56dp）
-                            档，文字回落 FIELD_TONE_TEXT.surface 默认 15/22 normal；
-                            输入体在容器内 stretch 填满，点击区/视觉与容器一致 */}
-                        <FieldInput
-                            tone="surface"
-                            value={title}
-                            onChangeText={setTitle}
-                            placeholder="行程名称"
-                            maxLength={40}
-                            returnKeyType="next"
-                            containerClassName="h-14"
-                        />
+                <View
+                    className="rounded-card bg-ink-surface p-4 dark:bg-inkd-surface"
+                    style={PAPER_CARD_SHADOW}
+                >
+                    <View className="flex-row items-center gap-3">
+                        <Pressable
+                            onPress={() => setIconPickerOpen((open) => !open)}
+                            className="active:opacity-80"
+                            accessibilityRole="button"
+                            accessibilityLabel={iconPickerOpen ? '收起图标选择' : '更换图标'}
+                            accessibilityState={{ expanded: iconPickerOpen }}
+                        >
+                            <TripBadge icon={icon} size="cell" />
+                        </Pressable>
+                        <View className="flex-1">
+                            {/* #1 推广收口：标题输入走 FieldInput；v0.4.6 升
+                                tone raised（纸卡上的井，与日期字段同档）+ 16/24
+                                正文档（方向令 §2 字阶），容器 h-14 命中档不变 */}
+                            <FieldInput
+                                tone="raised"
+                                value={title}
+                                onChangeText={setTitle}
+                                placeholder="行程名称"
+                                maxLength={40}
+                                returnKeyType="next"
+                                containerClassName="h-14"
+                                style={{ fontSize: 16, lineHeight: 24 }}
+                            />
+                        </View>
                     </View>
                 </View>
 
@@ -473,24 +428,34 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                     </ScrollView>
                 ) : null}
 
-                {/* ── 日期：结束可选（DEV.md #4）——分段切换「持续进行 / 设定结束」── */}
-                <View className="mt-5">
-                    <EndModeSwitch mode={endMode} onChange={switchEndMode} />
+                {/* ── 日期卡：结束可选（DEV.md #4）——分段切换「持续进行 / 设定结束」
+                    （v0.4.6：私有 EndModeSwitch 退役，收口 ui/segmented row 档 +
+                    radio 语义；日期字段升 raised 井与开关同卡成组）── */}
+                <View className="mt-4 rounded-card bg-ink-surface p-4 dark:bg-inkd-surface" style={PAPER_CARD_SHADOW}>
+                    <Segmented
+                        density="row"
+                        accessibilityRole="radio"
+                        options={[
+                            { key: 'open', label: '持续进行' },
+                            { key: 'fixed', label: '设定结束' },
+                        ]}
+                        value={endMode}
+                        onChange={switchEndMode}
+                        labelPrefix="结束日期"
+                    />
                     {endMode === 'open' ? (
                         <View className="mt-3">
-                            <Text className="mb-1.5 text-[11px] text-ink-muted dark:text-inkd-muted">出发</Text>
+                            <Text className="mb-1.5 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">出发</Text>
                             <DateInput value={startDate} onChange={setStartDate} />
                         </View>
                     ) : (
                         <View className="mt-3 flex-row items-end gap-3">
                             <View className="flex-1">
-                                <Text className="mb-1.5 text-[11px] text-ink-muted dark:text-inkd-muted">出发</Text>
+                                <Text className="mb-1.5 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">出发</Text>
                                 <DateInput value={startDate} onChange={setStartDate} />
                             </View>
-                            {/* 箭头基线随 DateInput 高度收敛（h-12→h-11）下移一档：pb-2.5 */}
-                            <Text className="pb-2.5 text-ink-muted dark:text-inkd-muted">→</Text>
                             <View className="flex-1">
-                                <Text className="mb-1.5 text-[11px] text-ink-muted dark:text-inkd-muted">返回</Text>
+                                <Text className="mb-1.5 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">返回</Text>
                                 <DateInput value={endDate} onChange={setEndDate} />
                             </View>
                         </View>
@@ -513,15 +478,18 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                     有呼吸（调用侧 style 位于合并数组末位，覆盖 INPUT_TRANSPARENT_STYLE
                     的 paddingVertical: 0 简写）；FieldInput 口径与标题输入同源
                     （tone surface）。不 autofocus：进表单即弹键盘盖住上部主字段 */}
-                <View className="mt-5">
+                <View
+                    className="mt-4 rounded-card bg-ink-surface p-4 dark:bg-inkd-surface"
+                    style={PAPER_CARD_SHADOW}
+                >
                     <FieldInput
-                        tone="surface"
+                        tone="raised"
                         multiline
                         value={description}
                         onChangeText={setDescription}
                         placeholder="行程描述"
                         maxLength={500}
-                        style={{ minHeight: 80, paddingTop: 16 }}
+                        style={{ minHeight: 88, paddingTop: 16, fontSize: 16, lineHeight: 26 }}
                     />
                 </View>
 

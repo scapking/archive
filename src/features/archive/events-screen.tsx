@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Easing, FlatList, Pressable, Text, View } from 'react-native';
+import { Animated, Easing, FlatList, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 // RNGH 3.x 正典 API：usePanGesture（hooks 版声明式手势，仲裁下沉 native
@@ -26,7 +26,7 @@ import {
     type EventSubjectKind,
 } from './event-logic';
 import { useArchiveRevision, useArchiveStore } from './store';
-import { EmptyState, LoadingView, ScreenHeader, usePalette } from './ui';
+import { EmptyState, LoadingView, PAPER_CARD_SHADOW, ScreenHeader, Segmented, usePalette } from './ui';
 import { EventCard } from './ui/event-card';
 // 设置卡共享组件（详情屏状态头同款）：不进详情页改元信息（事件不可删除，
 // 卡内无删除入口）——落库通道经回调注入（组件不 import store，RenameCard
@@ -389,51 +389,26 @@ export function EventsScreen() {
                                         // inset-y-0 也从 chips 底边起笔（CDP 实测 rect：chips
                                         // bottom == 首卡 row/轴顶，gap=0）
                                         <View className="pb-4">
-                                            {/* 状态筛选分段（四分段单选轨道：全部/进行中/已完成/
-                                                已失败，选中「加深一档」raised，与 Me 外观分段 /
-                                                search 范围分段同一轨道语言）。四段 flex-1 平分轨道：
-                                                375 屏净宽 327 - p-1(8) - gap×3(12) ≈ 77/段，三字
-                                                12px 标签（≈36px）居中富余，无需换行/横滑。
+                                            {/* 状态筛选分段（v0.4.6 收口到 ui/segmented row 档）：
+                                                四段等分全部/进行/完成/失败，选中 = 滑块浮起 + 近距
+                                                投影（方向令 §1 光影语言，替换旧「加深一档」平色块）。
                                                 页内搜索已迁出（职责归 Me 搜索卡），此处以 ScreenHeader
-                                                pb-3 + 分段 mt-3 的既有留白节奏收敛，不加线不加元素 */}
-                                            <View className="mt-3 flex-row gap-1 rounded-control bg-ink-surface p-1 dark:bg-inkd-surface">
-                                                {FILTER_OPTIONS.map((option) => {
-                                                    const active = statusFilter === option.key;
-                                                    return (
-                                                        <Pressable
-                                                            key={option.key}
-                                                            onPress={() => setStatusFilter(option.key)}
-                                                            // 分段本体 h-9(36) < 44：纵向 hitSlop 4 补足；
-                                                            // 横向必须归 0——相邻分段 gap-1(4) < 2×hitSlop
-                                                            hitSlop={{ top: 4, bottom: 4, left: 0, right: 0 }}
-                                                            // 条件类铁律：两侧变量集合恒等（bg-色 全携带
-                                                            // --tw-bg-opacity，无 transparent 侧）
-                                                            className={`h-9 flex-1 items-center justify-center rounded-thumb active:bg-ink-raised dark:active:bg-inkd-raised ${
-                                                                active
-                                                                    ? 'bg-ink-raised dark:bg-inkd-raised'
-                                                                    : 'bg-ink-surface dark:bg-inkd-surface'
-                                                            }`}
-                                                            accessibilityRole="button"
-                                                            accessibilityState={{ selected: active }}
-                                                        >
-                                                            <Text
-                                                                className={`text-[12px] ${
-                                                                    active
-                                                                        ? 'font-medium text-ink-text dark:text-inkd-text'
-                                                                        : 'text-ink-muted dark:text-inkd-muted'
-                                                                }`}
-                                                            >
-                                                                {option.label}
-                                                            </Text>
-                                                        </Pressable>
-                                                    );
-                                                })}
-                                            </View>
+                                                pb-3 + 分段 mt-1 的既有留白节奏收敛，不加线不加元素 */}
+                                            <Segmented<EventStatusFilter>
+                                                className="mt-1"
+                                                density="row"
+                                                options={FILTER_OPTIONS}
+                                                value={statusFilter}
+                                                onChange={setStatusFilter}
+                                            />
                                             {error ? (
-                                                // store.error 通道（列表读取失败等）统一在此可见
-                                                <Text className="mt-3 text-[12px] text-ink-negative dark:text-inkd-negative">
-                                                    {error}
-                                                </Text>
+                                                // store.error 通道（列表读取失败等）统一在此可见：
+                                                // 与设置页同款 tinted 横幅（错误是设计面不是裸红行）
+                                                <View className="mt-3 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">
+                                                    <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
+                                                        {error}
+                                                    </Text>
+                                                </View>
                                             ) : null}
                                         </View>
                                     }
@@ -442,35 +417,37 @@ export function EventsScreen() {
                                             // 有筛选但无匹配：卡片化降级 + 出路动作（frontend-design：
                                             // 失败与空态是方向，不是情绪）。图标/文案对齐工单语义
                                             // （页内搜索入口已迁出，不再以 Search 图标指向不存在的能力）
-                                            <View className="mt-3 rounded-card bg-ink-surface p-4 dark:bg-inkd-surface">
+                                            <View
+                                                className="mt-3 rounded-card bg-ink-surface p-5 dark:bg-inkd-surface"
+                                                style={PAPER_CARD_SHADOW}
+                                            >
                                                 <View className="flex-row items-center gap-3">
-                                                    <View className="h-10 w-10 items-center justify-center rounded-control bg-ink-raised dark:bg-inkd-raised">
-                                                        <LucideFlag
-                                                            size={18}
-                                                            strokeWidth={1.9}
-                                                            color={palette.secondary}
-                                                        />
-                                                    </View>
+                                                    <LucideFlag
+                                                        size={20}
+                                                        strokeWidth={1.9}
+                                                        color={palette.secondary}
+                                                    />
                                                     <View className="min-w-0 flex-1">
-                                                        <Text className="text-[14px] font-medium text-ink-text dark:text-inkd-text">
+                                                        <Text className="text-[16px] text-ink-text dark:text-inkd-text">
                                                             没有匹配的事件
                                                         </Text>
                                                         <Text
                                                             numberOfLines={1}
-                                                            className="mt-0.5 text-[12px] text-ink-muted dark:text-inkd-muted"
+                                                            className="mt-1 text-[12px] text-ink-muted dark:text-inkd-muted"
                                                         >
                                                             切到别的状态，或清掉筛选再试
                                                         </Text>
                                                     </View>
                                                 </View>
-                                                <View className="mt-3">
+                                                <View className="mt-4">
                                                     <BouncyPressable onPress={clearFilters} scaleTo={0.97}>
                                                         <View
-                                                            className="h-11 items-center justify-center rounded-control border border-ink-border bg-ink-base dark:border-inkd-border dark:bg-inkd-base"
+                                                            className="h-12 items-center justify-center rounded-control bg-ink-base dark:bg-inkd-base"
+                                                            style={PAPER_CARD_SHADOW}
                                                             accessibilityRole="button"
                                                             accessibilityLabel="清除筛选"
                                                         >
-                                                            <Text className="text-[13px] font-medium text-ink-text dark:text-inkd-text">
+                                                            <Text className="text-[16px] font-medium text-ink-text dark:text-inkd-text">
                                                                 清除筛选
                                                             </Text>
                                                         </View>

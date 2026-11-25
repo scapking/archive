@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { BackHandler, Pressable, Text, TextInput, View } from 'react-native';
 import { LucideCheck, LucideClose } from '@/core/icons';
 import { CloseButton } from './close-button';
+import { PAPER_FLOAT_SHADOW } from './paper-shadow';
 import { usePalette } from './theme';
 // 标题长度上限与 store 落库钳制同源（normalizeJournalTitle / JOURNAL_TITLE_MAX）：
 // 输入框 maxLength 是第一道闸，store 落库前再钳一次防绕过 UI 直写。
@@ -84,12 +85,16 @@ export function RenameCard({
                 onPress={onClose}
                 accessibilityLabel="关闭重命名"
             >
-                <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base">
+                {/* 容器收紧（v0.4.6）：max-w-sm p-3 口径不动 + 悬浮投影 */}
+                <Pressable
+                    className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base"
+                    style={PAPER_FLOAT_SHADOW}
+                >
                     {/* 卡头（关闭语言统一 #8）：题 + 右上关闭钮（scrim 点击与 Android
                         返回键之外的显式出口；底部「取消」钮保留——与「保存」成对的
                         显式动作语义，卡头 X = 逃生口，二者职责不同） */}
                     <View className="flex-row items-center justify-between">
-                        <Text className="text-[15px] font-semibold text-ink-text dark:text-inkd-text">
+                        <Text className="text-[16px] font-semibold text-ink-text dark:text-inkd-text">
                             重命名计划
                         </Text>
                         {/* 44 视觉盒：左邻题文字非按压体，右缘贴卡内边距，无重叠核算项 */}

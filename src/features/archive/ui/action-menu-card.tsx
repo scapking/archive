@@ -4,6 +4,7 @@ import { CloseButton } from './close-button';
 // tintIcon 深路径注记：editor-icons 未入 ui/index.ts 出口（该文件不在本组改动
 // 权限内），域内深取；barrel 出口扩充时收口（close-button / editor-icons 先例）。
 import { tintIcon } from './editor-icons';
+import { PAPER_FLOAT_SHADOW } from './paper-shadow';
 import { usePalette } from './theme';
 
 /**
@@ -69,9 +70,14 @@ export function ActionMenuCard({
                 accessibilityLabel="关闭操作菜单"
             >
                 {/* 卡体拦截冒泡：点卡不关（同 DayActionCard / chooser 卡体结构） */}
-                <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base">
+                {/* 容器收紧（v0.4.6）：max-w-sm p-3 既有弹窗口径不动；卡身加
+                    PAPER_FLOAT 投影——scrim 之下的真悬浮物才有影 */}
+                <Pressable
+                    className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base"
+                    style={PAPER_FLOAT_SHADOW}
+                >
                     <View className="flex-row items-center justify-between">
-                        <Text className="text-[15px] font-semibold text-ink-text dark:text-inkd-text">
+                        <Text className="text-[16px] font-semibold text-ink-text dark:text-inkd-text">
                             {title}
                         </Text>
                         {/* 44 视觉盒：左邻题文字非按压体，右缘贴卡内边距，无重叠核算项 */}
@@ -89,7 +95,7 @@ export function ActionMenuCard({
                                     {tintIcon(row.icon, row.danger ? palette.negative : palette.secondary)}
                                 </View>
                                 <Text
-                                    className={`flex-1 text-[15px] font-medium ${
+                                    className={`flex-1 text-[16px] font-medium ${
                                         row.danger
                                             ? 'text-ink-negative dark:text-inkd-negative'
                                             : 'text-ink-text dark:text-inkd-text'

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { ScrollView, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { BouncyPressable, LucideClose, LucideSearch } from '@/core/icons';
@@ -7,7 +7,15 @@ import * as db from './db';
 import { useArchiveRevision, useArchiveStore } from './store';
 import { addDaysLocal, todayLocal, tripDayList } from './trip-logic';
 import { Calendar, type CalendarDayMark } from './ui/calendar';
-import { DateInput, isDateInputComplete, LoadingView, ScreenHeader, usePalette } from './ui';
+import {
+    DateInput,
+    isDateInputComplete,
+    LoadingView,
+    PAPER_CARD_SHADOW,
+    ScreenHeader,
+    Segmented,
+    usePalette,
+} from './ui';
 
 /**
  * 搜索页 = 检索输入枢纽（2026-11-19 搜索拆分）：关键词 + 时间范围分段 + 日历
@@ -187,18 +195,22 @@ export function SearchScreen() {
                     keyboardShouldPersistTaps="handled"
                     keyboardDismissMode="on-drag"
                 >
-                    {/* 搜索框：border 零 + 近色底 rounded-control，聚焦底色亮度变化（#12/#13）。
-                        不 autoFocus：日历是首屏另一价值，不自动弹键盘抢焦点 */}
+                    {/* 搜索框（v0.4.6 大胆重样，apple 参考）：iOS 药丸形——
+                        h-12 rounded-full，静息 raised 浅井、聚焦白块浮起
+                        （PAPER_CARD 微投影 + 亮度一档，#12/#13 无边框语言升级），
+                        16px 正文档。不 autoFocus：日历是首屏另一价值，
+                        不自动弹键盘抢焦点 */}
                     <View
-                        className={`h-11 flex-row items-center gap-2 rounded-control px-3 ${
+                        className={`h-12 flex-row items-center gap-2.5 rounded-full px-4 ${
                             inputFocused
-                                ? 'bg-ink-raised dark:bg-inkd-raised'
-                                : 'bg-ink-surface dark:bg-inkd-surface'
+                                ? 'bg-ink-base dark:bg-inkd-border'
+                                : 'bg-ink-raised dark:bg-inkd-raised'
                         }`}
+                        style={PAPER_CARD_SHADOW}
                     >
-                        <LucideSearch size={16} strokeWidth={1.9} color={palette.muted} />
+                        <LucideSearch size={18} strokeWidth={1.9} color={palette.muted} />
                         <TextInput
-                            className="h-full min-w-0 flex-1 text-[15px] text-ink-text dark:text-inkd-text"
+                            className="h-full min-w-0 flex-1 text-[16px] text-ink-text dark:text-inkd-text"
                             placeholder="搜索日记、计划、行程与事件"
                             placeholderTextColor={palette.muted}
                             value={query}
@@ -222,53 +234,29 @@ export function SearchScreen() {
 
                     {/* 时间范围分段（选择理由：检索是快进快出流，三段 DateInput×2 = 6 个
                         输入位过重，且半填状态会撞 store 的日期校验；分段把精确输入收进
-                        「自定义」显式入口，默认路径零输入成本；样式与 Me 页外观分段同构。
-                        轨道无边框 + 选中「加深一档」（raised）：与 ThemeSection /
-                        EndModeSwitch 同一轨道与亮度语言（一致性收敛轮）） */}
-                    <View className="mt-3 flex-row gap-1 rounded-control bg-ink-surface p-1 dark:bg-inkd-surface">
-                        {RANGE_OPTIONS.map((option) => {
-                            const active = rangeMode === option.key;
-                            return (
-                                <Pressable
-                                    key={option.key}
-                                    onPress={() => handlePickRangeMode(option.key)}
-                                    // 分段本体 h-9(36px) < 44：纵向 hitSlop 4 补足；横向必须归 0
-                                    // ——相邻分段 gap-1(4px) < 2×hitSlop，外扩会重叠（Me 页同款核算）
-                                    hitSlop={{ top: 4, bottom: 4, left: 0, right: 0 }}
-                                    // 条件类铁律：两侧变量集合恒等（与 ThemeSection 同款写法）
-                                    className={`h-9 flex-1 items-center justify-center rounded-thumb active:bg-ink-raised dark:active:bg-inkd-raised ${
-                                        active
-                                            ? 'bg-ink-raised dark:bg-inkd-raised'
-                                            : 'bg-ink-surface dark:bg-inkd-surface'
-                                    }`}
-                                    accessibilityRole="button"
-                                    accessibilityState={{ selected: active }}
-                                >
-                                    <Text
-                                        className={`text-[12px] ${
-                                            active
-                                                ? 'font-medium text-ink-text dark:text-inkd-text'
-                                                : 'text-ink-muted dark:text-inkd-muted'
-                                        }`}
-                                    >
-                                        {option.label}
-                                    </Text>
-                                </Pressable>
-                            );
-                        })}
-                    </View>
+                        「自定义」显式入口，默认路径零输入成本。v0.4.6：收口到
+                        ui/segmented row 档——与事件筛选 / 行程开关同一「滑块浮起」
+                        光影语言（方向令 §1），旧「加深一档」平色块退役） */}
+                    <Segmented
+                        className="mt-3"
+                        density="row"
+                        options={RANGE_OPTIONS}
+                        value={rangeMode}
+                        onChange={handlePickRangeMode}
+                        labelPrefix="时间范围"
+                    />
 
                     {/* 自定义展开：DateInput 复用（ui 契约），段值未完整不参与查询 */}
                     {rangeMode === 'custom' ? (
                         <View className="mt-2 gap-2">
                             <View className="flex-row items-center gap-2">
-                                <Text className="w-5 text-[12px] text-ink-muted dark:text-inkd-muted">起</Text>
+                                <Text className="w-5 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">起</Text>
                                 <View className="min-w-0 flex-1">
                                     <DateInput value={customFrom} onChange={setCustomFrom} placeholder="开始日期" />
                                 </View>
                             </View>
                             <View className="flex-row items-center gap-2">
-                                <Text className="w-5 text-[12px] text-ink-muted dark:text-inkd-muted">止</Text>
+                                <Text className="w-5 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">止</Text>
                                 <View className="min-w-0 flex-1">
                                     <DateInput value={customTo} onChange={setCustomTo} placeholder="结束日期" />
                                 </View>
@@ -282,7 +270,7 @@ export function SearchScreen() {
                     {/* 日历：打点 = 有计划（强 accent）/ 行程日（弱 accent）；点选日期
                         即带单日窗口跳结果屏（再点同日反选仅清高亮）。卡体无边框
                         （#13 收敛：surface-on-base tone 分层，同 me 曲线卡） */}
-                    <View className="mt-3 rounded-card bg-ink-surface p-3 dark:bg-inkd-surface">
+                    <View className="mt-3 rounded-card bg-ink-surface p-4 dark:bg-inkd-surface" style={PAPER_CARD_SHADOW}>
                         <Calendar marks={marks} selected={selectedDate} onSelectDate={handleSelectDate} />
                     </View>
 
@@ -293,16 +281,11 @@ export function SearchScreen() {
                         </Text>
                     ) : null}
 
-                    {/* 引导文案（2026-11-19 搜索拆分：结果区迁至 /search-results
-                        独立页，本页只做检索输入枢纽——提交或点日历日期即跳转） */}
-                    <View className="mt-6 items-center py-10">
-                        <Text className="text-[15px] font-medium text-ink-text dark:text-inkd-text">
-                            输入关键词、选好范围，或点日历里的日期
-                        </Text>
-                        <Text className="mt-1.5 text-center text-[13px] leading-5 text-ink-muted dark:text-inkd-muted">
-                            点键盘「搜索」或点日历日期，在结果页翻看日记、计划、行程与事件
-                        </Text>
-                    </View>
+                    {/* 引导收一行 meta（方向令 §2：两段式宣传语退役——日历
+                        本身就是可点的指引，剩下的空白是呼吸不是残留） */}
+                    <Text className="mt-4 text-center text-[12px] text-ink-muted dark:text-inkd-muted">
+                        键盘「搜索」查当前条件，点日历某天看那天
+                    </Text>
                 </ScrollView>
             </View>
         </View>

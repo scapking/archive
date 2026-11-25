@@ -59,7 +59,8 @@ function shiftMonth(month: string, delta: number): string {
     return toLocalDate(probe).slice(0, 7);
 }
 
-/** 当月单元格序列：前置空白（null）补齐周一开局，其余为 'YYYY-MM-DD'。 */
+/** 当月单元格序列：前置空白（null）补齐周一开局，其余为 'YYYY-MM-DD'；
+ *  末行后置空格由 Calendar rows 派生处补齐（v0.4.6 巨圆修复，见彼处注）。 */
 function buildMonthCells(month: string): Array<string | null> {
     const first = parseLocalDate(`${month}-01`);
     const leading = (first.getUTCDay() + 6) % 7;
@@ -151,7 +152,15 @@ export const Calendar = memo(function Calendar({ marks, selected, onSelectDate }
     const rows = useMemo(() => {
         const cells = buildMonthCells(month);
         const out: Array<Array<string | null>> = [];
-        for (let i = 0; i < cells.length; i += 7) out.push(cells.slice(i, i + 7));
+        for (let i = 0; i < cells.length; i += 7) {
+            const row = cells.slice(i, i + 7);
+            // v0.4.6 修复（CDP 实测 /search 2026-11-30 巨圆）：旧实现只补前置
+            // 空格，跨第六周的月份末行仅 1-2 天——flex-1 让孤格吃满整行宽，
+            // aspect-square 等比放大成占屏一半的巨圆。末行补齐 7 格（后置空格
+            // 与前置空格同解剖），列宽恒等，网格逐行对齐。
+            while (row.length < 7) row.push(null);
+            out.push(row);
+        }
         return out;
     }, [month]);
     const monthLabel = useMemo(() => {

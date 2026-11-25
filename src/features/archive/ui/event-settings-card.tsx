@@ -1,7 +1,6 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import {
     ActivityIndicator,
-    Animated,
     BackHandler,
     Pressable,
     ScrollView,
@@ -12,6 +11,8 @@ import { LucideMapPin } from '@/core/icons';
 import { location } from '@/core/location';
 import { CloseButton } from './close-button';
 import { FieldInput } from './field-input';
+import { PAPER_FLOAT_SHADOW } from './paper-shadow';
+import { Segmented } from './segmented';
 import { usePalette } from './theme';
 // event-logic 是纯逻辑叶模块（禁 react/native，无 ui 反向依赖），引用无环
 // （rename-card → journal-logic 同款先例）；EventRow/EventStatus/EventSubjectKind
@@ -57,8 +58,8 @@ import {
  *
  * - **字段 × 行为矩阵（全部即时落库）**：
  *   名称 = FieldInput，blur 保存（无变更跳过；空串/超长 store 拒绝 → 卡内
- *   errorText 就地可重试）；状态 = open/done/failed 三分段（CardSegmented，
- *   设置页 CompactSegmented 同视觉语言），点按即存（任意态互切——标记失败 /
+ *   errorText 就地可重试）；状态 = open/done/failed 三分段（ui/segmented
+ *   row 档，与设置页/筛选同一「滑块浮起」语言），点按即存（任意态互切——标记失败 /
  *   从失败重新打开 / 失败转完成同一交互）；GPS = 坐标只读行 + 「重新定位」
  *  （权限/服务预检 → 8s 超时兜底，新建表单同口径，主行动钮）/「清除」（次级
  *   钮）点按即存；处理人 = blur 保存（空串 = 清除）；对象 = FieldInput 自由
@@ -100,109 +101,6 @@ const STATUS_OPTIONS: Array<{ key: EventStatus; label: string }> = [
     { key: 'done', label: EVENT_STATUS_LABELS.done },
     { key: 'failed', label: EVENT_STATUS_LABELS.failed },
 ];
-
-/**
- * 卡内紧凑分段（settings-screen 私有 CompactSegmented 的同语言镜像实现）：
- * 该组件为 settings-screen 文件私有且未导出，跨屏 import 违反所有权纪律——
- * 本卡按其实现逐项镜像同一视觉语言：轨道 bg-ink-border p-1 rounded-control
- * （overflow-hidden）、选中滑块 bg-ink-base rounded-thumb 弹簧滑动、选中
- * medium/text 档 + 未选中 muted 档。与原型的两处口径差异（本卡场景定制）：
- * - 行高 h-9（原型页内行 h-8）：卡内分段独占整行、上下留白宽裕，36dp 视觉盒
- *   + 纵向 hitSlop 4 = 44 命中（同原型命中核算）；
- * - 分段整行铺开（flex-1 摊平）：设置卡分段是「字段值三选一」主体控件（非
- *   行尾紧凑档），占满字段行宽与 FieldInput 行对齐。
- * 几何一律内联 style：Animated 系组件的 className 在 web 被 css-interop
- * 静默丢弃（仓库铁律注释，settings-screen CompactSegmented 同注）。
- */
-function CardSegmented<T extends string>({
-    options,
-    value,
-    onChange,
-    labelPrefix,
-}: {
-    options: Array<{ key: T; label: string }>;
-    value: T;
-    onChange: (key: T) => void;
-    labelPrefix: string;
-}) {
-    const [segWidths, setSegWidths] = useState<number[]>([]);
-    const placedRef = useRef(false);
-    const sliderX = useRef(new Animated.Value(0)).current;
-    const activeIndex = Math.max(0, options.findIndex((option) => option.key === value));
-    // 逐段实测（段间零间隙，实测段宽和恒等于轨道内容区宽）
-    const measured = segWidths.length === options.length && segWidths.every((width) => width > 0);
-    const segW = measured ? segWidths[activeIndex] : 0;
-    useEffect(() => {
-        if (!measured) return;
-        // 目标偏移 = 前缀和（effect 内直算）：依赖收敛为 segWidths 数组引用——
-        // 本卡草稿态每键重渲，若依赖每渲染重建的派生数组会把 spring 每键重启
-        // （segWidths 引用只在实测宽度真变化时更新，onLayout 同值返回 prev）
-        let acc = 0;
-        for (let index = 0; index < activeIndex; index++) acc += segWidths[index] ?? 0;
-        const target = acc;
-        if (!placedRef.current) {
-            placedRef.current = true;
-            sliderX.setValue(target);
-            return;
-        }
-        const spring = Animated.spring(sliderX, { toValue: target, friction: 9, useNativeDriver: true });
-        spring.start();
-        return () => spring.stop();
-        // activeIndex 选中变更即重瞄准
-    }, [activeIndex, measured, segWidths, sliderX]);
-    return (
-        <View className="flex-row overflow-hidden rounded-control bg-ink-border p-1 dark:bg-inkd-border">
-            {/* 滑块：纯视觉层先渲染（段落文字浮其上），几何内联 style（web 可靠性
-                见组件注），涂装在内层普通 View；实测未就绪时宽 0 不可见 */}
-            <Animated.View
-                pointerEvents="none"
-                style={{
-                    position: 'absolute',
-                    top: 4,
-                    bottom: 4,
-                    left: 4,
-                    width: segW,
-                    transform: [{ translateX: sliderX }],
-                }}
-            >
-                <View className="h-full w-full rounded-thumb bg-ink-base dark:bg-inkd-base" />
-            </Animated.View>
-            {options.map((option, index) => {
-                const active = value === option.key;
-                return (
-                    <Pressable
-                        key={option.key}
-                        onPress={() => onChange(option.key)}
-                        hitSlop={{ top: 4, bottom: 4, left: 0, right: 0 }}
-                        className="h-9 flex-1 items-center justify-center px-4"
-                        onLayout={(event) =>
-                            setSegWidths((prev) => {
-                                const width = event.nativeEvent.layout.width;
-                                if (prev[index] === width) return prev;
-                                const next = [...prev];
-                                next[index] = width;
-                                return next;
-                            })
-                        }
-                        accessibilityRole="button"
-                        accessibilityState={{ selected: active }}
-                        accessibilityLabel={`${labelPrefix}：${option.label}`}
-                    >
-                        <Text
-                            className={`text-[12px] ${
-                                active
-                                    ? 'font-medium text-ink-text dark:text-inkd-text'
-                                    : 'text-ink-muted dark:text-inkd-muted'
-                            }`}
-                        >
-                            {option.label}
-                        </Text>
-                    </Pressable>
-                );
-            })}
-        </View>
-    );
-}
 
 function EventSettingsCardBase({
     event,
@@ -382,10 +280,14 @@ function EventSettingsCardBase({
                 onPress={onClose}
                 accessibilityLabel="关闭事件设置"
             >
-                <Pressable className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base">
+                {/* 容器收紧（v0.4.6）：max-w-sm p-3 口径不动 + 悬浮投影 */}
+                <Pressable
+                    className="w-full max-w-sm rounded-card bg-ink-base p-3 dark:bg-inkd-base"
+                    style={PAPER_FLOAT_SHADOW}
+                >
                     {/* 卡头（关闭语言统一 #8）：题 + 右上关闭钮 */}
                     <View className="flex-row items-center justify-between">
-                        <Text className="text-[15px] font-semibold text-ink-text dark:text-inkd-text">
+                        <Text className="text-[16px] font-semibold text-ink-text dark:text-inkd-text">
                             事件设置
                         </Text>
                         <CloseButton onPress={onClose} />
@@ -406,7 +308,7 @@ function EventSettingsCardBase({
                         <View className="gap-4">
                             {/* 名称（title 编辑，store.updateEventMeta v6.1 扩展） */}
                             <View>
-                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                     名称
                                 </Text>
                                 <FieldInput
@@ -414,6 +316,7 @@ function EventSettingsCardBase({
                                     onChangeText={setTitleDraft}
                                     placeholder={EVENT_TITLE_PLACEHOLDER}
                                     maxLength={EVENT_TITLE_MAX}
+                                    style={{ fontSize: 16, lineHeight: 24 }}
                                     accessibilityLabel="事件名称"
                                     onBlur={() => void saveTitleDraft()}
                                 />
@@ -421,14 +324,15 @@ function EventSettingsCardBase({
 
                             {/* 状态（open/done/failed 三分段，点按即存）：标记失败
                                 与标记完成同一交互解剖（任意态互切 = 从失败可重新
-                                打开/标记完成）；CardSegmented = 设置页
-                                CompactSegmented 同视觉语言（轨道/滑块/行高/命中
-                                口径见组件注），点按后滑块弹簧平移（即时反馈） */}
+                                打开/标记完成）；分段收口 ui/segmented row 档
+                                （旧 CardSegmented 镜像实现退役——四处漂移的
+                                根因），点按后滑块弹簧平移（即时反馈） */}
                             <View>
-                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                     状态
                                 </Text>
-                                <CardSegmented
+                                <Segmented
+                                    density="row"
                                     options={STATUS_OPTIONS}
                                     value={statusDraft}
                                     onChange={(key) => void saveStatusDraft(key)}
@@ -438,7 +342,7 @@ function EventSettingsCardBase({
 
                             {/* GPS（坐标只读 + 重定位/清除，点按即存） */}
                             <View>
-                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                     位置
                                 </Text>
                                 <View className="rounded-control bg-ink-surface px-3.5 py-2 dark:bg-inkd-surface">
@@ -492,7 +396,7 @@ function EventSettingsCardBase({
                                             />
                                         )}
                                         <Text
-                                            className="text-[15px] font-semibold"
+                                            className="text-[16px] font-semibold"
                                             style={{ color: palette.onPrimaryBtn }}
                                         >
                                             {relocating ? '定位中…' : '重新定位'}
@@ -505,7 +409,7 @@ function EventSettingsCardBase({
                                             accessibilityRole="button"
                                             accessibilityLabel="清除定位"
                                         >
-                                            <Text className="text-[15px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                            <Text className="text-[16px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                                 清除
                                             </Text>
                                         </Pressable>
@@ -515,7 +419,7 @@ function EventSettingsCardBase({
 
                             {/* 处理人（blur 保存，空串 = 清除） */}
                             <View>
-                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                     处理人
                                 </Text>
                                 <FieldInput
@@ -523,6 +427,7 @@ function EventSettingsCardBase({
                                     onChangeText={setHandledByDraft}
                                     placeholder={EVENT_HANDLED_BY_PLACEHOLDER}
                                     maxLength={EVENT_HANDLED_BY_MAX}
+                                    style={{ fontSize: 16, lineHeight: 24 }}
                                     accessibilityLabel="处理人"
                                     onBlur={() => void saveHandledByDraft()}
                                 />
@@ -530,7 +435,7 @@ function EventSettingsCardBase({
 
                             {/* 对象（可选，自定义自由文本：blur 保存，空 = 清除） */}
                             <View>
-                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                     对象
                                 </Text>
                                 <FieldInput
@@ -538,6 +443,7 @@ function EventSettingsCardBase({
                                     onChangeText={setValueDraft}
                                     placeholder={EVENT_SUBJECT_PLACEHOLDER}
                                     maxLength={EVENT_SUBJECT_VALUE_MAX}
+                                    style={{ fontSize: 16, lineHeight: 24 }}
                                     accessibilityLabel="对象"
                                     onBlur={() => void saveSubjectDraft(valueDraft)}
                                 />
@@ -548,7 +454,7 @@ function EventSettingsCardBase({
                                 接线时不出现死编辑面） */}
                             {onSavePhone ? (
                                 <View>
-                                    <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                         手机号
                                     </Text>
                                     <FieldInput
@@ -571,7 +477,7 @@ function EventSettingsCardBase({
                                 接线门控口径同手机号 */}
                             {onSaveEmail ? (
                                 <View>
-                                    <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                         邮箱
                                     </Text>
                                     <FieldInput
@@ -591,7 +497,7 @@ function EventSettingsCardBase({
 
                             {/* 描述（multiline，blur 保存，空串 = 清除） */}
                             <View>
-                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                     描述
                                 </Text>
                                 <FieldInput
@@ -599,6 +505,7 @@ function EventSettingsCardBase({
                                     onChangeText={setDescriptionDraft}
                                     placeholder={EVENT_DESCRIPTION_PLACEHOLDER}
                                     multiline
+                                    style={{ fontSize: 16, lineHeight: 26 }}
                                     maxLength={EVENT_DESCRIPTION_MAX}
                                     accessibilityLabel="事件描述"
                                     onBlur={() => void saveDescriptionDraft()}
@@ -608,7 +515,7 @@ function EventSettingsCardBase({
                             {/* 时间线（只读）：event-logic.eventTimeline 单一口径，
                                 保存后随调用方权威回读即时刷新 */}
                             <View>
-                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                     时间线
                                 </Text>
                                 <View className="rounded-control bg-ink-surface px-3.5 py-2 dark:bg-inkd-surface">

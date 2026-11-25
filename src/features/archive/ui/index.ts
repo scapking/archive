@@ -50,6 +50,14 @@ export { RecordingOverlay, isRecordingSupported, type RecordingResult } from './
 // ./theme + ../journal-logic（JOURNAL_TITLE_MAX，纯逻辑叶模块），均不回头依赖
 // store/ui，无环。
 export { RenameCard } from './rename-card';
+// C（v0.4.6 外围屏 + 壳层）：统一分段控件（旧 settings-screen 私有
+// CompactSegmented / events 等分 chips / search 范围分段 / trip EndModeSwitch
+// 四处收口）+ 纸面光影令牌（方向文档 §1 层次靠光影）。依赖面 = react-native +
+// ./paper-shadow，无回头 store/theme 环。
+export { Segmented } from './segmented';
+// C：弹窗族浮影（PAPER_FLOAT）/ 静止内容卡影（PAPER_CARD）/ 分段滑块微影
+// （PAPER_PILL），屏内与菜单族内联 style 共用（方向文档 §1）。
+export { PAPER_CARD_SHADOW, PAPER_FLOAT_SHADOW, PAPER_PILL_SHADOW } from './paper-shadow';
 export { ScreenHeader } from './screen-header';
 export { safeBack } from './safe-back';
 export { Sidebar } from './sidebar';

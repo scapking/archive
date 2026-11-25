@@ -46,8 +46,11 @@ import { ScreenHeader, usePalette } from './ui';
  *   邮箱 → 描述，顺序沿用原词表），下方两个动作——「下一步」逐一揭示后续
  *   字段（跳过的字段保持默认空值不处理），「直接创建」随时用已填内容创建
  *   （默认只填名称即可创建）；最后一步的主钮即创建；
- * - **创建门槛**：标题必填（store 校验同源），空标题时两个动作禁用 + muted
- *   提示；步骤指示「X / 7」（tabular，与 deck 页码同语言）；
+ * - **创建门槛**：标题必填（store 校验同源），空标题时两个动作禁用；步骤指示
+ *   「X / 7」升屏头右位（tabular 12，v0.4.6），配 3px 七格进度轨双编码；
+ * - **留白即节奏（v0.4.6 方向令 §3）**：单字段区垂直居中（contentContainer
+ *   flexGrow + flex-1 justify-center），动作行下方「已填内容」摘要卡（≥2 项
+ *   才出现，只列有值字段）把死白转成实时回执；
  * - GPS（不可手输）：进页自动定位（权限预检 → 服务检查 → 8s 超时兜底），
  *   状态行只在「位置」步骤展示——失败/拒绝降级 muted「未定位」，创建 gps
  *   置 null 不阻塞；
@@ -58,8 +61,10 @@ import { ScreenHeader, usePalette } from './ui';
  *   ease-out + 淡入；动画层与布局层分离（Animated.View 只挂内联动画 style，
  *   className 恒在外层普通 View——css-interop web 端静默丢弃 Animated
  *   className 的仓库铁律坑）；首步静态进场（无换步语义，不播）；
- * - 布局：字段块 + 动作行（直接创建 = surface 次级，下一步/创建 = 近黑主钮，
- *   flex-1 等分 h-12）；键盘避让 + keyboardShouldPersistTaps。
+ * - 布局：字段块（eyebrow 11 题 + FieldInput，标题档 20 / 其余单行 16）+
+ *   动作行（直接创建 = surface 次级，下一步/创建 = 近黑主钮，flex-1 等分
+ *   h-12 文字 16）；键盘避让 + keyboardShouldPersistTaps；与计划/行程向导
+ *   同一字阶（方向令 §2 全局收口）。
  */
 
 /** 定位超时上限（ms）：单次 getCurrentPosition 的等待上限，超时按失败降级。 */
@@ -291,13 +296,37 @@ export function EventFormScreen() {
         setStep((prev) => Math.min(prev + 1, STEP_TOTAL - 1));
     };
 
+    // 已填摘要（v0.4.6「稀疏即罪」落点）：向导一次只出一格，其余留白由这帧
+    // 「已经填了什么」实时回执填住——只列有值字段（方向令 §2 最小必要 meta，
+    // 「未填/未定位」不进摘要）；≥2 项才出卡（只一个标题时摘要与输入框重复）
+    const filledSummary: Array<{ label: string; value: string }> = [];
+    if (title.trim()) filledSummary.push({ label: '标题', value: title.trim() });
+    if (gps) filledSummary.push({ label: '位置', value: `${gps.lat}, ${gps.lng}` });
+    if (handledBy.trim()) filledSummary.push({ label: '处理人', value: handledBy.trim() });
+    if (subjectValue.trim()) filledSummary.push({ label: '对象', value: subjectValue.trim() });
+    if (phone.trim()) filledSummary.push({ label: '手机号', value: phone.trim() });
+    if (email.trim()) filledSummary.push({ label: '邮箱', value: email.trim() });
+    if (description.trim()) filledSummary.push({ label: '描述', value: description.trim() });
+
     return (
         <KeyboardAvoidingView
             className="flex-1 bg-ink-base dark:bg-inkd-base"
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
             <View style={{ paddingTop: insets.top }} className="flex-1">
-                <ScreenHeader title="新建事件" />
+                {/* 步骤指示升屏头右位（X / 7，tabular 12）：字段区上移一格，
+                    进度与屏题同带——向导页屏头即状态栏 */}
+                <ScreenHeader
+                    title="新建事件"
+                    right={
+                        <Text
+                            className="ml-2 text-[12px] text-ink-muted dark:text-inkd-muted"
+                            style={{ fontVariant: ['tabular-nums'] }}
+                        >
+                            {`${step + 1} / ${STEP_TOTAL}`}
+                        </Text>
+                    }
+                />
                 <ScrollView
                     className="flex-1"
                     contentContainerStyle={{
@@ -306,24 +335,41 @@ export function EventFormScreen() {
                         alignSelf: 'center',
                         width: '100%',
                         maxWidth: 560,
+                        // flexGrow：内容不满一屏时撑满——字段区 flex-1 才有
+                        // 「垂直居中」可依（Apple 单字段向导节奏，死白变成设计过的呼吸）
+                        flexGrow: 1,
                     }}
                     keyboardShouldPersistTaps="handled"
                     keyboardDismissMode="on-drag"
                 >
                     {error ? (
-                        // store.error 通道（校验失败如「给事件起个名字」/落库失败）
-                        <Text className="mb-3 text-[12px] text-ink-negative dark:text-inkd-negative">
-                            {error}
-                        </Text>
+                        // store.error 通道（校验失败如「给事件起个名字」/落库失败）：
+                        // 与设置页同款 tinted 横幅
+                        <View className="mb-4 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">
+                            <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
+                                {error}
+                            </Text>
+                        </View>
                     ) : null}
 
-                    {/* 步骤指示（与 deck 页码同语言：X / 7，tabular） */}
-                    <Text
-                        className="mb-2 text-[11px] text-ink-muted dark:text-inkd-muted"
-                        style={{ fontVariant: ['tabular-nums'] }}
-                    >
-                        {`${step + 1} / ${STEP_TOTAL}`}
-                    </Text>
+                    {/* 分步进度轨（7 格，已过档位墨实、未过浅淡）：数字指示的
+                        图形化双编码，tabular「X / 7」仍在屏头右位 */}
+                    <View className="mb-6 flex-row gap-1" pointerEvents="none">
+                        {Array.from({ length: STEP_TOTAL }).map((_, index) => (
+                            <View
+                                key={index}
+                                className={`h-[3px] flex-1 rounded-full ${
+                                    index <= step
+                                        ? 'bg-ink-text dark:bg-inkd-text'
+                                        : 'bg-ink-border dark:bg-inkd-border'
+                                }`}
+                            />
+                        ))}
+                    </View>
+
+                    {/* 字段区垂直居中（flex-1 justify-center）：单字段向导的
+                        空白变成呼吸而非残留 */}
+                    <View className="flex-1 justify-center">
 
                     {/* ── 当前步骤的字段（一次只出一个）：StepPane 以 key={step}
                         换步重挂 → 新字段按方向滑入（前进右/后退左，200ms
@@ -333,7 +379,7 @@ export function EventFormScreen() {
                     <StepPane key={step} direction={stepDirection} animate={step > 0}>
                         {step === 0 ? (
                             <View>
-                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                     标题
                                 </Text>
                                 <FieldInput
@@ -343,6 +389,7 @@ export function EventFormScreen() {
                                     maxLength={EVENT_TITLE_MAX}
                                     autoFocus
                                     containerClassName="h-14"
+                                    style={{ fontSize: 20, lineHeight: 28 }}
                                     accessibilityLabel="事件标题"
                                 />
                             </View>
@@ -350,7 +397,7 @@ export function EventFormScreen() {
 
                         {step === 1 ? (
                             <View>
-                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                     位置
                                 </Text>
                                 {/* GPS（自动定位，不可手输）：行容器与 FieldInput 同视觉
@@ -397,7 +444,7 @@ export function EventFormScreen() {
 
                         {step === 2 ? (
                             <View>
-                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                     处理人
                                 </Text>
                                 <FieldInput
@@ -407,6 +454,7 @@ export function EventFormScreen() {
                                     maxLength={EVENT_HANDLED_BY_MAX}
                                     autoFocus
                                     containerClassName="h-14"
+                                    style={{ fontSize: 16, lineHeight: 24 }}
                                     accessibilityLabel="处理人"
                                 />
                             </View>
@@ -414,7 +462,7 @@ export function EventFormScreen() {
 
                         {step === 3 ? (
                             <View>
-                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                     对象
                                 </Text>
                                 <FieldInput
@@ -424,6 +472,7 @@ export function EventFormScreen() {
                                     maxLength={EVENT_SUBJECT_VALUE_MAX}
                                     autoFocus
                                     containerClassName="h-14"
+                                    style={{ fontSize: 16, lineHeight: 24 }}
                                     accessibilityLabel="对象"
                                 />
                             </View>
@@ -431,7 +480,7 @@ export function EventFormScreen() {
 
                         {step === 4 ? (
                             <View>
-                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                     手机号
                                 </Text>
                                 <FieldInput
@@ -445,6 +494,7 @@ export function EventFormScreen() {
                                     autoCorrect={false}
                                     autoFocus
                                     containerClassName="h-14"
+                                    style={{ fontSize: 16, lineHeight: 24 }}
                                     accessibilityLabel="手机号"
                                 />
                             </View>
@@ -452,7 +502,7 @@ export function EventFormScreen() {
 
                         {step === 5 ? (
                             <View>
-                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                     邮箱
                                 </Text>
                                 <FieldInput
@@ -466,6 +516,7 @@ export function EventFormScreen() {
                                     autoCorrect={false}
                                     autoFocus
                                     containerClassName="h-14"
+                                    style={{ fontSize: 16, lineHeight: 24 }}
                                     accessibilityLabel="邮箱"
                                 />
                             </View>
@@ -473,7 +524,7 @@ export function EventFormScreen() {
 
                         {step === 6 ? (
                             <View>
-                                <Text className="mb-2 text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                     描述
                                 </Text>
                                 <FieldInput
@@ -483,12 +534,13 @@ export function EventFormScreen() {
                                     multiline
                                     maxLength={EVENT_DESCRIPTION_MAX}
                                     autoFocus
-                                    style={{ minHeight: 120, paddingTop: 16 }}
+                                    style={{ minHeight: 120, paddingTop: 16, fontSize: 16, lineHeight: 26 }}
                                     accessibilityLabel="事件描述"
                                 />
                             </View>
                         ) : null}
                     </StepPane>
+                    </View>
 
                     {/* ── 动作行：直接创建（次级）+ 下一步/创建（主钮）等分 ──
                         标题未填双禁用；直接创建随时可用已填内容创建（用户口径
@@ -503,7 +555,7 @@ export function EventFormScreen() {
                             accessibilityRole="button"
                             accessibilityLabel="直接创建"
                         >
-                            <Text className="text-[15px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                            <Text className="text-[16px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                 直接创建
                             </Text>
                         </Pressable>
@@ -519,7 +571,7 @@ export function EventFormScreen() {
                                 <ActivityIndicator size="small" color={palette.onPrimaryBtn} />
                             ) : (
                                 <Text
-                                    className="text-[15px] font-semibold"
+                                    className="text-[16px] font-semibold"
                                     style={{ color: palette.onPrimaryBtn }}
                                 >
                                     {isLastStep ? '创建事件' : '继续填写'}
@@ -527,6 +579,32 @@ export function EventFormScreen() {
                             )}
                         </Pressable>
                     </View>
+
+                    {/* 已填摘要卡（≥2 项才渲染，见 filledSummary 注）：纸卡 +
+                        轻投影，label eyebrow 11 / value 14——「直接创建」前
+                        最后一眼确认，也是底部留白的设计化收口 */}
+                    {filledSummary.length >= 2 ? (
+                        <View className="mt-8">
+                            <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                已填内容
+                            </Text>
+                            <View className="gap-3 rounded-card bg-ink-surface px-4 py-4 dark:bg-inkd-surface">
+                                {filledSummary.map((item) => (
+                                    <View key={item.label} className="flex-row items-baseline gap-4">
+                                        <Text className="w-12 shrink-0 text-[11px] text-ink-muted dark:text-inkd-muted">
+                                            {item.label}
+                                        </Text>
+                                        <Text
+                                            numberOfLines={item.label === '描述' ? 2 : 1}
+                                            className="min-w-0 flex-1 text-[14px] text-ink-text dark:text-inkd-text"
+                                        >
+                                            {item.value}
+                                        </Text>
+                                    </View>
+                                ))}
+                            </View>
+                        </View>
+                    ) : null}
                 </ScrollView>
             </View>
         </KeyboardAvoidingView>
