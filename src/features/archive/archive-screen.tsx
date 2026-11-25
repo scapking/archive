@@ -6,7 +6,6 @@ import { useRouter } from 'expo-router';
 import {
     BouncyPressable,
     LucideBookOpen,
-    LucideCalendar,
     LucideCalendarX,
     LucideCheck,
     LucideChevronRight,
@@ -16,7 +15,6 @@ import {
     LucidePlay,
     LucideRoute,
     LucideListPlus,
-    LucideListTodo,
     LucideTrash,
     LucideType,
 } from '@/core/icons';
@@ -28,7 +26,7 @@ import { useArchiveRevision, useArchiveStore } from './store';
 import { useDataRevision } from './data-revision';
 import * as db from './db';
 import type { EventRow, JournalBlock, JournalRow } from './db';
-import { formatDateGroupLabel, isEditable, parseBlocks, previewText } from './journal-logic';
+import { formatDateGroupLabel, isEditable, parseBlocks } from './journal-logic';
 // 计划纯逻辑（v11）：在堆判定收口派生函数，禁散落 status 字面量比较
 import { isPlanOpen } from './plan-logic';
 import { PLAN_TITLE_FALLBACK } from './journal-edit-screen';
@@ -44,6 +42,7 @@ import {
     ActionMenuCard,
     CardDeck,
     CloseButton,
+    PAPER_CARD_SHADOW,
     ComposeFab,
     LoadingView,
     ProgressBar,
@@ -94,6 +93,12 @@ import {
 
 /** deck 行程卡数据类型（屏侧组装的 store 装饰行）。 */
 type DeckTrip = ReturnType<typeof useArchiveStore.getState>['trips'][number];
+
+/** 首页 deck 高度区间（dp，v0.4.7 令 1 重分配）：430 = 旧首页固定档（下限，
+ *  不可滚屏不得下塌出裁切外的死区），680 = 高视口封顶档（deck 卡 = 封面 16:10
+ *  封顶 220 + 文字区，再高则文字稀疏——「稀疏即罪」反向的溢出档）。 */
+const DECK_MIN = 430;
+const DECK_MAX = 680;
 
 /**
  * 行程菜单行（R2）：关闭行程仅进行中可达（end_date 落今天，明日起进入回忆
@@ -202,6 +207,22 @@ export function ArchiveScreen() {
     // 计划/事件列表（deck 卡数据通道）：null = 首载未完成；revision 驱动重载
     const [notes, setNotes] = useState<JournalRow[] | null>(null);
     const [openEvents, setOpenEvents] = useState<EventRow[] | null>(null);
+
+    // deck 高度重分配（v0.4.7 令 1：入口组卡删除，首页下半整幅交还 deck——
+    // 导航职责已在 Me「我的内容」与 tab，不留重复）：deck 区容器 flex-1 吃掉
+    // 屏内剩余高度，onLayout 实测后夹紧 [DECK_MIN, DECK_MAX]：矮屏守住 430 既有
+    // 档不下塌（不滚动屏，deck 超高即溢出裁切），高桌面 680 封顶防卡面文字区
+    // 无度撑大。实测高度与 deck 内容无关（flex-1 恒铺满剩余），不构成布局反馈
+    // 环；变化 ≥2dp 才 setState（#15 引用稳定口径，防堆位 spring 无意义重跑）。
+    const [deckAreaHeight, setDeckAreaHeight] = useState<number | null>(null);
+    const onDeckAreaLayout = useCallback((event: LayoutChangeEvent) => {
+        const next = Math.round(event.nativeEvent.layout.height);
+        setDeckAreaHeight((prev) => (prev !== null && Math.abs(prev - next) < 2 ? prev : next));
+    }, []);
+    const deckHeight =
+        deckAreaHeight === null
+            ? DECK_MIN
+            : Math.max(DECK_MIN, Math.min(DECK_MAX, deckAreaHeight));
 
     // Android 返回键关弹窗（替代 Modal 的 onRequestClose 语义）
     useEffect(() => {
@@ -415,29 +436,32 @@ export function ArchiveScreen() {
                     >
                         {metrics.streak > 0 ? `连续记录 ${metrics.streak} 天` : '今天的记录都在这里'}
                     </Text>
+                    {/* store.error 通道：v0.4.7 令 3 对齐 settings 错误横幅语言
+                        （tinted negative-bg 圆角卡，错误是设计面不是贴留白的小字） */}
                     {error ? (
-                        <Text className="mt-1 text-[12px] text-ink-negative dark:text-inkd-negative">
-                            {error}
-                        </Text>
+                        <View className="mt-2 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">
+                            <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
+                                {error}
+                            </Text>
+                        </View>
                     ) : null}
                 </View>
 
-                {/* 动态多卡 deck（N 卡泛化：卡片样式/露条交互/430 高度 = 原 deck
-                    原样；背卡露条点按 = 提前到前位；完成态过滤见文件头）；屏边距
-                    px-6 与屏头 / Me / 搜索同一屏边距口径；mt-4 顶部间距（既有口径） */}
-                {/* 水平居中（mx-auto 阅读列）+ 保持屏边距 px-6；垂直位置照旧
-                    （2026-11-19 用户澄清：不是垂直居中） */}
-                <View className="mt-4 px-6">
-                    <View className="mx-auto w-full max-w-[560px]">
-                        <CardDeck items={deckItems} />
-                        {/* v0.4.6 指令 7：原「两枚指示点」是假数据（恒 2 点，与
-                            卡数无关），退场——deck 卡底页码「X / N」已诚实承载
-                            堆位信息，不再叠装饰。入口组卡（事件/计划/行程）填补
-                            首页下半死白（「稀疏即罪」：空区收进真实导航内容），
-                            与 Me 内容卡同一容器语言：一张 surface 卡、单容器行组、
-                            行间零线条、行级 active 高亮。deck 内的事件/计划卡是
-                            单卡直达，这里是列表/堆页入口。 */}
-                        <EntriesCard />
+                {/* 动态多卡 deck（N 卡泛化：卡片样式/露条交互 = 原 deck 原样；
+                    背卡露条点按 = 提前到前位；完成态过滤见文件头）；屏边距 px-6
+                    与屏头 / Me / 搜索同一口径；mt-4 顶部间距（既有口径）。
+                    v0.4.7 令 1：入口组卡（事件/计划/行程）整块删除——导航职责
+                    已在 Me「我的内容」与 tab，首页不留重复入口；下半幅由 deck
+                    按剩余高度重新吃满（见上方 deckHeight 注），死白不再需要
+                    「补丁卡」填。垂直位置 = 顶对齐（2026-11-19 用户澄清：不是
+                    垂直居中），封顶余量交给 justify-center 的对称呼吸。 */}
+                <View className="mt-4 min-h-0 flex-1 px-6" onLayout={onDeckAreaLayout}>
+                    <View className="mx-auto h-full w-full max-w-[560px] justify-center">
+                        <CardDeck
+                            items={deckItems}
+                            height={deckHeight}
+                            emptyState={<DeckEmptyInvite />}
+                        />
                     </View>
                 </View>
             </View>
@@ -718,61 +742,26 @@ export function ArchiveScreen() {
 }
 
 /**
- * 入口组卡（v0.4.6 指令 7：首页下半死白收进真实导航）：事件 / 计划 / 行程三行
- * 并作一张 surface 卡（单容器行组、零线条、行级 active 高亮——Me 内容卡同一
- * 语言）。原 EventsEntryCard 单行事件入口是其前身；deck 卡是单卡直达、这里
- * 是列表/堆页入口。行解剖：图标（40 raised 底）+ 题 16 + 一句说明 12 + chevron。
+ * 首页 deck 空堆态（设计过的邀请，不是死白——方向令 §3）：仅当「今天日记已收笔
+ * 且无在途行程 / 未决事件 / 进行中计划」时出现（日记缺卡必有邀请卡垫底，deck
+ * 常态非空）。文案口径与邀请卡一致：说清现状 + 指一条出路（+ 新建），不复述
+ * 已删的入口组卡导航。
  */
-function EntriesCard() {
-    const router = useRouter();
-    const palette = usePalette();
-    const rows = [
-        {
-            key: 'events',
-            icon: <LucideFlag size={18} strokeWidth={1.9} color={palette.secondary} />,
-            title: '事件',
-            hint: '要跟的事记成工单，跟到完成',
-            onPress: () => router.push('/events' as never),
-        },
-        {
-            key: 'plans',
-            icon: <LucideListTodo size={18} strokeWidth={1.9} color={palette.secondary} />,
-            title: '计划',
-            hint: '进行中的计划，堆里翻',
-            onPress: () => router.push('/plans' as never),
-        },
-        {
-            key: 'trips',
-            icon: <LucideCalendar size={18} strokeWidth={1.9} color={palette.secondary} />,
-            title: '行程',
-            hint: '在途与计划中的旅行',
-            onPress: () => router.push('/trips' as never),
-        },
-    ];
+function DeckEmptyInvite() {
     return (
-        <View className="mt-6 overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface">
-            {rows.map((row) => (
-                <Pressable
-                    key={row.key}
-                    onPress={row.onPress}
-                    className="flex-row items-center gap-3 px-4 py-3 active:bg-ink-raised dark:active:bg-inkd-raised"
-                    accessibilityRole="button"
-                    accessibilityLabel={row.title}
-                >
-                    <View className="h-10 w-10 items-center justify-center rounded-control bg-ink-raised dark:bg-inkd-raised">
-                        {row.icon}
-                    </View>
-                    <View className="min-w-0 flex-1">
-                        <Text className="text-[16px] font-medium text-ink-text dark:text-inkd-text">
-                            {row.title}
-                        </Text>
-                        <Text numberOfLines={1} className="mt-0.5 text-[12px] text-ink-muted dark:text-inkd-muted">
-                            {row.hint}
-                        </Text>
-                    </View>
-                    <LucideChevronRight size={16} strokeWidth={1.9} color={palette.faint} />
-                </Pressable>
-            ))}
+        // settings 同源卡面（v0.4.7 令 3）：rounded-card surface + PAPER_CARD
+        // 静止卡影，空态也是一张浮在页底上的纸卡，不是贴底的裸文字
+        <View
+            className="items-center rounded-card bg-ink-surface px-8 py-10 dark:bg-inkd-surface"
+            style={PAPER_CARD_SHADOW}
+        >
+            <Text className="text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">今日</Text>
+            <Text className="mt-2 text-[24px] font-semibold text-ink-text dark:text-inkd-text">
+                这一页已收笔
+            </Text>
+            <Text className="mt-2 text-center text-[13px] leading-5 text-ink-muted dark:text-inkd-muted">
+                明天会翻开新的一页。想再记点什么，点右下角 +。
+            </Text>
         </View>
     );
 }

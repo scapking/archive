@@ -1158,10 +1158,13 @@ export function JournalEditScreen({
                 <View style={{ paddingTop: insets.top }} className="flex-1">
                     {error ? (
                         // 失败文案下移一档（2026-11-09 反馈）：屏头→文案 8→24dp
-                        //（pt-6，与主画布报头下节奏同档）
-                        <Text className="px-6 pb-2 pt-6 text-[12px] text-ink-negative dark:text-inkd-negative">
-                            {error}
-                        </Text>
+                        //（mt-6，与主画布报头下节奏同档）；v0.4.7 令 3 收进
+                        // settings 同源 tinted 横幅卡（错误是设计面不是贴底小字）
+                        <View className="mx-6 mt-6 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">
+                            <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
+                                {error}
+                            </Text>
+                        </View>
                     ) : null}
                     {/* 空态块整体下移一档（2026-11-09 反馈）：容器顶 pt-8 呼吸带
                         ——居中口径下内容净下移 16dp，与屏头群留出明确间距（本轮
@@ -1327,19 +1330,25 @@ export function JournalEditScreen({
                 </View>
                 {error ? (
                     // 错误横幅整体下移一档（2026-11-09 反馈）：报头群→横幅间距
-                    // 8→24dp（pt-4 呼吸带，对齐 EDITOR_RHYTHM.mastheadToFirstBlock
-                    // =24 的报头下节奏），不再贴着报头/返回键区域
-                    <Text className="px-6 pb-2 pt-4 text-[12px] text-ink-negative dark:text-inkd-negative">
-                        {error}
-                    </Text>
+                    // 8→24dp（mt-4 呼吸带，对齐 EDITOR_RHYTHM.mastheadToFirstBlock
+                    // =24 的报头下节奏），不再贴着报头/返回键区域；v0.4.7 令 3
+                    // 收进 settings 同源 tinted 横幅卡
+                    <View className="mx-6 mt-4 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">
+                        <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
+                            {error}
+                        </Text>
+                    </View>
                 ) : null}
                 {!editable && !isPlan ? (
                     // 锁页横幅（v11 拆分 → v0.4.6 指令 3 收口）：日记 = 收笔口径不变，
                     // 仍悬于屏头之下；计划的终态提示上移进屏头带（见上方 meta 行后的
-                    // 提示行），此处不再给计划渲染第二条
-                    <Text className="px-6 pb-3 text-[12px] text-ink-muted dark:text-inkd-muted">
-                        本页已收笔，内容不可再修改。
-                    </Text>
+                    // 提示行），此处不再给计划渲染第二条。v0.4.7 令 3：settings 完成
+                    // 横幅同款 surface 井——状态说明是设计面，不是一行裸灰字
+                    <View className="mx-6 mt-4 rounded-control bg-ink-surface px-4 py-3 dark:bg-inkd-surface">
+                        <Text className="text-[13px] leading-5 text-ink-secondary dark:text-inkd-secondary">
+                            本页已收笔，内容不可再修改。
+                        </Text>
+                    </View>
                 ) : null}
 
                 <ScrollView

@@ -21,7 +21,7 @@ import {
 } from '@/core/icons';
 import { haptics } from '@/core/haptics';
 import { useArchiveRevision, useArchiveStore } from './store';
-import { LineChart, LoadingView, usePalette } from './ui';
+import { LineChart, LoadingView, PAPER_CARD_SHADOW, usePalette } from './ui';
 
 /**
  * Me：身份行（Me 标题 + 连续天数）、指标卡（3 格 KPI 单行 + 30 天曲线）、
@@ -187,7 +187,12 @@ export function MeScreen() {
                         </Text>
                     </Enter>
                     {error ? (
-                        <Text className="mt-1 text-[12px] text-ink-negative dark:text-inkd-negative">{error}</Text>
+                        // 错误横幅卡（v0.4.7 令 3，settings 同源）：tinted 圆角卡承载
+                        <View className="mt-2 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">
+                            <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
+                                {error}
+                            </Text>
+                        </View>
                     ) : null}
                 </View>
 
@@ -204,10 +209,16 @@ export function MeScreen() {
                         值范式——数字跟着入口走，见内容卡注）。**无任何内部分隔线**：
                         KPI 格间靠两侧 px-3 留白相加（24px），曲线段与 KPI 段靠 py-3×2
                         纵向节奏——卡内分区靠留白不靠线（同 event-card / Apple Journal
-                        口径）。卡片级仍是 surface-on-base tone 分层、rounded-card 16、
-                        无描边无阴影（#13）。卡壳不做整体动画：KPI 格 / 曲线段各自
-                        交错进场，卡面作为安静的「底」先立住，内容依次落位。 */}
-                    <View className="mt-3 rounded-card bg-ink-surface dark:bg-inkd-surface">
+                        口径）。卡片级 = surface-on-base tone 分层、rounded-card 16、
+                        PAPER_CARD 静止卡影（v0.4.7 令 3 对齐 settings 质感，无描边）。
+                        卡壳不做整体动画：KPI 格 / 曲线段各自
+                        交错进场，卡面作为安静的「底」先立住，内容依次落位。
+                        v0.4.7 令 3：卡身挂 PAPER_CARD 静止卡影 + eyebrow 升 secondary
+                        （settings 卡片质感同款，token 见 ui/paper-shadow.ts）。 */}
+                    <View
+                        className="mt-3 rounded-card bg-ink-surface dark:bg-inkd-surface"
+                        style={PAPER_CARD_SHADOW}
+                    >
                         <View className="flex-row">
                             <Enter className="flex-1" delay={0} y={8}>
                                 <MetricCell value={`${metrics.journalDays}`} unit="天" label="写过日记" />
@@ -248,8 +259,10 @@ export function MeScreen() {
                         ——`as never` 是最小妥协（never 可赋给任何联合，不产生 any 的
                         误拓宽），类型生成后可直接删除断言。 */}
                     <View className="mt-6">
+                        {/* eyebrow 档对齐 settings SectionEyebrow（11 medium secondary，
+                            v0.4.7 令 3） */}
                         <Enter delay={240} y={0}>
-                            <Text className="mb-3 text-[11px] font-medium text-ink-muted dark:text-inkd-muted">
+                            <Text className="mb-3 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                 我的内容
                             </Text>
                         </Enter>
@@ -258,7 +271,7 @@ export function MeScreen() {
                             chevron，h-12，零线条，行级 active 高亮。入口去向：搜索
                             枢纽 / 事件列表 / 计划堆 /plans / 行程堆 /trips（2026-11-19
                             指令：行程行恒静态不展开列表；日记行早已退场——入口在首页） */}
-                        <View className="rounded-card bg-ink-surface dark:bg-inkd-surface">
+                        <View className="rounded-card bg-ink-surface dark:bg-inkd-surface" style={PAPER_CARD_SHADOW}>
                             <Enter delay={280}>
                                 <ContentEntryRow
                                     icon={<LucideSearch size={18} strokeWidth={1.9} color={palette.secondary} />}
@@ -300,7 +313,7 @@ export function MeScreen() {
                         App 锁 / 备份与恢复。Enter 时间线顺延（360 + STAGGER×4）。 */}
                     <View className="mt-6">
                         <Enter delay={280 + ENTER_STAGGER * 4} y={0}>
-                            <Text className="mb-3 text-[11px] font-medium text-ink-muted dark:text-inkd-muted">
+                            <Text className="mb-3 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                                 设置
                             </Text>
                         </Enter>
@@ -308,7 +321,10 @@ export function MeScreen() {
                             {/* overflow-hidden 让行高亮底裁进 rounded-card 圆角；py-4
                                 加高卡体（用户指令「大一些」，行解剖仍 = 图标 + 题 +
                                 chevron 单行） */}
-                            <View className="overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface">
+                            <View
+                                className="overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface"
+                                style={PAPER_CARD_SHADOW}
+                            >
                                 <Pressable
                                     onPress={() => {
                                         haptics.impact();

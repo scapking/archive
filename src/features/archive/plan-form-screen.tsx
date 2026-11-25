@@ -30,7 +30,7 @@ import {
     planFormStepAt,
     planTitleValid,
 } from './plan-logic';
-import { CloseButton, safeBack, usePalette } from './ui';
+import { CloseButton, PAPER_CARD_SHADOW, safeBack, usePalette } from './ui';
 // 深路径注记：FieldInput 未入 ui/index.ts 出口（该文件不在本组改动权限内），
 // 域内深取；ui/index.ts 出口扩充时收口（同 close-button / editor-icons 先例）。
 import { FieldInput } from './ui/field-input';
@@ -249,11 +249,14 @@ export function PlanFormScreen() {
                 keyboardDismissMode="on-drag"
             >
                 {/* store.error 通道（标题必填「给计划起个名字」/落库失败）：
-                    顶部横幅位（事件建页同槽位口径），按钮不禁用可直接重试 */}
+                    顶部横幅位（事件建页同槽位口径），按钮不禁用可直接重试；
+                    v0.4.7 令 3——settings 同源 tinted 横幅卡 */}
                 {storeError ? (
-                    <Text className="mb-3 text-[12px] text-ink-negative dark:text-inkd-negative">
-                        {storeError}
-                    </Text>
+                    <View className="mb-3 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">
+                        <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
+                            {storeError}
+                        </Text>
+                    </View>
                 ) : null}
 
                 {/* 步骤指示（与事件「X / 7」、deck 页码同语言：X / 2，tabular
@@ -271,7 +274,13 @@ export function PlanFormScreen() {
                     的普通 View 上，Animated.View 只挂内联动画 style（web 铁律
                     坑，事件屏同款注）── */}
                 <StepPane key={step} direction={stepDirection} animate={step > 0}>
-                    <View>
+                    {/* 表单块（v0.4.7 令 3）：字段收进 settings 同源纸卡
+                        （rounded-card surface + PAPER_CARD 卡影），输入体走
+                        raised 档——纸卡上的下凹井，tone 分层与卡面拉开一档 */}
+                    <View
+                        className="rounded-card bg-ink-surface px-5 pb-5 pt-4 dark:bg-inkd-surface"
+                        style={PAPER_CARD_SHADOW}
+                    >
                         {/* 字段题 = 正文声部 16（v0.4.6 字阶纪律：一步一题，
                             题不是 eyebrow 不该用弱档小字） */}
                         <Text className="mb-2 text-[16px] font-medium text-ink-text dark:text-inkd-text">
@@ -285,6 +294,7 @@ export function PlanFormScreen() {
                                 placeholder={PLAN_TITLE_PLACEHOLDER}
                                 maxLength={JOURNAL_TITLE_MAX}
                                 autoFocus
+                                tone="raised"
                                 containerClassName="h-14"
                                 accessibilityLabel="计划标题"
                             />
@@ -300,6 +310,7 @@ export function PlanFormScreen() {
                                 placeholder={PLAN_DESCRIPTION_PLACEHOLDER}
                                 maxLength={PLAN_DESCRIPTION_MAX}
                                 autoFocus
+                                tone="raised"
                                 style={{ minHeight: 120, paddingTop: 16 }}
                                 accessibilityLabel="计划描述"
                             />
@@ -352,8 +363,15 @@ export function PlanFormScreen() {
                     实时更新。非交互装饰件：pointerEvents 关闭，页码位留给
                     文案本身（不做假卡页码）。 */}
                 <View className="mt-12" pointerEvents="none">
-                    <Text className="mb-3 text-[11px] text-ink-muted dark:text-inkd-muted">卡片预览</Text>
-                    <View className="rounded-card bg-ink-surface px-6 py-5 dark:bg-inkd-surface">
+                    {/* 预览 eyebrow 对齐 settings SectionEyebrow（11 medium secondary）；
+                        卡身补 PAPER_CARD 静止卡影（v0.4.7 令 3，settings 同源） */}
+                    <Text className="mb-2 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                        卡片预览
+                    </Text>
+                    <View
+                        className="rounded-card bg-ink-surface px-6 py-5 dark:bg-inkd-surface"
+                        style={PAPER_CARD_SHADOW}
+                    >
                         <Text
                             className="text-[11px] text-ink-muted dark:text-inkd-muted"
                             style={{ fontVariant: ['tabular-nums'] }}

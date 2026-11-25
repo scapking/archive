@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Text, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Text, View, type LayoutChangeEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import * as db from './db';
@@ -7,7 +7,7 @@ import type { JournalRow } from './db';
 import { useArchiveRevision, useArchiveStore, type TripCard } from './store';
 import { isPlanOpen } from './plan-logic';
 import { tripDisplayTitle } from './trip-logic';
-import { CardDeck, CloseButton, LoadingView, safeBack, type DeckItem } from './ui';
+import { CardDeck, CloseButton, LoadingView, PAPER_CARD_SHADOW, safeBack, type DeckItem } from './ui';
 // 深路径注记（v0.4.6 指令 4/7）：堆叠卡面与首页**同一实现源**——行程卡/计划卡
 // 直接复用 archive-screen 导出的 TripCard / NoteDeckCard（屏间深取，同
 // trip-detail ← DeadEndView 先例；两屏均在本组改动权限内）。首页卡面口径
@@ -29,18 +29,31 @@ import { NoteDeckCard, TripCard as TripDeckCard } from './archive-screen';
  * = 封面 + eyebrow（类型 + 区间/今天）+ 状态片 + 描述 + 统计（进度/已写），
  * 不再渲染行程名（兜底「未命名行程」一并退场）；计划卡 = eyebrow（类型 +
  * 建立日期）+ 题 + 引导行 + 正文预算，「更新于 …」「N 字」冗余串退场。
- * 空堆给设计过的邀请态（deck emptyState 槽），不再是一片死白。
- * 卡高由 CardPile 520 竖版档承担（首页 430 不受影响）。
+ * 空堆给设计过的邀请态（deck emptyState 槽，settings 同源纸卡），不再是
+ * 一片死白。卡高（v0.4.7 令 1）：520 竖版档为下限，屏内剩余实测吃满、680
+ * 封顶——与首页 deck 同一「高度重分配」构图口径。
  */
 
 /** 库类型（路由壳注入）：note = 计划堆 / trip = 行程堆。 */
 export type LibraryKind = 'note' | 'trip';
 
-/** 空堆邀请态（deck emptyState 槽）：空区是行动指引，不是空白。 */
+/** 堆页 deck 高度区间（dp，v0.4.7 令 1 延伸口径）：520 = 旧固定长卡档（下限），
+ *  680 = 高视口封顶（与首页同档，防卡面文字区无度撑大）。 */
+const DECK_MIN = 520;
+const DECK_MAX = 680;
+
+/**
+ * 空堆邀请态（deck emptyState 槽）：空区是行动指引，不是空白。
+ * v0.4.7 令 3：收进 settings 同源卡面——rounded-card surface + PAPER_CARD
+ * 静止卡影，eyebrow 升 11 medium secondary；空态也是一张浮在页底上的纸卡。
+ */
 function EmptyPile({ kind }: { kind: LibraryKind }) {
     return (
-        <View className="items-center px-6">
-            <Text className="text-[11px] text-ink-muted dark:text-inkd-muted">
+        <View
+            className="items-center rounded-card bg-ink-surface px-8 py-10 dark:bg-inkd-surface"
+            style={PAPER_CARD_SHADOW}
+        >
+            <Text className="text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
                 {kind === 'note' ? '计划' : '行程'}
             </Text>
             <Text className="mt-2 text-[24px] font-semibold text-ink-text dark:text-inkd-text">
@@ -98,6 +111,19 @@ export function LibraryScreen({ kind }: { kind: LibraryKind }) {
         };
     }, [revision, kind]);
 
+    // deck 高度重分配（v0.4.7 令 1 同款：堆页长卡 520 档为下限，剩余屏高实测
+    // 夹紧到 680 封顶——首页删组卡后 deck 吃满的构图口径延伸到堆页，520 之下
+    // 的死白收给卡面本身）。实测与 deck 内容无关（flex-1 铺满），无反馈环。
+    const [deckAreaHeight, setDeckAreaHeight] = useState<number | null>(null);
+    const onDeckAreaLayout = useCallback((event: LayoutChangeEvent) => {
+        const next = Math.round(event.nativeEvent.layout.height);
+        setDeckAreaHeight((prev) => (prev !== null && Math.abs(prev - next) < 2 ? prev : next));
+    }, []);
+    const deckHeight =
+        deckAreaHeight === null
+            ? DECK_MIN
+            : Math.max(DECK_MIN, Math.min(DECK_MAX, deckAreaHeight));
+
     // 卡序列（useMemo 引用稳定，hooks 铁律：挂在下方 early return 之前——
     // 「Rendered more hooks」崩溃的教训，2026-11-19 真机实证）
     const items = useMemo<DeckItem[]>(() => {
@@ -148,18 +174,24 @@ export function LibraryScreen({ kind }: { kind: LibraryKind }) {
                         </Text>
                     </View>
                     {error ? (
-                        <Text className="mt-1 text-[12px] text-ink-negative dark:text-inkd-negative">
-                            {error}
-                        </Text>
+                        // 错误横幅卡（v0.4.7 令 3，settings 同源 tinted 圆角卡）
+                        <View className="mt-2 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">
+                            <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
+                                {error}
+                            </Text>
+                        </View>
                     ) : null}
                 </View>
 
-                {/* deck 主体（重叠露条多卡泛化，长卡 520——首页 430 不受影响）；
-                    水平居中（mx-auto 阅读列）+ 左右屏边距 px-6（用户指令「卡片
-                    要有左右边距」）；空堆走 emptyState 邀请态 */}
-                <View className="mx-auto w-full max-w-[560px] pt-4">
-                    <View className="px-6">
-                        <CardDeck items={items} height={520} emptyState={<EmptyPile kind={kind} />} />
+                {/* deck 主体（重叠露条多卡泛化）：v0.4.7 令 1 延伸——高度按屏内
+                    剩余实测（520 下限 / 680 封顶），死白收进卡面节奏；水平居中
+                    （mx-auto 阅读列）+ 左右屏边距 px-6（用户指令「卡片要有左右
+                    边距」）；空堆走 emptyState 邀请态（settings 同源纸卡） */}
+                <View className="min-h-0 flex-1 pt-4" onLayout={onDeckAreaLayout}>
+                    <View className="mx-auto h-full w-full max-w-[560px] justify-center">
+                        <View className="px-6">
+                            <CardDeck items={items} height={deckHeight} emptyState={<EmptyPile kind={kind} />} />
+                        </View>
                     </View>
                 </View>
             </View>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ScrollView, Text, View } from 'react-native';
+import { Text, View, type LayoutChangeEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useArchiveStore, type TripCard } from './store';
@@ -10,7 +10,7 @@ import { type Event } from './event-logic';
 import { planStatusLabel } from './plan-logic';
 import { formatDateParts, formatTripSpan, toLocalDate, tripDisplayTitle } from './trip-logic';
 import { CardDeck, type DeckItem } from './ui';
-import { LoadingView, ScreenHeader } from './ui';
+import { LoadingView, PAPER_CARD_SHADOW, ScreenHeader } from './ui';
 
 /**
  * 搜索结果屏（2026-11-19 搜索拆分：/search 只留检索输入枢纽，结果区迁出为
@@ -24,7 +24,8 @@ import { LoadingView, ScreenHeader } from './ui';
  *   事件（工单域）无日期窗口语义（db.searchEvents 无范围参数），仅按关键词查；
  * - 结果呈现 = 混合多卡 deck（自 search-screen 原样迁入：deckItems 构建 +
  *   SearchFace 卡面，搬走非复制）：日记 → 计划 → 行程 → 事件，类型 eyebrow
- *   区分，点前卡进内容；长卡 height 520（/notes、/trips 同款）；卡面全状态
+ *   区分，点前卡进内容；长卡 520 下限、屏内剩余实测吃满 680 封顶（v0.4.7
+ *   令 1，/notes、/trips 同款口径）；卡面全状态
  *   可见（搜索不限完成状态）；
  * - 可靠性口径（沿用拆分前成规）：请求序号守卫（慢的旧 in-flight 响应不得
  *   覆盖新结果）+ 错误上浮 store.error 通道（store search 方法自身已接通道，
@@ -40,6 +41,11 @@ export interface SearchSpec {
     from?: string;
     to?: string;
 }
+
+/** 结果 deck 高度区间（dp，v0.4.7 令 1 延伸口径）：520 = 旧固定长卡档（下限），
+ *  680 = 高视口封顶——与首页 / 堆页同一「剩余高度实测吃满」构图语言。 */
+const DECK_MIN = 520;
+const DECK_MAX = 680;
 
 interface SearchResults {
     journals: JournalRow[];
@@ -82,6 +88,19 @@ export function SearchResultsScreen({ spec }: { spec: SearchSpec }) {
             }
         })();
     }, [spec]);
+
+    // deck 高度实测（v0.4.7 令 1 延伸，与首页/堆页同法）：结果区 flex-1 吃掉
+    // 屏头与错误横幅之下的剩余高度，520 下限 / 680 封顶；实测与结果内容无关
+    // （flex-1 恒铺满），变化 ≥2dp 才 setState。
+    const [deckAreaHeight, setDeckAreaHeight] = useState<number | null>(null);
+    const onDeckAreaLayout = useCallback((event: LayoutChangeEvent) => {
+        const next = Math.round(event.nativeEvent.layout.height);
+        setDeckAreaHeight((prev) => (prev !== null && Math.abs(prev - next) < 2 ? prev : next));
+    }, []);
+    const deckHeight =
+        deckAreaHeight === null
+            ? DECK_MIN
+            : Math.max(DECK_MIN, Math.min(DECK_MAX, deckAreaHeight));
 
     // 屏头说明小字：把规格翻译成人话（本页唯一的状态说明位；不占 store.error）
     const specLabel = useMemo(() => {
@@ -212,37 +231,53 @@ export function SearchResultsScreen({ spec }: { spec: SearchSpec }) {
             <View style={{ paddingTop: insets.top }} className="flex-1">
                 {/* 屏头返回 + 说明小字（当前规格的人话翻译；返回回 /search 枢纽） */}
                 <ScreenHeader title="搜索结果" subtitle={specLabel} />
-                <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}>
-                    {/* 全局错误通道（store.error）：搜索失败上浮于此 */}
-                    {error ? (
-                        <Text className="px-6 text-[12px] text-ink-negative dark:text-inkd-negative">
+                {/* 全局错误通道（store.error）：搜索失败上浮于此——v0.4.7 令 3
+                    升级 settings 同源 tinted 横幅卡；置于实测区之外，横幅占位
+                    不叠进 deck 高 */}
+                {error ? (
+                    <View className="mx-6 mt-2 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">
+                        <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
                             {error}
                         </Text>
-                    ) : null}
+                    </View>
+                ) : null}
 
-                    {/* 结果三态（加载 / 无匹配 / deck 结果） */}
+                {/* 结果三态（加载 / 无匹配 / deck 结果）；deck 区实测吃满剩余 */}
+                <View className="min-h-0 flex-1" onLayout={onDeckAreaLayout}>
                     {results === null ? (
                         <LoadingView />
                     ) : !hasResults ? (
+                        /* 无匹配空态（v0.4.7 令 3）：收进 settings 同源纸卡
+                           （rounded-card surface + PAPER_CARD 卡影，eyebrow 11
+                           medium secondary + 题 24 + hint 13——与首页 / 堆页
+                           空态一个声部）；空态是行动邀请，不是贴底的两句小字 */
                         <View className="items-center px-6 py-12">
-                            <Text className="text-[15px] font-medium text-ink-text dark:text-inkd-text">
-                                没有匹配的日记、计划、行程或事件
-                            </Text>
-                            <Text className="mt-1.5 text-center text-[13px] leading-5 text-ink-muted dark:text-inkd-muted">
-                                回搜索页换个关键词，或放宽时间范围再试
-                            </Text>
+                            <View
+                                className="w-full max-w-[420px] items-center rounded-card bg-ink-surface px-8 py-10 dark:bg-inkd-surface"
+                                style={PAPER_CARD_SHADOW}
+                            >
+                                <Text className="text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    搜索
+                                </Text>
+                                <Text className="mt-2 text-[24px] font-semibold text-ink-text dark:text-inkd-text">
+                                    没有匹配的记录
+                                </Text>
+                                <Text className="mt-2 text-center text-[13px] leading-5 text-ink-muted dark:text-inkd-muted">
+                                    回搜索页换个关键词，或放宽时间范围再试
+                                </Text>
+                            </View>
                         </View>
                     ) : (
-                        /* deck 容器与 /notes、/trips 长卡同款（mx-auto 阅读列 + px-6
-                            屏边距，24px 单层内边距——不沿用旧搜索页 ScrollView 内
-                            双层叠加的 48px 偏心） */
-                        <View className="mx-auto w-full max-w-[560px] pt-1">
+                        /* deck 容器与首页 / 堆页同语言（mx-auto 阅读列 + px-6 屏边距，
+                            24px 单层内边距）；v0.4.7 令 1：高度按屏内剩余实测吃满
+                            （520/680 夹紧），结果卡之下不留死白 */
+                        <View className="mx-auto h-full w-full max-w-[560px] justify-center">
                             <View className="px-6">
-                                <CardDeck items={deckItems} height={520} />
+                                <CardDeck items={deckItems} height={deckHeight} />
                             </View>
                         </View>
                     )}
-                </ScrollView>
+                </View>
             </View>
         </View>
     );
