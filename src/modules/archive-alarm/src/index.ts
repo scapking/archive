@@ -13,6 +13,12 @@ export interface ArchiveAlarmNativeModule {
     cancel(id: string): Promise<void>;
     /** 精确闹钟 + 通知权限的综合判定：granted / denied / unsupported。 */
     permission(): Promise<'granted' | 'denied' | 'unsupported'>;
+    /** 待触发注册表回读：[{id, at, title, body}]（v0.4.7 软计时数据源）。 */
+    listScheduled(): Promise<{ id: string; at: number; title: string; body: string }[]>;
+    /** 已触发未确认账本，读取即清账（v0.4.7 全屏闹钟拉起数据源）。 */
+    drainFired(): Promise<{ id: string; at: number; title: string; body: string }[]>;
+    /** 确认停止：移除常驻通知 + 停保活前台服务 + 清 fired 账（v0.4.7）。 */
+    confirm(id: string): Promise<void>;
 }
 
 export default requireOptionalNativeModule<ArchiveAlarmNativeModule>('ArchiveAlarm');

@@ -11,9 +11,10 @@ import org.json.JSONObject
 /**
  * 系统精确闹钟的注册表 + AlarmManager 封装。
  *
- * 持久化：SharedPreferences 存 id → {at, title, body} 的 JSON 表——
- * BOOT_COMPLETED 重排与到点接收器读文案都靠它（BroadcastReceiver 没有
- * React 上下文，不能问 JS 要数据）。
+ * 持久化：SharedPreferences 双表——`alarms`（待触发注册表：BOOT_COMPLETED
+ * 重排、到点接收器读文案、JS listScheduled 软计时都靠它）与 `fired`
+ * （v0.4.7 到点未确认账本：drainFired/confirm 的呈现链路）。BroadcastReceiver
+ * 没有 React 上下文，不能问 JS 要数据，两表都是原生自持。
  *
  * 精确性：Android 12+ 受 SCHEDULE_EXACT_ALARM 管制，canScheduleExactAlarms()
  * 为 false 时降级 setAndAllowWhileIdle（非精确但必达），不抛错不阻塞。
@@ -21,6 +22,9 @@ import org.json.JSONObject
 internal object AlarmScheduler {
     private const val PREFS = "archive-alarms"
     private const val KEY_ALARMS = "alarms"
+    /** v0.4.7 fired 账本：到点已触发、尚未被 app 内全屏闹钟确认的条目。
+     *  接收器落账 + 常驻通知；JS drain 后拉起全屏闹钟屏；confirm 清账。 */
+    private const val KEY_FIRED = "fired"
     private const val TAG = "archive-alarm"
 
     /** 到点接收器的 PendingIntent（request code = id hash，唯一可寻址）。 */
@@ -69,13 +73,84 @@ internal object AlarmScheduler {
         }
     }
 
-    /** 取消（幂等：注册表无该 id 时 PendingIntent.cancel 也是无操作）。 */
+    /** 取消（幂等：注册表无该 id 时 PendingIntent.cancel 也是无操作）。
+     *  同拍清 fired 账与呈现面（常驻通知/保活服务）——行程项被删后
+     *  「该响的闹钟」整体消失，不留孤儿通知。 */
     fun cancel(context: Context, id: String) {
         val alarms = readAll(context)
         alarms.remove(id)
         writeAll(context, alarms)
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         am.cancel(pendingIntent(context, id))
+        removeFired(context, id)
+        AlarmFireReceiver.dismiss(context, id)
+    }
+
+    // ─── fired 账本（v0.4.7：到点未确认 → app 内全屏闹钟）──────────────────
+
+    private fun readFired(context: Context): JSONObject {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        return JSONObject(prefs.getString(KEY_FIRED, "{}") ?: "{}")
+    }
+
+    private fun writeFired(context: Context, fired: JSONObject) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_FIRED, fired.toString())
+            .apply()
+    }
+
+    /** 接收器到点落账（保留计划时刻 at，附 firedAt；文案快照自注册表）。 */
+    fun markFired(context: Context, id: String, at: Long, title: String, body: String) {
+        val fired = readFired(context)
+        fired.put(
+            id,
+            JSONObject()
+                .put("at", at)
+                .put("firedAt", System.currentTimeMillis())
+                .put("title", title)
+                .put("body", body),
+        )
+        writeFired(context, fired)
+    }
+
+    /** 读取即清账（JS watcher / 冷启拉起用）。 */
+    fun drainFired(context: Context): List<Map<String, Any>> {
+        val entries = entries(readFired(context))
+        if (entries.isNotEmpty()) writeFired(context, JSONObject())
+        return entries
+    }
+
+    /** 确认出口清账（confirm(id) 用；幂等）。 */
+    fun removeFired(context: Context, id: String) {
+        val fired = readFired(context)
+        if (fired.has(id)) {
+            fired.remove(id)
+            writeFired(context, fired)
+        }
+    }
+
+    /** 待触发注册表回读（非精确档软计时数据源）。不清账：at 已过的条目可能
+     *  只是非精确延迟未到（AlarmManager 仍会回调接收器），注册表是接收器读
+     *  文案的数据源，删除只剩兜底文案；出账统一走 cancel/confirm。 */
+    fun listScheduled(context: Context): List<Map<String, Any>> = entries(readAll(context))
+
+    private fun entries(table: JSONObject): List<Map<String, Any>> {
+        val out = ArrayList<Map<String, Any>>()
+        val keys = table.keys()
+        while (keys.hasNext()) {
+            val id = keys.next()
+            val entry = table.optJSONObject(id) ?: continue
+            out.add(
+                mapOf(
+                    "id" to id,
+                    "at" to entry.optLong("at", 0L),
+                    "title" to entry.optString("title", ""),
+                    "body" to entry.optString("body", ""),
+                ),
+            )
+        }
+        return out
     }
 
     /** 开机/时区变化后重排：丢弃已过期项，未触发的逐个重新注册。 */

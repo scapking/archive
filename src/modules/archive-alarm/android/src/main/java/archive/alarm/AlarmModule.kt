@@ -34,6 +34,26 @@ class AlarmModule : Module() {
             AlarmScheduler.cancel(ctx, id)
         }
 
+        /** 待触发注册表回读（v0.4.7 软计时数据源；过期项由调度器顺带剔除）。 */
+        AsyncFunction("listScheduled") {
+            val ctx = appContext.reactContext ?: return@AsyncFunction emptyList<Map<String, Any>>()
+            AlarmScheduler.listScheduled(ctx)
+        }
+
+        /** 已触发未确认账本，读取即清账（v0.4.7 全屏闹钟拉起数据源）。 */
+        AsyncFunction("drainFired") {
+            val ctx = appContext.reactContext ?: return@AsyncFunction emptyList<Map<String, Any>>()
+            AlarmScheduler.drainFired(ctx)
+        }
+
+        /** 确认停止（v0.4.7）：整单清理——注册表条目 + fired 账 + 常驻通知 +
+         *  保活服务一并移除（与通知动作「停止」同一出口，幂等）。 */
+        AsyncFunction("confirm") { id: String ->
+            val ctx = appContext.reactContext
+                ?: throw IllegalStateException("Android context unavailable")
+            AlarmScheduler.cancel(ctx, id)
+        }
+
         /** 精确闹钟 + 通知权限综合判定：granted / denied / unsupported。 */
         AsyncFunction("permission") {
             val ctx = appContext.reactContext
