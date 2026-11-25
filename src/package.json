@@ -1,7 +1,7 @@
 {
   "name": "archive",
   "main": "expo-router/entry",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "dependencies": {
     "archive-alarm": "file:modules/archive-alarm",
     "archive-widget": "file:modules/archive-widget",
