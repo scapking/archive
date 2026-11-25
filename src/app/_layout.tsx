@@ -36,6 +36,7 @@ import {
 // 启动孤儿媒体 GC（上传中断恢复）：同 last-route 深路径直连先例——barrel 只导出
 // useArchiveStore/useArchiveRevision，本次允许改动清单不含 index.ts
 import { runStartupOrphanMediaGc } from '@/features/archive/store';
+import { useAlarmReminderWatcher } from '@/features/archive/alarm-watcher';
 // 全局录制会话宿主（跨页面后台录制 + 归属铁律）：同 last-route/store 深路径直连
 // 先例——域 barrel index.ts 不在本次允许改动清单内。
 import { RecordingSessionHost, useRecordingSessionStore } from '@/features/archive/recording-session';
@@ -117,6 +118,9 @@ export default function RootLayout() {
     // Activity 重建。与下方 600ms 探测 effect 无耦合（一个 Expo Go no-op 只服务
     // dev build，一个只服务 Expo Go），机理与时序见 theme.ts 尾段实现注。
     useAndroidE2eSelfRepair();
+    // v0.4.7 闹钟阶梯接线：到点账本回收（drainFired）+ 前台软计时拉起全屏
+    // 闹钟屏 + Android 常驻通知在场维护；hook 内部自管订阅与清理，无条件挂载。
+    useAlarmReminderWatcher();
     // 启动门控（Android：自愈链收口前 false；web/iOS 恒 true）——false 期间本
     // 布局渲染 BootScreen 替代 Stack，双翻两次重建全程盖在过渡页下。注意 hook
     // 须无条件调用（conditional render 在全部 hooks 之后，见 return 前的门控分支）。

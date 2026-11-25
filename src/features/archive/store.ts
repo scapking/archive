@@ -28,6 +28,10 @@ import {
 import { alarm } from '@/core/alarm';
 // 桌面 widget 门面（v0.4.4 用户指令 #7）：快照推送 best-effort，iOS/web no-op
 import { widget } from '@/core/widget';
+// v0.4.7 D 接线：widget 快照编排收口进纯函数（status/dueAt/跨日时间格式），
+// 闹钟深链路径由 alarm-ladder 单源提供（三端一律路径参数，勿 query）。
+import { buildWidgetSnapshot } from './widget-snapshot';
+import { alarmRoutePath } from './alarm-ladder';
 
 export { tripItemDueAt };
 import * as db from './db';
@@ -748,6 +752,9 @@ async function scheduleTripItemNotification(
                 // 闹钟 API，timeSensitive 本地通知即「强提醒」的全部可行面
                 // （静音键仍可静音，Critical Alerts 需 Apple 特批资质）
                 interruptionLevel: 'timeSensitive',
+                // v0.4.7 闹钟阶梯接线：通知 data 携带全屏闹钟深链路径，
+                // tap/冷启 drainFired 经 expo-router 直达 /alarm/<id>
+                data: { path: alarmRoutePath(item.id) },
             } satisfies NotificationContentInput,
             trigger: {
                 type: ExpoNotifications.SchedulableTriggerInputTypes.DATE,
@@ -772,31 +779,13 @@ async function pushWidgetSnapshot(): Promise<void> {
     if (!widget.isSupported()) return;
     try {
         const trips = await db.listTrips();
-        const active = trips.find((trip) => !isTripLocked(trip));
-        if (!active) {
-            await widget.push({ tripId: '', tripTitle: '', items: [] });
-            return;
-        }
-        const today = todayLocal();
-        const all = await db.listTripItemsByTrip(active.id);
-        const upcoming = all
-            .filter((item) => item.local_date >= today)
-            .sort((a, b) => {
-                if (a.local_date !== b.local_date) return a.local_date < b.local_date ? -1 : 1;
-                return a.time < b.time ? -1 : 1;
-            })
-            .slice(0, 4);
-        const phases = tripItemPhaseMap(upcoming, Date.now());
-        await widget.push({
-            tripId: active.id,
-            tripTitle: tripDisplayTitle(active.title),
-            items: upcoming.map((item) => ({
-                time: item.time,
-                title: item.title,
-                phase: TRIP_ITEM_PHASE_LABEL[phases.get(item.id) ?? 'pending'],
-            })),
-        });
-    } catch (error) {
+        // 选择逻辑与 buildWidgetSnapshot 严格同规则（同数组同比较器，结果
+        // 恒等）：这里只为拿「被选中行程」的行程项喂给纯函数编排。
+        const active = trips
+            .filter((trip) => !isTripLocked(trip))
+            .sort((a, b) => (a.start_date < b.start_date ? 1 : -1))[0];
+        const items = active ? await db.listTripItemsByTrip(active.id) : [];
+        await widget.push(buildWidgetSnapshot(trips, items));    } catch (error) {
         console.warn('[archive-widget] 快照编排失败（不影响数据面）:', error);
     }
 }
@@ -1378,6 +1367,9 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 return false;
             }
             await db.startTripItemWrap(id, Date.now());
+            // v0.4.7 D 接线 4：进入收尾 = 该项闹钟/通知不应再响（幂等 best-effort）
+            void alarm.cancel(id);
+            void cancelTripItemNotification(id);
         } catch (error) {
             set({ error: `收尾操作失败：${toMessage(error)}` });
             return false;
@@ -1410,6 +1402,9 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             // 幂等：已终态直接成功（不 bump revision）
             if ((item.wrap_closed_at ?? null) != null) return true;
             await db.closeTripItemWrap(id, Date.now());
+            // v0.4.7 D 接线 4：收尾关闭 = 同拍清账（与删除链同款）
+            void alarm.cancel(id);
+            void cancelTripItemNotification(id);
         } catch (error) {
             set({ error: `结束收尾失败：${toMessage(error)}` });
             return false;
