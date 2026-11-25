@@ -10,10 +10,7 @@ import {
     BackHandler,
     Image,
     Keyboard,
-    KeyboardAvoidingView,
-    Platform,
     Pressable,
-    ScrollView,
     Text,
     View,
 } from 'react-native';
@@ -69,12 +66,14 @@ import {
     ComposeFab,
     EmptyState,
     LoadingView,
-    PAPER_FLOAT_SHADOW,
     PrimaryButton,
     useFileUrlState,
     usePalette,
     type DeckItem,
 } from './ui';
+// 居中卡 + 键盘避让原语（v0.5.0：keyboardDidShow/Hide 事件驱动抬升 + 内滚卡体
+// + footer 钉底；深路径注记同 field-input——ui/index.ts 不在本组改动权限内）
+import { CenteredSheet, useSheetFieldFocusGuard } from './ui/sheet';
 // 深路径注记：DeadEndView（死路页共享视图）宿主在 journal-edit-screen——
 // 消费屏域内深取（trip-detail-screen 同款先例），journal-edit 不反向依赖
 // 本屏，无 require 环。
@@ -98,10 +97,11 @@ import { DeadEndView } from './journal-edit-screen';
  *   添加图片 / 添加视频（done 与 wrap 都可补媒体，用户指令 #8）/ 删除此行程
  *   ——手动「标记完成/失败」退役（v0.4.4），阶段由 trip-item-logic 派生；
  *   锁定行程 isTripLocked 时长按与 FAB 入口全部关断，整页只读）；
- * - `+` FAB → 创建行程项**底部弹层**（v0.4.9 重构，用户令「居中卡丑、操作不
- *   方便」：贴键盘底部 sheet + 单行步进器改时（±5 分 / ±1 小时，「此刻」快捷）
- *   + 标题即写即提交（主按钮恒在，两步「下一步→添加」砍除）+ 备注/响铃收进
- *   次级 chip 行）→ store.createTripItem（成功后自动调度本地通知，权限被拒
+ * - `+` FAB → 创建行程项**居中卡**（v0.5.0 重构，用户令「默认居中」+「输入法
+ *   弹出会覆盖卡片」：ui/sheet 的 CenteredSheet——键盘高度事件驱动的抬升避让
+ *   + 超限内滚 + footer 钉底主钮；单行步进器改时（±5 分 / ±1 小时，「此刻」
+ *   快捷）+ 标题即写即提交（两步「下一步→添加」砍除）+ 备注/响铃收进次级
+ *   chip 行）→ store.createTripItem（成功后自动调度本地通知，权限被拒
  *   静默降级）；
  * - **应用内闹钟**（页内 useEffect 定时检查）：前台期间某 pending 项的时刻
  *   （local_date + time）到达时弹确认卡——标题「行程时间到」+ 正文（时间 +
@@ -462,22 +462,22 @@ function AlarmToggleChip({ value, onToggle }: { value: boolean; onToggle(): void
 }
 
 /**
- * 添加行程项底部弹层（v0.4.9 重构，用户令「居中卡丑、键盘弹起后体验断裂、
- * 两步绕提交」）：
- * - 形态 = ui/date-picker.tsx 的 sheet 语言：scrim justify-end + 底部悬浮纸卡
- *   （PAPER_FLOAT 投影档 + rounded-card + 安全区底衬），KeyboardAvoidingView
- *   让 iOS 键盘顶起整层、Android adjustResize 自适应——弹层贴键盘，不再居中
- *   悬空；禁 RN Modal，条件渲染 + absolute 层范式保持；
+ * 添加行程项居中卡（v0.5.0 重构，用户令「默认居中」+「输入法弹出会覆盖卡片」
+ * ——居中成立的前提 = 键盘避让走 ui/sheet 的事件驱动几何，不再赌系统行为）：
+ * - 形态 = CenteredSheet（scrim justify-center + max-w-sm 档 + PAPER_FLOAT 光影
+ *   + rounded-card）：keyboardDidShow/Hide 直读键盘高度抬卡，卡体 maxHeight
+ *   让位、超限内滚，聚焦字段 scrollIntoView 二次保险；禁 RN Modal；
  * - 时间 = 单行步进器（TimeStepButton 注），默认下一个 5 分钟档 + 「此刻」
- *   快捷；
- * - 路径最短：标题即写即提交（autoFocus、done 键直发），「添加」主按钮恒在，
- *   两步流程砍除；备注走次级 chip 展开的内联字段（不整卡膨胀），响铃收成
- *   chip 开关；
+ *   快捷；「开始时间」eyebrow 与步进行的疏密节奏对齐弹窗族类型刻度；
+ * - 路径最短：标题即写即提交（autoFocus、done 键直发），「添加」主按钮走
+ *   sheet footer 槽钉卡底（键盘弹起恒在键盘上方、不随滚动被吞），两步流程
+ *   砍除；备注走次级 chip 展开的内联字段（不整卡膨胀），响铃 + 加备注两枚
+ *   chip 一行收；
  * - 红线保持：Android 返回键关闭、打开即收键盘、errorText 就地重试、
  *   onSubmit({time,title,description,withAlarm}) store 契约不变；native 输入
  *   只走 FieldInput 的 uncontrolled 通道（本屏零裸 TextInput）。
  */
-function TripItemFormCard({
+function TripItemSheet({
     onSubmit,
     onClose,
     errorText,
@@ -488,8 +488,10 @@ function TripItemFormCard({
     /** store.error 就地文案（失败后展示，避免陈旧错误串场）。 */
     errorText: string | null;
 }) {
-    const insets = useSafeAreaInsets();
     const palette = usePalette();
+    // 聚焦保险（sheet 原语提供）：键盘已弹起时换字段 focus 不再触发键盘事件，
+    // 由本钩子把聚焦框滚进键盘上沿可见区
+    const guardFieldFocus = useSheetFieldFocusGuard();
     // 时间初值 = 「下一个可选的整 5 分钟」（与「此刻」快捷同派生；59 分→整点
     // 进位取 24 模）。一次取 now 定格快照，两个 useState 共用（分取两次 Date
     // 会跨分钟漂移）。
@@ -546,146 +548,124 @@ function TripItemFormCard({
     };
 
     return (
-        <View className="absolute inset-0 z-50">
-            <Pressable
-                className="flex-1 justify-end bg-ink-scrim px-3 dark:bg-inkd-scrim"
-                onPress={onClose}
-                accessibilityLabel="关闭添加行程项"
-            >
-                {/* KAV flex-1 + justify-end：iOS keyboard 顶起整层（padding 行为
-                    把贴底卡推离键盘），Android adjustResize 走窗口收缩 */}
-                <KeyboardAvoidingView
-                    className="flex-1 justify-end"
-                    behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        <CenteredSheet
+            onClose={onClose}
+            scrimAccessibilityLabel="关闭添加行程项"
+            sheetAccessibilityLabel="添加行程项面板"
+            footer={
+                <>
+                    {/* 主按钮走 footer 槽钉卡底：键盘弹起恒在键盘上方、不随内容
+                        滚动被吞；空标题闸住（disabled 视觉自带诚实态），旧
+                        「引导→提交」分步流程砍除 */}
+                    <PrimaryButton label="添加" disabled={!canSubmit} onPress={() => void submit()} />
+                    {saveFailed && errorText ? (
+                        <Text className="mt-2 text-center text-[12px] text-ink-negative dark:text-inkd-negative">
+                            {errorText}
+                        </Text>
+                    ) : null}
+                </>
+            }
+        >
+            {/* 卡头：eyebrow 题（11 medium secondary，弹窗族刻度）+ 关闭钮 */}
+            <View className="flex-row items-center justify-between">
+                <Text className="text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                    添加行程项
+                </Text>
+                <CloseButton onPress={onClose} />
+            </View>
+
+            {/* 时间区（疏：整块抬到标题之前，40px 大时刻是主角）——eyebrow 行
+                （label + 「此刻」快捷）压 34 步进行，疏密对读 */}
+            <View className="mt-5 flex-row items-center justify-between">
+                <Text className="text-[11px] font-medium text-ink-muted dark:text-inkd-muted">
+                    开始时间
+                </Text>
+                <GhostChip
+                    label="此刻"
+                    a11yLabel="此刻（跳到下一个 5 分钟档）"
+                    disabled={hour === initialTime.hour && minute === initialTime.minute}
+                    onPress={() => {
+                        const next = nextFiveMinuteSlot(new Date());
+                        setHour(next.hour);
+                        setMinute(next.minute);
+                    }}
+                />
+            </View>
+            <View className="mt-3 flex-row items-center justify-center">
+                <TimeStepButton label="−1h" a11yLabel="提前 1 小时" onPress={() => shiftTime(-TIME_HOUR)} />
+                <View style={{ width: 8 }} />
+                <TimeStepButton label={`−${TIME_STEP}`} a11yLabel="提前 5 分钟" onPress={() => shiftTime(-TIME_STEP)} />
+                <Text
+                    style={{
+                        minWidth: 116,
+                        textAlign: 'center',
+                        marginHorizontal: 10,
+                        fontSize: 40,
+                        fontWeight: '600',
+                        letterSpacing: -1,
+                        color: palette.text,
+                        fontVariant: ['tabular-nums'],
+                    }}
                 >
-                    {/* 卡体拦截冒泡：点卡不关（同 DatePickerSheet 卡体结构）；
-                        maxHeight 86%（父层 KAV 定高，百分比可解）+ 内层 ScrollView
-                        flexShrink = 键盘 + 展开备注在小屏叠高时的兜底滚动通道
-                        （主路径内容不满，不滚动） */}
-                    <Pressable
-                        className="overflow-hidden rounded-card bg-ink-surface dark:bg-inkd-surface"
-                        style={[PAPER_FLOAT_SHADOW, { maxHeight: '86%' }]}
-                        accessibilityLabel="添加行程项面板"
-                    >
-                        <ScrollView
-                            style={{ flexShrink: 1 }}
-                            keyboardShouldPersistTaps="handled"
-                            contentContainerStyle={{
-                                paddingHorizontal: 16,
-                                paddingTop: 16,
-                                paddingBottom: Math.max(insets.bottom + 16, 24),
-                            }}
-                        >
-                            <View className="flex-row items-center justify-between">
-                                <Text className="text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                    添加行程项
-                                </Text>
-                                <CloseButton onPress={onClose} />
-                            </View>
+                    {timeLabel}
+                </Text>
+                <TimeStepButton label={`+${TIME_STEP}`} a11yLabel="推后 5 分钟" onPress={() => shiftTime(TIME_STEP)} />
+                <View style={{ width: 8 }} />
+                <TimeStepButton label="+1h" a11yLabel="推后 1 小时" onPress={() => shiftTime(TIME_HOUR)} />
+            </View>
 
-                            {/* 时间区：eyebrow + 「此刻」快捷 / 单行步进器 */}
-                            <View className="mt-3 flex-row items-center justify-between">
-                                <Text className="text-[11px] font-medium text-ink-muted dark:text-inkd-muted">
-                                    开始时间
-                                </Text>
-                                <GhostChip
-                                    label="此刻"
-                                    a11yLabel="此刻（跳到下一个 5 分钟档）"
-                                    disabled={hour === initialTime.hour && minute === initialTime.minute}
-                                    onPress={() => {
-                                        const next = nextFiveMinuteSlot(new Date());
-                                        setHour(next.hour);
-                                        setMinute(next.minute);
-                                    }}
-                                />
-                            </View>
-                            <View className="mt-2 flex-row items-center justify-center">
-                                <TimeStepButton label="−1h" a11yLabel="提前 1 小时" onPress={() => shiftTime(-TIME_HOUR)} />
-                                <View style={{ width: 8 }} />
-                                <TimeStepButton label={`−${TIME_STEP}`} a11yLabel="提前 5 分钟" onPress={() => shiftTime(-TIME_STEP)} />
-                                <Text
-                                    style={{
-                                        minWidth: 104,
-                                        textAlign: 'center',
-                                        marginHorizontal: 10,
-                                        fontSize: 34,
-                                        fontWeight: '600',
-                                        color: palette.text,
-                                        fontVariant: ['tabular-nums'],
-                                    }}
-                                >
-                                    {timeLabel}
-                                </Text>
-                                <TimeStepButton label={`+${TIME_STEP}`} a11yLabel="推后 5 分钟" onPress={() => shiftTime(TIME_STEP)} />
-                                <View style={{ width: 8 }} />
-                                <TimeStepButton label="+1h" a11yLabel="推后 1 小时" onPress={() => shiftTime(TIME_HOUR)} />
-                            </View>
+            {/* 标题即写即提交（密：eyebrow→输入框 6 贴读，与时间区的疏形成
+                节奏）：打开即聚焦，done 键 = 添加；focus 挂 scrollIntoView 保险 */}
+            <Text className="mt-6 text-[11px] font-medium text-ink-muted dark:text-inkd-muted">
+                标题
+            </Text>
+            <FieldInput
+                tone="raised"
+                autoFocus
+                value={title}
+                onChangeText={setTitle}
+                placeholder="这段时间做什么？"
+                maxLength={40}
+                returnKeyType="done"
+                onSubmitEditing={() => void submit()}
+                onFocus={() => guardFieldFocus()}
+                containerClassName="mt-1.5"
+                accessibilityLabel="行程项标题"
+            />
 
-                            {/* 标题即写即提交：打开即聚焦，done 键 = 添加 */}
-                            <Text className="mt-4 text-[11px] font-medium text-ink-muted dark:text-inkd-muted">
-                                标题
-                            </Text>
-                            <FieldInput
-                                tone="raised"
-                                autoFocus
-                                value={title}
-                                onChangeText={setTitle}
-                                placeholder="这段时间做什么？"
-                                maxLength={40}
-                                returnKeyType="done"
-                                onSubmitEditing={() => void submit()}
-                                containerClassName="mt-1.5"
-                                accessibilityLabel="行程项标题"
-                            />
+            {/* 备注（次级可展开）：chip 开合，内联字段不整卡膨胀 */}
+            {noteOpen ? (
+                <>
+                    <Text className="mt-3 text-[11px] font-medium text-ink-muted dark:text-inkd-muted">
+                        备注（选填）
+                    </Text>
+                    <FieldInput
+                        tone="raised"
+                        autoFocus
+                        multiline
+                        value={note}
+                        onChangeText={setNote}
+                        placeholder="留言或备注"
+                        onFocus={() => guardFieldFocus()}
+                        containerClassName="mt-1.5"
+                        accessibilityLabel="行程项备注"
+                    />
+                </>
+            ) : null}
 
-                            {/* 备注（次级可展开）：chip 开合，内联字段不整卡膨胀 */}
-                            {noteOpen ? (
-                                <>
-                                    <Text className="mt-3 text-[11px] font-medium text-ink-muted dark:text-inkd-muted">
-                                        备注（选填）
-                                    </Text>
-                                    <FieldInput
-                                        tone="raised"
-                                        autoFocus
-                                        multiline
-                                        value={note}
-                                        onChangeText={setNote}
-                                        placeholder="留言或备注"
-                                        containerClassName="mt-1.5"
-                                        accessibilityLabel="行程项备注"
-                                    />
-                                </>
-                            ) : null}
-
-                            {/* 次级动作行：响铃 chip 开关 + 备注展开 chip */}
-                            <View className="mt-4 flex-row items-center justify-between">
-                                <AlarmToggleChip value={withAlarm} onToggle={() => setWithAlarm((prev) => !prev)} />
-                                <GhostChip
-                                    label={noteOpen ? '收起备注' : '加备注'}
-                                    a11yLabel={noteOpen ? '收起备注输入框' : '展开备注输入框（选填）'}
-                                    onPress={() => {
-                                        haptics.selection();
-                                        setNoteOpen((prev) => !prev);
-                                    }}
-                                />
-                            </View>
-
-                            {/* 主按钮恒在：空标题闸住（disabled 视觉自带诚实态），
-                                旧「引导→提交」分步流程砍除 */}
-                            <View className="mt-4">
-                                <PrimaryButton label="添加" disabled={!canSubmit} onPress={() => void submit()} />
-                            </View>
-
-                            {saveFailed && errorText ? (
-                                <Text className="mt-2 text-[12px] text-ink-negative dark:text-inkd-negative">
-                                    {errorText}
-                                </Text>
-                            ) : null}
-                        </ScrollView>
-                    </Pressable>
-                </KeyboardAvoidingView>
-            </Pressable>
-        </View>
+            {/* 次级动作一行收：响铃 chip 开关 + 备注展开 chip */}
+            <View className="mt-4 flex-row items-center justify-between">
+                <AlarmToggleChip value={withAlarm} onToggle={() => setWithAlarm((prev) => !prev)} />
+                <GhostChip
+                    label={noteOpen ? '收起备注' : '加备注'}
+                    a11yLabel={noteOpen ? '收起备注输入框' : '展开备注输入框（选填）'}
+                    onPress={() => {
+                        haptics.selection();
+                        setNoteOpen((prev) => !prev);
+                    }}
+                />
+            </View>
+        </CenteredSheet>
     );
 }
 
@@ -1081,7 +1061,7 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
             </View>
             {/* 覆盖层（条件渲染，禁 Modal，互斥可达：scrim 盖屏时其他入口不可触） */}
             {createOpen ? (
-                <TripItemFormCard
+                <TripItemSheet
                     onSubmit={runCreateTripItem}
                     onClose={() => setCreateOpen(false)}
                     errorText={storeError}

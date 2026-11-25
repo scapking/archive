@@ -19,7 +19,6 @@ import {
     LucideChevronRight,
     LucidePenLine,
     LucidePencil,
-    LucidePlus,
     LucideTrash,
     LucideVideo,
     LucideWallpaper,
@@ -85,8 +84,9 @@ import { DeadEndView } from './journal-edit-screen';
  * - 卡面 = 那一天（DayDeckFace，v0.4.7 词表/预览口径由纯逻辑文件收口并有
  *   node 单测把关）：日期行（D 序号 20 tabular + 月日 16 + 星期 12 + 今天/
  *   出发/返程徽章）→ 计划预览 ≤3 行（勾选 + 长按删与旧形态同语义）→ 日记
- *   摘要 2 行或未写态（v0.4.9 令 2：占位文案块退场，可写态只留「+」级视觉
- *   邀请，锁定态一行「未写」状态事实）→ 底行「当日行程 ›」行动提示。**「行程
+ *   摘要 2 行或未写态（v0.4.9 令 2 占位文案块退场；v0.5.0 残存的「+」细边
+ *   邀请也整体删除——可写空日卡中腹纯留白，锁定态一行「未写」状态事实）
+ *   → 底行「当日行程 ›」行动提示。**「行程
  *   名称」依旧不上卡面**（0.4.7 既定：名称只进屏头）；
  * - 点前卡 → 该日的「行程表」页（/trip/[id]/day/[date]）；锁定行程点卡：
  *   已有日记走 /journal/[id] 只读页，无日记落行程表页只读浏览；长按（web
@@ -483,10 +483,10 @@ const DayDeckFace = memo(function DayDeckFace({
             ) : null}
 
             {/* 摘要区贴底（flex-1 弹垫把「那一天写了什么」压到卡面下半——
-                堆叠扫读时先见日期再见内容）；未写 = v0.4.9 令 2 口径：占位
-                文案块退场，可写态只留一个克制的「+」级视觉邀请（细边 + 淡墨，
-                无任何字样——空态是行动邀请，但邀请由形态承载不由句子说明）；
-                锁定态无写入口 → 邀请也不渲染，只留一行状态事实 */}
+                堆叠扫读时先见日期再见内容）；未写 = v0.5.0 口径（用户点名）：
+                0.4.9 的可写态「+」细边邀请整体删除——不留占位文案、不留图标、
+                不留空井，可写空日卡中腹纯留白（写入口仍由点卡/长按操作卡承载）；
+                锁定态无写入口，留一行状态事实 */}
             <View className="min-h-0 flex-1 justify-end">
                 {data.journal && journalBlocks ? (
                     <>
@@ -516,19 +516,10 @@ const DayDeckFace = memo(function DayDeckFace({
                             </Text>
                         </View>
                     </>
-                ) : !locked ? (
-                    // 未写日（可写态）：日期行/计划预览照旧呈现，摘要区剩位
-                    // 中央只放一枚「+」邀请——border-ink-border 细边圆盒、
-                    // muted 淡墨笔触，纸面档位不加深（区分靠形不靠色块）
-                    <View className="flex-1 items-center justify-center">
-                        <View className="h-10 w-10 items-center justify-center rounded-full border border-ink-border dark:border-inkd-border">
-                            <LucidePlus size={18} strokeWidth={1.5} color={palette.muted} />
-                        </View>
-                    </View>
-                ) : (
-                    // 锁定只读：无写入口，「+」邀请也不渲染，留一行状态事实
+                ) : locked ? (
+                    // 锁定只读：无写入口，留一行状态事实
                     <Text className="text-[13px] text-ink-muted dark:text-inkd-muted">未写</Text>
-                )}
+                ) : null}
             </View>
 
             {/* 底行行动提示：点卡去向说清楚——未锁定/无日记读「当日行程」，

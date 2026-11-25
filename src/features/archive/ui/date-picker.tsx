@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BackHandler, Keyboard, Pressable, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LucideCalendar } from '@/core/icons';
 import { haptics } from '@/core/haptics';
 import { todayLocal } from '../trip-logic';
@@ -9,8 +8,10 @@ import { Calendar, type CalendarDayMark } from './calendar';
 import { DateInput, isDateInputComplete } from './date-input';
 import { CloseButton } from './close-button';
 import { usePalette } from './theme';
-import { PAPER_FLOAT_SHADOW } from './paper-shadow';
 import { PrimaryButton } from './primary-button';
+// 居中卡 + 键盘避让原语（v0.5.0：手输模式同病灶顺治——DateInput 三段聚焦弹
+// 键盘不再盖卡，keyboardDidShow 事件驱动抬升 + scrollIntoView 二次保险）
+import { CenteredSheet } from './sheet';
 
 /**
  * 日期选择族（v0.4.7 行程域重构令 2：「一眼、两步、不出错」的苹果式选择）：
@@ -18,14 +19,16 @@ import { PrimaryButton } from './primary-button';
  * - `DateField`：表单里的日期「字段面」——不是裸输入框而是可点纸井（raised 档
  *   h-14 ≥44 命中），直接显示格式化文案（「11月13日 周五」跨年自动补年份）；
  *   一眼 = 打开表单先看见的是日期本身，不是三段数字格；
- * - `DatePickerSheet`：点字段弹出的月历浮层（scrim + 悬浮纸卡，禁 RN Modal
- *   条件渲染，范式同 DayActionCard / chooser 卡体）——两步 = 开层点日即完成
+ * - `DatePickerSheet`：点字段弹出的月历浮层（v0.5.0 起为 ui/sheet 的居中卡
+ *   形态：scrim justify-center + 键盘事件驱动避让；禁 RN Modal 条件渲染，
+ *   范式同 ActionMenuCard 卡体）——两步 = 开层点日即完成
  *   并回写；不出错 = 区间外日期在网格层禁选（min/max 由调用方给），不可能
  *   经选择器产出非法日；「手输」兜底通道保留键盘/三端可达（DateInput 渐进
  *   归一 + 补零语义原样复用），且同样过区间闸。
  *
- * 质感纪律：全部走 ui/paper-shadow 光影档 + ink/inkd token（浮层用
- * PAPER_FLOAT，静止面用井/纸色分层），禁散写 hex；字阶 eyebrow 11 / 正文 16。
+ * 质感纪律：浮层光影收口在 ui/sheet 的 CenteredSheet（PAPER_FLOAT + rounded-card
+ * + base 纸面），本文件只管 ink/inkd token（静止面用井/纸色分层），禁散写 hex；
+ * 字阶 eyebrow 11 / 正文 16。
  *
  * 消费面：trip-form-screen（出发/返回两字段）。搜索页的区间筛选保持
  * search-screen 现形态（agent B 域，本组件不强加）。
@@ -88,11 +91,13 @@ export interface DatePickerSheetProps {
 }
 
 /**
- * 月历选择浮层。挂载即建（父级条件渲染 `{picker ? <DatePickerSheet/> : null}`），
- * 每次打开重挂 → 初始月天然跟随当前值，无受控同步问题。
+ * 月历选择浮层（v0.5.0：底部 sheet → ui/sheet 的 CenteredSheet 居中卡——
+ * 月历态无键盘、居中即满配；手输态键盘事件驱动抬卡 + 聚焦段 scrollIntoView
+ * 保险，确认钮走 footer 槽恒在键盘上方）。挂载即建（父级条件渲染
+ * `{picker ? <DatePickerSheet/> : null}`），每次打开重挂 → 初始月天然跟随
+ * 当前值，无受控同步问题。
  */
 export function DatePickerSheet({ title, value, minDate, maxDate, onPick, onClose }: DatePickerSheetProps) {
-    const insets = useSafeAreaInsets();
     // 手输兜底态（键盘可达性：web/外接键盘用户可跳过网格直接敲数字；
     // DateInput 的渐进归一/失焦补零语义原样复用，「不出错」闸同样生效）
     const [manual, setManual] = useState(false);
@@ -139,74 +144,72 @@ export function DatePickerSheet({ title, value, minDate, maxDate, onPick, onClos
     }, [minDate, maxDate]);
 
     return (
-        <View className="absolute inset-0 z-50">
-            <Pressable
-                className="flex-1 justify-end bg-ink-scrim px-3 dark:bg-inkd-scrim"
-                onPress={onClose}
-                accessibilityLabel="关闭日期选择"
-            >
-                {/* 卡体拦截冒泡（点卡不关，范式同 DayActionCard / chooser） */}
-                <Pressable
-                    className="rounded-card bg-ink-surface p-4 pb-6 dark:bg-inkd-surface"
-                    style={[PAPER_FLOAT_SHADOW, { paddingBottom: Math.max(insets.bottom + 16, 24) }]}
-                    accessibilityLabel={`${title}选择面板`}
-                >
-                    {/* 卡头：eyebrow 标题（11 medium secondary）+ 手输切换 + 关闭
-                        钮（CloseButton 44 圆盒；三者间距 ≥12 无命中交叠） */}
-                    <View className="mb-2 flex-row items-center justify-between">
-                        <Text className="text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                            {title}
+        <CenteredSheet
+            onClose={onClose}
+            scrimAccessibilityLabel="关闭日期选择"
+            sheetAccessibilityLabel={`${title}选择面板`}
+            // 440 档：日历列宽 ≤420 日格 ≥44 的设计口径（calendar.tsx 注），
+            // 居中 max-w-sm 会挤破格宽；手输态同宽不跳版
+            maxWidth={440}
+            footer={
+                manual ? (
+                    <PrimaryButton
+                        label={draftValid ? '使用该日期' : '日期不完整或超出可选范围'}
+                        onPress={handleConfirmManual}
+                        disabled={!draftValid}
+                    />
+                ) : null
+            }
+        >
+            {/* 卡头：eyebrow 标题（11 medium secondary）+ 手输切换 + 关闭
+                钮（CloseButton 44 圆盒；三者间距 ≥12 无命中交叠） */}
+            <View className="mb-2 flex-row items-center justify-between">
+                <Text className="text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                    {title}
+                </Text>
+                <View className="flex-row items-center">
+                    <Pressable
+                        onPress={() => {
+                            setManual((prev) => !prev);
+                            haptics.selection();
+                        }}
+                        className="h-11 justify-center rounded-full px-3 active:opacity-70"
+                        accessibilityRole="button"
+                        accessibilityLabel={manual ? '用日历选择' : '手动输入日期'}
+                        accessibilityState={{ selected: manual }}
+                    >
+                        <Text className="text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                            {manual ? '日历' : '手输'}
                         </Text>
-                        <View className="flex-row items-center">
-                            <Pressable
-                                onPress={() => {
-                                    setManual((prev) => !prev);
-                                    haptics.selection();
-                                }}
-                                className="h-11 justify-center rounded-full px-3 active:opacity-70"
-                                accessibilityRole="button"
-                                accessibilityLabel={manual ? '用日历选择' : '手动输入日期'}
-                                accessibilityState={{ selected: manual }}
-                            >
-                                <Text className="text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                    {manual ? '日历' : '手输'}
-                                </Text>
-                            </Pressable>
-                            {/* 44 视觉盒 CloseButton；左邻手输钮 px-3 自带停车距 */}
-                            <View className="ml-1">
-                                <CloseButton onPress={onClose} />
-                            </View>
-                        </View>
+                    </Pressable>
+                    {/* 44 视觉盒 CloseButton；左邻手输钮 px-3 自带停车距 */}
+                    <View className="ml-1">
+                        <CloseButton onPress={onClose} />
                     </View>
+                </View>
+            </View>
 
-                    {manual ? (
-                        <View className="pt-1">
-                            <DateInput value={draft} onChange={setDraft} placeholder="年月日" />
-                            {rangeHint ? (
-                                <Text className="mt-3 text-[12px] text-ink-muted dark:text-inkd-muted">{rangeHint}</Text>
-                            ) : null}
-                            <View className="mt-4">
-                                <PrimaryButton
-                                    label={draftValid ? '使用该日期' : '日期不完整或超出可选范围'}
-                                    onPress={handleConfirmManual}
-                                    disabled={!draftValid}
-                                />
-                            </View>
-                        </View>
-                    ) : (
-                        <Calendar
-                            marks={NO_MARKS}
-                            selected={value || null}
-                            onSelectDate={handlePickDay}
-                            initialMonth={value || null}
-                            minDate={minDate}
-                            maxDate={maxDate}
-                            tone="card"
-                        />
-                    )}
-                </Pressable>
-            </Pressable>
-        </View>
+            {manual ? (
+                <View className="pt-1">
+                    <DateInput value={draft} onChange={setDraft} placeholder="年月日" />
+                    {rangeHint ? (
+                        <Text className="mt-3 text-[12px] text-ink-muted dark:text-inkd-muted">{rangeHint}</Text>
+                    ) : null}
+                </View>
+            ) : (
+                <Calendar
+                    marks={NO_MARKS}
+                    selected={value || null}
+                    onSelectDate={handlePickDay}
+                    initialMonth={value || null}
+                    minDate={minDate}
+                    maxDate={maxDate}
+                    tone="card"
+                />
+            )}
+            {/* 卡底气口（CenteredSheet 的 ScrollView 只给顶衬，尾块自垫） */}
+            <View className="h-4" />
+        </CenteredSheet>
     );
 }
 

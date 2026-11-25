@@ -5,8 +5,8 @@ import {
     LucideCamera,
     LucideCheck,
     LucideClapperboard,
-    LucideFilm,
-    LucideImage,
+    LucideGalleryVerticalEnd,
+    LucideImages,
     LucideMic,
     LucidePlus,
     LucideVideo,
@@ -121,8 +121,8 @@ export function InsertMenu({
      *  actions 过滤（事件屏复用）：既定行序内筛除未列入的行（过滤不重排——
      *  journal 行序 = 事件行序的同源保证）。 */
     const allRows: Array<{ action: InsertAction; icon: React.ReactNode; title: string }> = [
-        { action: 'library-image', icon: <LucideImage size={20} strokeWidth={1.9} />, title: '相册图片' },
-        { action: 'library-video', icon: <LucideFilm size={20} strokeWidth={1.9} />, title: '相册视频' },
+        { action: 'library-image', icon: <LucideImages size={20} strokeWidth={1.9} />, title: '相册图片' },
+        { action: 'library-video', icon: <LucideGalleryVerticalEnd size={20} strokeWidth={1.9} />, title: '相册视频' },
         ...(isRecordingSupported()
             ? [{ action: 'record' as const, icon: <LucideMic size={20} strokeWidth={1.9} />, title: '录音' }]
             : []),

@@ -14,6 +14,7 @@ import {
     LucidePencil,
     LucidePlay,
     LucideRoute,
+    LucideSquarePen,
     LucideListPlus,
     LucideTrash,
     LucideType,
@@ -125,7 +126,7 @@ function tripMenuRows(trip: DeckTrip, confirmDelete: boolean): ActionMenuRow[] {
 function diaryMenuRows(journal: JournalRow, confirmDelete: boolean): ActionMenuRow[] {
     const open = isEditable(journal.status);
     return [
-        ...(open ? [{ key: 'rename', icon: <LucideType size={20} strokeWidth={1.9} />, title: '改日记名' }] : []),
+        ...(open ? [{ key: 'rename', icon: <LucideSquarePen size={20} strokeWidth={1.9} />, title: '改日记名' }] : []),
         ...(open ? [{ key: 'complete', icon: <LucideCheck size={20} strokeWidth={1.9} />, title: '完成收笔' }] : []),
         {
             key: 'delete',

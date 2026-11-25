@@ -73,6 +73,13 @@ import ListPlus from 'lucide-react-native/icons/list-plus';
 import PanelLeftOpen from 'lucide-react-native/icons/panel-left-open';
 import PanelLeftClose from 'lucide-react-native/icons/panel-left-close';
 import Repeat2 from 'lucide-react-native/icons/repeat-2';
+// v0.5.0 图标轮（用户指令）：SquarePen = 编辑标题/改名（替换 Type「字母 T」——
+// journal-edit 报头编辑钮与长按菜单「改日记名」行同一动作同一图标）；
+// Images / GalleryVerticalEnd = 插入菜单「相册图片 / 相册视频」（叠放相框替
+// Image/Film 的「单图/胶片」语义，贴图库选取概念）。静态组件用法无需 __iconData。
+import SquarePen from 'lucide-react-native/icons/square-pen';
+import Images from 'lucide-react-native/icons/images';
+import GalleryVerticalEnd from 'lucide-react-native/icons/gallery-vertical-end';
 
 import {
     __iconData as houseData,
@@ -159,6 +166,9 @@ export {
     PanelLeftOpen as LucidePanelLeftOpen,
     PanelLeftClose as LucidePanelLeftClose,
     Repeat2 as LucideRepeat2,
+    SquarePen as LucideSquarePen,
+    Images as LucideImages,
+    GalleryVerticalEnd as LucideGalleryVerticalEnd,
 };
 
 export { MorphIcon, type MorphIconProps, type MorphHandle } from 'morphicons/react-native';

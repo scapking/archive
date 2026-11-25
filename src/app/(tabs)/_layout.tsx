@@ -4,7 +4,7 @@ import { Sidebar, getPalette, useEffectiveTheme } from '@/features/archive';
 // 深路径注记：web desktop 壳的断点常量与让位判定未在域 barrel 出口（ui/index.ts
 // 无本轮改动权限），域内深取（editor-icons / close-button 先例）。
 import { DESKTOP_BREAKPOINT, useIsDesktopShell } from '@/features/archive/ui/desktop-shell';
-import { LucidePenLine, LucideUser } from '@/core/icons';
+import { LucideBookOpen, LucideUser } from '@/core/icons';
 
 /**
  * 响应式壳（action shell 惯例 + app-screens §3）：≥1024dp 桌面用左侧栏
@@ -68,7 +68,7 @@ export default function TabLayout() {
                             // 选中态加粗一档笔画（2.15/1.75）：亮度 + 字重 +
                             // 笔画三通道，激活目的地一眼可辨（v0.4.6）
                             tabBarIcon: ({ focused, color }) => (
-                                <LucidePenLine
+                                <LucideBookOpen
                                     size={22}
                                     strokeWidth={focused ? 2.15 : 1.7}
                                     color={color ?? undefined}

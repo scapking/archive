@@ -5,11 +5,11 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 /**
- * 时间选择与添加表单契约（v0.4.9 重构，用户令「24+12 芯片网格占半屏、选得慢；
- * 居中卡键盘弹起后体验断裂；两步『下一步→添加』绕路」）。断言的是需求侧
- * 不变量：滚轮/双网格/居中卡全退场、单行步进器（5 分量化 + 24h 环）、底部
- * sheet 贴键盘、一步提交、触控与可达、色走 palette——预期来自指令与
- * animate-expo/mobile-native 口径，不复制实现。
+ * 时间选择与添加表单契约（v0.5.0 居中新形态；0.4.9 的「底部 sheet」指纹按
+ * CenteredSheet 改写）。断言的是需求侧不变量：滚轮/双网格/贴底弹层全退场、
+ * 表单走 ui/sheet 居中卡（键盘避让几何在 sheet-keyboard.test.ts 把关）、
+ * 单行步进器（5 分量化 + 24h 环）、一步提交、触控与可达、色走 palette——
+ * 预期来自指令与 animate-expo/mobile-native 口径，不复制实现。
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -17,23 +17,23 @@ const screenSource = await readFile(
     path.join(repoRoot, 'src/features/archive/trip-day-screen.tsx'),
     'utf8',
 );
-/** 表单弹层段（TripItemFormCard → TripItemAlarmCard 之间；闹钟确认卡维持
- *  居中 scrim 形态不在本契约范围）。 */
+/** 表单弹层段（TripItemSheet → TripItemAlarmCard 之间；闹钟确认卡维持
+ *  静态居中 scrim 形态，不在键盘避让契约范围）。 */
 function formSection(): string {
-    const start = screenSource.indexOf('function TripItemFormCard(');
+    const start = screenSource.indexOf('function TripItemSheet(');
     const end = screenSource.indexOf('function TripItemAlarmCard(');
-    assert.ok(start > 0 && end > start, 'TripItemFormCard 段定位失败（结构变了口径同步）');
+    assert.ok(start > 0 && end > start, 'TripItemSheet 段定位失败（结构变了口径同步）');
     return screenSource.slice(start, end);
 }
-/** 时间编辑段（步进器/快捷 chip/开关 chip 组件群 → TripItemFormCard 之前）。 */
+/** 时间编辑段（步进器/快捷 chip/开关 chip 组件群 → TripItemSheet 之前）。 */
 function timeSection(): string {
     const start = screenSource.indexOf('/* 时间编辑');
-    const end = screenSource.indexOf('function TripItemFormCard(');
+    const end = screenSource.indexOf('function TripItemSheet(');
     assert.ok(start > 0 && end > start, '时间编辑段定位失败');
     return screenSource.slice(start, end);
 }
 
-test('旧三代表全部退役：滚轮、24+12 芯片网格、居中表单卡', () => {
+test('旧代表全部退役：滚轮、24+12 芯片网格、贴底弹层、两步提交', () => {
     assert.ok(!screenSource.includes('TimeWheelColumn'), 'TimeWheelColumn 残留');
     assert.ok(!screenSource.includes('wheelIndexFromOffset'), '屏层不应再消费滚轮几何');
     assert.ok(!screenSource.includes('WHEEL_PAD_ROWS'), '屏层不应再消费滚轮垫行');
@@ -41,22 +41,26 @@ test('旧三代表全部退役：滚轮、24+12 芯片网格、居中表单卡',
     assert.ok(!screenSource.includes('HOUR_VALUES'), '24 格时芯片网格回潮');
     assert.ok(!screenSource.includes('MINUTE_VALUES'), '12 格分芯片网格回潮');
     assert.ok(!screenSource.includes('TimeChipGroup'), '双网格芯片组回潮');
-    // 旧居中卡指纹：scrim 上「flex-1 items-center justify-center」整机居中组合
-    //（步进器行自身的横向 justify-center 合法，不在此闸范围）
-    assert.ok(!formSection().includes('flex-1 items-center justify-center'), '表单仍是居中卡——v0.4.9 要求底部弹层');
+    // v0.5.0 居中新形态：表单段不再出现贴底指纹（justify-end 属 0.4.9 旧语言）；
+    // 居中几何本身由 ui/sheet 原语把关（sheet-keyboard.test.ts 契约闸）
+    assert.ok(!formSection().includes('justify-end'), '表单仍是贴底弹层——v0.5.0 要求居中卡');
     assert.ok(!formSection().includes('下一步'), '两步「下一步→添加」回潮');
 });
 
-test('底部 sheet 语言：scrim justify-end + PAPER_FLOAT + 键盘避让，禁 RN Modal', () => {
+test('居中卡 sheet 语言：宿主走 ui/sheet 的 CenteredSheet，禁 KAV 裸兜底、禁 RN Modal', () => {
     const sheet = formSection();
-    assert.ok(sheet.includes('justify-end'), '弹层必须贴底（date-picker sheet 同语言）');
-    assert.ok(sheet.includes('PAPER_FLOAT_SHADOW'), '弹层必须走悬浮纸卡投影档（app sheet 语言）');
-    assert.ok(sheet.includes('KeyboardAvoidingView'), '必须键盘避让（贴键盘不悬空）');
+    // 宿主契约：import ui/sheet 并渲染 CenteredSheet（避让几何在事件驱动层，
+    // 不再靠 KeyboardAvoidingView behavior 赌系统——真机证伪：SDK 58 E2E 下
+    // Android 拿不到 resize 布局，键盘盖卡）
+    assert.ok(screenSource.includes("from './ui/sheet'"), '表单未迁 ui/sheet 原语');
+    assert.ok(sheet.includes('<CenteredSheet'), '表单未渲染 CenteredSheet 居中卡');
+    assert.ok(!screenSource.includes('KeyboardAvoidingView'), '屏层裸 KeyboardAvoidingView 兜底回潮（须走事件驱动让位层）');
     assert.ok(!screenSource.includes("import { Modal"), '禁止引入 RN Modal（条件渲染 + absolute 层范式保持）');
     assert.ok(!/\bModal\b/.test(screenSource.split("from 'react-native'")[0] ?? ''), 'react-native import 不得含 Modal');
-    // 红线：Android 返回键关闭 + 打开即收键盘（旧卡行为保持）
+    // 红线：Android 返回键关闭 + 打开即收键盘 + 主钮走 footer 槽（恒在键盘上方）
     assert.ok(sheet.includes('hardwareBackPress'), 'sheet 缺 Android 返回键闸');
     assert.ok(sheet.includes('Keyboard.dismiss()'), 'sheet 缺打开即收键盘');
+    assert.ok(sheet.includes('footer='), '主按钮必须走 CenteredSheet footer 槽（键盘弹起不被吞）');
 });
 
 test('时间步进器：5 分量化 + 24h 环取模 + 「此刻」/初值同派生', () => {
@@ -98,6 +102,8 @@ test('一步提交：主按钮恒在、空标题闸、done 键直发、IME 纪�
     assert.ok(sheet.includes('returnKeyType="done"') && sheet.includes('onSubmitEditing'), '标题 done 键必须直发提交（路径最短）');
     assert.ok(sheet.includes('onSubmit({'), '提交通道保持 {time,title,description,withAlarm}');
     assert.ok(sheet.includes('time: timeLabel') && sheet.includes('withAlarm,'), 'store 契约字段不得改形');
+    // 聚焦保险：FieldInput focus 挂 sheet 的 scrollIntoView 钩子（键盘已弹起时换字段）
+    assert.ok(sheet.includes('useSheetFieldFocusGuard()') && sheet.includes('onFocus='), '输入聚焦缺 scrollIntoView 二次保险接线');
     // 屏层零裸 TextInput（native 输入只走 field-input 的 uncontrolled 通道）
     assert.ok(!/<TextInput/.test(screenSource), 'trip-day-screen 出现裸 TextInput（IME 纪律）');
     assert.ok(sheet.includes('<FieldInput'), '表单输入必须走 FieldInput');

@@ -21,8 +21,8 @@ import {
     LucidePenLine,
     LucideRepeat2,
     LucidePlus,
+    LucideSquarePen,
     LucideTrash,
-    LucideType,
 } from '@/core/icons';
 // 深路径注记：ChevronUp/Down 与 editor 的节奏表/画布句柄未在 ui/index.ts 出口，
 // 域内深取（CloseButton 已收口进 barrel，不再深取）。
@@ -1250,7 +1250,7 @@ export function JournalEditScreen({
                                     accessibilityLabel="编辑标题"
                                     className="h-11 w-11 items-center justify-center rounded-full bg-ink-raised dark:bg-inkd-raised"
                                 >
-                                    <LucideType size={18} strokeWidth={1.9} color={palette.secondary} />
+                                    <LucideSquarePen size={18} strokeWidth={1.9} color={palette.secondary} />
                                 </View>
                             </BouncyPressable>
                         ) : null}
