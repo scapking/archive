@@ -24,6 +24,12 @@ type TextInputRef = ComponentRef<typeof TextInput>;
  * 双主题同一 token 对）。聚焦用 onFocus/onBlur 本地状态而非 css-interop
  * 的 focus: 伪类——三端行为确定不赌编译产物。条件三元两侧变量集恒等
  * （bg + dark:bg 同槽位成对），符合 className 铁律。
+ *
+ * v0.4.7 行程域重构定位变化：本组件从「表单主输入」退居「手输兜底通道」
+ * （主路径是 DateField + DatePickerSheet 的月历点选，见 ui/date-picker.tsx
+ * 头注）；段高升 h-12（48dp，手输命中档）+ 字号 16 对齐表单正文档。
+ * 搜索页（search-screen）两处消费走同一新档——只动视觉档位，值语义与
+ * 归一/补零/跳段逻辑零改动。
  */
 export function DateInput({
     value,
@@ -85,7 +91,7 @@ export function DateInput({
                     ) : null}
                     <TextInput
                         ref={seg.ref}
-                        className={`h-11 min-w-0 flex-1 rounded-control text-center text-[15px] ${
+                        className={`h-12 min-w-0 flex-1 rounded-control text-center text-[16px] ${
                             // 无边框规范（#13）：border 零，聚焦 border / 失焦 raised
                             //（一档亮度变化语言，双主题 token 对成对）
                             focusedKey === seg.key

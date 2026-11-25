@@ -8,10 +8,8 @@ import {
 } from 'react';
 import {
     BackHandler,
-    FlatList,
     Image,
     Keyboard,
-    Platform,
     Pressable,
     Switch,
     Text,
@@ -33,19 +31,16 @@ import { haptics } from '@/core/haptics';
 import * as db from './db';
 // 屏层数据编排（行程项 mutation 与错误/revision 通道）+ 时刻纯函数
 // （tripItemDueAt：通知时间闸与 deck 排序的单一事实源，屏层禁止另写时刻组合；
-// isValidTripItemTime 校验收口 store 层——表单时间走滚轮值域恒合法，屏层不再复检）。
+// isValidTripItemTime 校验收口 store 层——表单时间走芯片值域恒合法，屏层不再复检）。
 import {
     tripItemDueAt,
     useArchiveRevision,
     useArchiveStore,
 } from './store';
-// 滚轮几何换算与时刻拼装（纯函数，node 测试直接覆盖——吸附正确性收口在此）
-import {
-    normalizeWheelTime,
-    wheelIndexFromOffset,
-    wheelOffsetForIndex,
-    WHEEL_PAD_ROWS,
-} from './trip-item-form-logic';
+// 时刻拼装（纯函数，node 测试直接覆盖）。v0.4.7 时间选择重做后本屏不再消费
+// 滚轮几何换算函数（点选网格无需滚动换算；该组旧导出暂留在
+// trip-item-form-logic 与其测试里，清理与否归主控裁决）。
+import { normalizeWheelTime } from './trip-item-form-logic';
 // 阶段机与 deck 排序（纯函数，node 测试直接覆盖；排序即优先级见模块头注）
 import {
     orderTripItems,
@@ -97,8 +92,10 @@ import { DeadEndView } from './journal-edit-screen';
  *   添加图片 / 添加视频（done 与 wrap 都可补媒体，用户指令 #8）/ 删除此行程
  *   ——手动「标记完成/失败」退役（v0.4.4），阶段由 trip-item-logic 派生；
  *   锁定行程 isTripLocked 时长按与 FAB 入口全部关断，整页只读）；
- * - `+` FAB → 创建行程项表单卡（分步引导式，v0.4.2 用户指令「带交互的」：时间
- *   双滚轮 → 标题（自动聚焦）→ 备注可选可跳过；已完成步回显为可点行回改）→
+ * - `+` FAB → 创建行程项表单卡（分步引导式，v0.4.2 用户指令「带交互的」：
+ *   时刻回显 + 时/分点选芯片网格（v0.4.7 重做，用户追加令「滚轮丑、要重构」，
+ *   见 TimeChipGroup 注；「此刻」快捷一键回到下一个 5 分钟档）→ 标题（自动
+ *   聚焦）→ 备注可选可跳过；已选项回显为可点行回改）→
  *   store.createTripItem（成功后自动调度本地通知，权限被拒静默降级）；
  * - **应用内闹钟**（页内 useEffect 定时检查）：前台期间某 pending 项的时刻
  *   （local_date + time）到达时弹确认卡——标题「行程时间到」+ 正文（时间 +
@@ -214,19 +211,187 @@ const TripItemCardFace = memo(function TripItemCardFace({
     );
 });
 
-/** 滚轮单行高与可见行数：5 行窗口（上下各 2 行空区把首末项滚到中线）。 */
-const WHEEL_ITEM_H = 44;
-const WHEEL_VISIBLE_ROWS = 5;
-/** 滚轮值域：时 0-23；分 5 分钟步进（00-55，行程项粒度口径，与通知分钟对齐）。 */
-const WHEEL_HOURS = Array.from({ length: 24 }, (_, i) => i);
-const WHEEL_MINUTES = Array.from({ length: 12 }, (_, i) => i * 5);
+/* ------------------------------------------------------------------ */
+/* 时间选择（v0.4.7 重做，用户追加令「v0.4.4 滚轮丑、要重构」）           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 值域是**平的**（24 个时、12 个 5 分步进），旧版却用纵向滚轮表达：滚动把
+ * 「选一个值」变成「调一段距离」——看不见全貌、无法直达、要滚动仲裁（本屏
+ * 滚动还踩长任务），五项窗口 + 上下垫行在短列表上又切出半空带（before 截图
+ * 实证：分列 45/50/55 下垫行缺失）。新方案 = 点选网格（chip grid）：
+ * ① 全值域一眼扫完、一次点中（occasional 频次走标准交互，无动画预算问题）；
+ * ② 键鼠触屏同一条链（Pressable 天然 focusable + Enter/Space，无滚动手势
+ *    仲裁 = 零滚动卡顿面）；
+ * ③ 选中态是数据色（accent 填充 + 白字，onPrimaryBtn 同族），未选是纸面
+ *    raised 一档——「时/分」两组结构即值域本身，非装饰（frontend-design：
+ *    structural devices encode information）；
+ * ④ 「此刻」快捷芯片把默认值（下一个 5 分钟档）做成可点事实而非隐式初值。
+ * 触控口径（animate-expo）：视觉 40dp + hitSlop 上下左右各 2 = 44dp 命中，
+ * 不放大视觉本体；同行间距 8 保证相邻命中区不重叠（40+8 > 44/2×2）。
+ */
+const HOUR_VALUES = Array.from({ length: 24 }, (_, i) => i);
+const MINUTE_VALUES = Array.from({ length: 12 }, (_, i) => i * 5);
+/** chip 视觉边长 / 命中外扩 / 行距 / 圆角（rounded-control 档同值 inline）。 */
+const TIME_CHIP = 40;
+const TIME_CHIP_SLOP = 2;
+const TIME_CHIP_GAP = 8;
+const TIME_CHIP_RADIUS = 12;
 
 const pad2 = (n: number): string => String(n).padStart(2, '0');
 
+/** 下一个可选 5 分钟档（整表单初值与「此刻」快捷共用；跨时进位取 24 模）。 */
+function nextFiveMinuteSlot(now: Date): { hour: number; minute: number } {
+    const rolled = Math.ceil(now.getMinutes() / 5) * 5;
+    return {
+        hour: (now.getHours() + (rolled >= 60 ? 1 : 0)) % 24,
+        minute: rolled % 60,
+    };
+}
+
+/**
+ * 时间值芯片（时 24 枚 / 分 12 枚共用）：选中 = accent 填充 + 白字（onPrimaryBtn
+ * 同族，明暗两主题恒可辨）；未选 = raised 纸面一档 + secondary 字；按压 = 透明度
+ * 一档（100ms 级反馈，无弹跳动画——高频点选走「几乎不可感知」档）。触摸面样式
+ * 走 inline（css-interop 按压 observable 铁律：状态动态样式不落 className）。
+ */
+function TimeChip({
+    text,
+    selected,
+    accessibilityLabel,
+    onPress,
+}: {
+    text: string;
+    selected: boolean;
+    accessibilityLabel: string;
+    onPress(): void;
+}) {
+    const palette = usePalette();
+    return (
+        <Pressable
+            onPress={() => {
+                // 选择拍触感（animate-expo：值跨过档位的 selection tick；web no-op）
+                haptics.selection();
+                onPress();
+            }}
+            hitSlop={TIME_CHIP_SLOP}
+            accessibilityRole="button"
+            accessibilityLabel={accessibilityLabel}
+            accessibilityState={{ selected }}
+            style={({ pressed }) => ({
+                width: TIME_CHIP,
+                height: TIME_CHIP,
+                borderRadius: TIME_CHIP_RADIUS,
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: selected ? palette.accent : palette.raised,
+                opacity: pressed && !selected ? 0.6 : 1,
+            })}
+        >
+            <Text
+                style={{
+                    fontSize: 15,
+                    fontWeight: selected ? '600' : '400',
+                    color: selected ? palette.onPrimaryBtn : palette.secondary,
+                    fontVariant: ['tabular-nums'],
+                }}
+            >
+                {text}
+            </Text>
+        </Pressable>
+    );
+}
+
+/**
+ * 「此刻」快捷（描边 ghost chip）：accent 文字 + 透明底 + 1.5 描边——快捷动作
+ * 不伪装成值选项（填充/描边语法区分）；已是目标档时禁用（60% 透明 + 无触感），
+ * 诚实降级不发没效果的拍。
+ */
+function TimeGhostChip({
+    label,
+    disabled,
+    onPress,
+}: {
+    label: string;
+    disabled: boolean;
+    onPress(): void;
+}) {
+    const palette = usePalette();
+    return (
+        <Pressable
+            onPress={() => {
+                if (disabled) return;
+                haptics.impact('light');
+                onPress();
+            }}
+            disabled={disabled}
+            accessibilityRole="button"
+            accessibilityLabel={`${label}（跳到下一个 5 分钟档）`}
+            accessibilityState={{ disabled }}
+            style={({ pressed }) => ({
+                height: 36,
+                paddingHorizontal: 14,
+                borderRadius: TIME_CHIP_RADIUS,
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderWidth: 1.5,
+                borderColor: disabled ? palette.border : palette.accent,
+                opacity: disabled ? 0.5 : pressed ? 0.7 : 1,
+            })}
+        >
+            <Text
+                style={{
+                    fontSize: 13,
+                    fontWeight: '600',
+                    color: disabled ? palette.secondary : palette.accent,
+                }}
+            >
+                {label}
+            </Text>
+        </Pressable>
+    );
+}
+
+/** 芯片组：eyebrow 标签 + flexWrap 行（gap 8；行距同值，纵向节奏一致）。 */function TimeChipGroup({
+    label,
+    values,
+    selected,
+    format,
+    a11yUnit,
+    onSelect,
+}: {
+    label: string;
+    values: number[];
+    selected: number;
+    format(n: number): string;
+    a11yUnit: string;
+    onSelect(n: number): void;
+}) {
+    return (
+        <View>
+            <Text className="mb-1.5 text-[11px] font-medium text-ink-muted dark:text-inkd-muted">
+                {label}
+            </Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: TIME_CHIP_GAP }}>
+                {values.map((n) => (
+                    <TimeChip
+                        key={n}
+                        text={format(n)}
+                        selected={n === selected}
+                        accessibilityLabel={`${format(n)} ${a11yUnit}`}
+                        onPress={() => onSelect(n)}
+                    />
+                ))}
+            </View>
+        </View>
+    );
+}
+
 /**
  * 创建行程项表单卡（v0.4.4 同卡渐进式，用户指令「标题下一步后在时间和标题
- * 输入框下面再加一个输入框」）：时间双滚轮 + 标题常显同卡，「下一步」把备注
- * 输入框**追加**在下方（不换屏不替换），「添加」提交。时间滚轮值域恒合法、
+ * 输入框下面再加一个输入框」）：时刻回显 + 时/分点选芯片网格（v0.4.7 重做
+ * 滚轮）+ 标题常显同卡，「下一步」把备注
+ * 输入框**追加**在下方（不换屏不替换），「添加」提交。时间芯片值域恒合法、
  * 标题空值关住提交——本地正则校验退场，仅剩 store 失败（error 通道）就地
  * 展示可重试。scrim + 居中卡，ActionMenuCard/RenameCard 同语言，禁 RN Modal
  * 条件渲染。
@@ -242,16 +407,10 @@ function TripItemFormCard({
     /** store.error 就地文案（失败后展示，避免陈旧错误串场）。 */
     errorText: string | null;
 }) {
-    // 时间初值 = 「下一个可选的整 5 分钟」（滚轮需要确定初值；59→60 归零进位）。
-    // 一次取 now 定格快照，两个 useState 共用（分取两次 Date 会跨分钟漂移）。
-    const [initialTime] = useState(() => {
-        const now = new Date();
-        const rolled = Math.ceil(now.getMinutes() / 5) * 5;
-        return {
-            hour: (now.getHours() + (rolled >= 60 ? 1 : 0)) % 24,
-            minute: rolled % 60,
-        };
-    });
+    // 时间初值 = 「下一个可选的整 5 分钟」（与「此刻」快捷同派生；59 分→整点
+    // 进位取 24 模）。一次取 now 定格快照，两个 useState 共用（分取两次 Date
+    // 会跨分钟漂移）。
+    const [initialTime] = useState(() => nextFiveMinuteSlot(new Date()));
     const [hour, setHour] = useState(initialTime.hour);
     const [minute, setMinute] = useState(initialTime.minute);
     const [title, setTitle] = useState('');
@@ -324,22 +483,48 @@ function TripItemFormCard({
                         <CloseButton onPress={onClose} />
                     </View>
 
-                    {/* 时间双滚轮（常显）+ 标题（常显，自动聚焦）——同卡渐进，
-                        备注由「下一步」追加在标题下方（v0.4.4 用户指令） */}
-                    <View className="mt-3 flex-row gap-3">
-                        <TimeWheelColumn
-                            label="时"
-                            values={WHEEL_HOURS}
-                            index={hour}
-                            onSelect={setHour}
-                            accessibilityLabel="小时"
+                    {/* 时间选择（v0.4.7 重做：滚轮 → 点选网格，见 TimeChipGroup
+                        注）：大号时刻回显 + 「此刻」快捷 + 时/分两组芯片。 */}
+                    <View className="mt-3 flex-row items-end justify-between">
+                        <View>
+                            <Text className="text-[11px] font-medium text-ink-muted dark:text-inkd-muted">
+                                开始时间
+                            </Text>
+                            <Text
+                                className="mt-0.5 text-[30px] font-semibold text-ink-text dark:text-inkd-text"
+                                style={{ fontVariant: ['tabular-nums'] }}
+                            >
+                                {timeLabel}
+                            </Text>
+                        </View>
+                        {/* 「此刻」快捷：一键回到下一个可选 5 分钟档（默认值
+                            做成可点事实；已是目标档时禁用置灰——诚实降级） */}
+                        <TimeGhostChip
+                            label="此刻"
+                            disabled={hour === initialTime.hour && minute === initialTime.minute}
+                            onPress={() => {
+                                const next = nextFiveMinuteSlot(new Date());
+                                setHour(next.hour);
+                                setMinute(next.minute);
+                            }}
                         />
-                        <TimeWheelColumn
+                    </View>
+                    <TimeChipGroup
+                        label="时"
+                        values={HOUR_VALUES}
+                        selected={hour}
+                        format={(n) => pad2(n)}
+                        a11yUnit="点"
+                        onSelect={setHour}
+                    />
+                    <View className="mt-3">
+                        <TimeChipGroup
                             label="分"
-                            values={WHEEL_MINUTES}
-                            index={minute}
+                            values={MINUTE_VALUES}
+                            selected={minute}
+                            format={(n) => pad2(n)}
+                            a11yUnit="分"
                             onSelect={setMinute}
-                            accessibilityLabel="分钟"
                         />
                     </View>
                     <Text className="mt-3 text-[12px] text-ink-muted dark:text-inkd-muted">
@@ -411,130 +596,6 @@ function TripItemFormCard({
                     ) : null}
                 </Pressable>
             </Pressable>
-        </View>
-    );
-}
-
-/**
- * 滚轮列（纯 RN 实现，不引选择器依赖——date-input 同款三端可用性纪律）：
- * **FlatList 定高行 + 手动吸附**（v0.4.4 用户反馈「滑动不丝滑」）——
- * snapToInterval 是 iOS 专属（Android ScrollView/FlatList 不支持），旧版
- * Android 完全没有吸附回正，行会停在任意位置且滚动链路额外抖；改 FlatList
- * 定高行（getItemLayout 零测量）+ iOS snapToInterval / Android momentum 末
- * 手动 scrollToOffset 吸附。上下各 2 行填充区把首末项滚到中线。中带高亮垫
- * 在行下（raised 亮度一档），选中行字色加重（settle 时才更新，滚动期零
- * per-frame setState）。挂载用 initialScrollIndex 直接落位（无飞行感），
- * 值由父层 state 持有。
- */
-function TimeWheelColumn({
-    label,
-    values,
-    index,
-    onSelect,
-    accessibilityLabel,
-}: {
-    label: string;
-    values: number[];
-    index: number;
-    onSelect(index: number): void;
-    accessibilityLabel: string;
-}) {
-    const listRef = useRef<FlatList<number | null> | null>(null);
-    // settle 里读最新 index 的通道（闭包冻结防陈旧值误判「无变化」）
-    const indexRef = useRef(index);
-    indexRef.current = index;
-    // momentum 未到的兜底计时器（Android 慢拖可能不发 momentum 事件）
-    const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    useEffect(
-        () => () => {
-            if (settleTimerRef.current != null) clearTimeout(settleTimerRef.current);
-        },
-        [],
-    );
-
-    const data = useMemo<(number | null)[]>(() => [null, null, ...values, null, null], [values]);
-
-    /** 吸附：选最近行（父层 state 更新高亮）+ 偏移未对齐行时回正。 */
-    const settle = (offset: number) => {
-        const next = wheelIndexFromOffset(offset, WHEEL_ITEM_H, values.length);
-        if (next !== indexRef.current) onSelect(next);
-        const target = wheelOffsetForIndex(next, WHEEL_ITEM_H);
-        if (Math.abs(target - offset) > 1) {
-            listRef.current?.scrollToOffset({ offset: target, animated: true });
-        }
-    };
-
-    return (
-        <View className="flex-1">
-            <Text className="text-[12px] text-ink-muted dark:text-inkd-muted">{label}</Text>
-            <View className="mt-1.5 overflow-hidden rounded-control bg-ink-surface dark:bg-inkd-surface">
-                {/* 中带高亮（先铺 → 行滚动其上）：绝对定位 raised 条，pointerEvents
-                    none 不挡滚动 */}
-                <View
-                    pointerEvents="none"
-                    className="absolute left-0 right-0 bg-ink-raised dark:bg-inkd-raised"
-                    style={{
-                        top: WHEEL_PAD_ROWS * WHEEL_ITEM_H,
-                        height: WHEEL_ITEM_H,
-                    }}
-                />
-                <FlatList
-                    ref={listRef}
-                    data={data}
-                    keyExtractor={(item, i) => (item == null ? `pad-${i}` : String(item))}
-                    getItemLayout={(_, i) => ({
-                        length: WHEEL_ITEM_H,
-                        offset: WHEEL_ITEM_H * i,
-                        index: i,
-                    })}
-                    initialScrollIndex={index + WHEEL_PAD_ROWS}
-                    renderItem={({ item, index: i }: { item: number | null; index: number }) =>
-                        item == null ? (
-                            <View style={{ height: WHEEL_ITEM_H }} />
-                        ) : (
-                            <View
-                                className="items-center justify-center"
-                                style={{ height: WHEEL_ITEM_H }}
-                            >
-                                <Text
-                                    className={
-                                        i - WHEEL_PAD_ROWS === index
-                                            ? 'text-[22px] font-medium text-ink-text dark:text-inkd-text'
-                                            : 'text-[22px] text-ink-muted dark:text-inkd-muted'
-                                    }
-                                    style={{ fontVariant: ['tabular-nums'] }}
-                                >
-                                    {pad2(item)}
-                                </Text>
-                            </View>
-                        )
-                    }
-                    style={{ height: WHEEL_VISIBLE_ROWS * WHEEL_ITEM_H }}
-                    showsVerticalScrollIndicator={false}
-                    bounces={false}
-                    decelerationRate="fast"
-                    overScrollMode="never"
-                    nestedScrollEnabled
-                    snapToInterval={Platform.OS === 'ios' ? WHEEL_ITEM_H : undefined}
-                    onMomentumScrollEnd={(e) => {
-                        if (settleTimerRef.current != null) {
-                            clearTimeout(settleTimerRef.current);
-                            settleTimerRef.current = null;
-                        }
-                        settle(e.nativeEvent.contentOffset.y);
-                    }}
-                    onScrollEndDrag={(e) => {
-                        if (Platform.OS !== 'android') return;
-                        // Android 慢拖可能不发 momentum：拖拽结束 ~180ms 仍无
-                        // momentum 事件则视为已静止，就地吸附（momentum 到达会
-                        // 先清计时器，不重复吸附）
-                        if (settleTimerRef.current != null) clearTimeout(settleTimerRef.current);
-                        const offset = e.nativeEvent.contentOffset.y;
-                        settleTimerRef.current = setTimeout(() => settle(offset), 180);
-                    }}
-                    accessibilityLabel={accessibilityLabel}
-                />
-            </View>
         </View>
     );
 }

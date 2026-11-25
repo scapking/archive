@@ -1,10 +1,11 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     BackHandler,
-    FlatList,
+    Dimensions,
     Image,
     Keyboard,
     Pressable,
+    ScrollView,
     Text,
     View,
 } from 'react-native';
@@ -15,12 +16,12 @@ import {
     BouncyPressable,
     LucideCalendar,
     LucideCheck,
-    LucideImage,
+    LucideChevronRight,
     LucidePenLine,
     LucidePencil,
     LucideTrash,
-    LucideWallpaper,
     LucideVideo,
+    LucideWallpaper,
 } from '@/core/icons';
 import { haptics } from '@/core/haptics';
 import { tintIcon } from './ui/editor-icons';
@@ -42,10 +43,18 @@ import {
     tripDayList,
     tripDisplayTitle,
 } from './trip-logic';
+import {
+    dayDeckHeight,
+    dayFaceInvitation,
+    dayFaceTags,
+    dayFacePlanPreview,
+    tripDayTarget,
+} from './trip-day-deck-logic';
 import { parseBlocks, previewText } from './journal-logic';
 import { safeBack } from './ui';
 import {
     ActionMenuCard,
+    CardDeck,
     CloseButton,
     LoadingView,
     ProgressBar,
@@ -54,9 +63,9 @@ import {
     StatusChip,
     TripBadge,
     TripCoverVideo,
-    useBlockActionGestures,
     useFileUrlState,
     usePalette,
+    type DeckItem,
 } from './ui';
 // 深路径注记：DeadEndView（死路页共享视图，2026-11-10 反馈二轮）宿主在
 // journal-edit-screen——两处消费屏均在本组改动权限内、单一实现源（同语言同
@@ -66,45 +75,35 @@ import {
 import { DeadEndView } from './journal-edit-screen';
 
 /**
- * 行程详情 = 逐日卡片列表（行程逐日卡重构，v6——媒体时间线退役 + 日卡现代化）：
+ * 行程详情 = **日卡左右堆**（v0.4.7 行程域重构令 1：「进入行程列表后不再是
+ * 垂直容器卡片，而是左右堆叠」——逐日 FlatList 整层退役）：
  *
- * - 信息架构：屏头 + 列表头（封面视频 / 描述 / 计划总进度）+ 一天一张日卡
- *   （FlatList，稳定 key = localDate，可一直滑动；固定区间 tripDayList 出
- *   D1…Dn，持续性行程走内容驱动口径 ∪ 出发日 ∪ 今天）。**「行程媒体」横滑
- *   时间线整体移除**（用户口径：只要卡片；trip_media 数据不动——日卡背景与
- *   deck 封面仍消费），添加/删除媒体入口与确认卡随之退役；
- * - 日卡两个形态：
- *   ①文字卡（现代化视觉：base 上 surface 卡 tone 分层、无描边无阴影，卡内
- *     分区靠留白不靠线；数字位 tabular-nums）：日期行（D 序号 + M月D日 +
- *     星期 + 今天角标）→ 该日 plans 勾选行 → 摘要（journal previewText +
- *     meta 行：媒体计数 + 收笔状态）→ 未写邀请态。颜色只上数据：今天/进行中/
- *     勾选完成态用 accent，其余中性灰阶；
- *   ②背景卡：长按 → 操作卡设置背景后，该卡 = 纯背景图（铺满 rounded-card16、
- *     cover，不渲染日期/目标/描述等任何文字，仅保留点按进日页）；背景文件
- *     缺失（三态 missing）时降级回文字卡；
- * - 点卡片 → 该日的「行程表」页（2026-11-19 重构：/trip/[id]/day/[date]，deck
- *   浏览当天行程项，不再直达日记编辑器；写日记入口保留在长按操作卡「写这一天」，
- *   write 路由原样保留）；锁定行程点卡：已有日记仍走 /journal/[id] 只读页
- *   （保持只读内容原访问路径），无日记则落行程表页只读浏览（无写入口）；
- * - 卡片操作入口：长按卡（web 桌面双击，useBlockActionGestures 同媒体块范式）
- *   → 日卡操作卡（写这一天 / 设置背景；2026-11-20 用户指令收窄——添加计划
- *   与清除背景两行退役），scrim + 居中卡（禁 RN Modal，条件渲染）。极简口径
- *   选长按而非卡角落图标：卡面保持纯内容（背景卡更是「不显示任何文字」的
- *   硬口径，角落图标会破功），且与媒体块长按操作卡是同一套交互语言。计划的
- *   创建入口在行程表页（/trip/[id]/day/[date]「添加行程项」）；背景设置后无
- *   卡片级清除入口，换图直接再设一次（旧图由 setTripDayBackground 清理）；
- * - **计划长按删除（2026-11-11 反馈三）**：计划行（未锁定）长按 → 删除操作卡
- *   （scrim + 居中卡，同范式；卡内预览计划原文）→ 直接删（db.softDeleteDayPlan
- *   软删，屏层直连 db 不经 store——轻量行级取径，同本屏 setDayPlanDone 的既有
- *   变体）+ 屏级横幅可见反馈（4s 自动消退）+ store revision 推进（订阅链桥接
- *   广播；notifyDataRevision 直发不在本屏订阅链，历史踩坑勿回填）；
- *   与勾选点按并存（Pressability 长按触发后不补发 onPress）；计划勾/删均
- *   广播数据版本，首页 deck 的计划完成度统计不再滞留旧值；
- * - 锁定（#7）：isTripLocked（已结束）→ 卡片只读（勾选禁用、无长按操作卡、
+ * - 信息架构：屏头 + 一条极短的「当日之外」滚动带（封面视频 / 描述 / 计划
+ *   总进度 / 通知横幅）+ 日卡堆（CardDeck，与首页/堆页同一台机器同一 props，
+ *   横向跟手翻、点背卡提前、露条堆影分层）。堆高走 trip-day-deck-logic 的
+ *   视口比例夹紧档（无 onLayout 反馈环）；
+ * - 卡面 = 那一天（DayDeckFace，v0.4.7 词表/预览口径由纯逻辑文件收口并有
+ *   node 单测把关）：日期行（D 序号 20 tabular + 月日 16 + 星期 12 + 今天/
+ *   出发/返程徽章）→ 计划预览 ≤3 行（勾选 + 长按删与旧形态同语义）→ 日记
+ *   摘要 2 行或「未写」邀请 → 底行状态词 + 「当日行程 ›」行动提示。**「行程
+ *   名称」依旧不上卡面**（0.4.7 既定：名称只进屏头）；
+ * - 点前卡 → 该日的「行程表」页（/trip/[id]/day/[date]）；锁定行程点卡：
+ *   已有日记走 /journal/[id] 只读页，无日记落行程表页只读浏览；长按（web
+ *   桌面按住）→ 日卡操作卡（写这一天 / 设置背景）；
+ * - 背景卡形态保留（长按设置背景后 = 纯图铺满卡面，页码走 light 色调；
+ *   文件缺失三态 missing 降级回文字卡）；
+ * - **纵向滚动卡顿的结构性消解**（v0.4.7 令 4）：旧形态 23 张日卡全靠一条
+ *   垂直 FlatList 承载，逐帧行回收 + 每卡卡影 + 背景图解码同帧进场是「上下
+ *   滑动特别卡」的主通道；新形态逐日区不再滚动——堆一次挂 ≤3 张真实卡面
+ *   （deck 挂载纪律，agent A 域），页面本身只剩一条不滚也够用的短带；
+ * - 载入容错（v0.4.7 修）：db 瞬时失败（启动期单运行者锁竞态等）不再一次
+ *   异常就落「找不到这个行程」死路——自动重试一次（700ms 后）再降级；
+ *   真删除（getTrip 返回空行）仍即时死路；
+ * - 锁定（#7）：isTripLocked（已结束）→ 只读（勾选禁用、无长按操作卡、
  *   点卡只读浏览），保持既有锁定轻提示；store.setTripDayBackground 兜底拒绝。
  */
 
-/** 逐日卡片数据（FlatList 项，key = localDate 稳定）。 */
+/** 逐日卡数据（堆项，稳定 key = localDate）。 */
 interface DayCardData {
     localDate: string;
     /** D 序号（出发日起算；内容驱动口径下可跳号，是持续性行程的诚实呈现）。 */
@@ -120,7 +119,7 @@ interface DayCardData {
 
 /**
  * db 行逐字段浅比较（DayCardData 恒等复用的比较基元）：reload 每次查询都产出
- * 全新行对象（引用必不同），DayCard（memo）要跳过「数据没变的日」就必须按值
+ * 全新行对象（引用必不同），DayDeckFace（memo）要跳过「数据没变的日」就必须按值
  * 比较。行结构全部为原始类型列（schema 约定），键集长度 + 逐键 === 即全等；
  * null 与 null 相等（无日记/无背景），仅一侧 null 不等（内容出现/消失）。
  */
@@ -135,7 +134,7 @@ function sameDbRow<T extends object>(a: T | null, b: T | null): boolean {
 }
 
 /** 计划行列表全等（长度恒等 + 逐行 sameDbRow）：勾选/新增/删除只动目标日，
- *  其余日的 plans 内容不变 → 沿用旧引用，整列重渲就此收口到单卡。 */
+ *  其余日的 plans 内容不变 → 沿用旧引用，整堆重建就此收口到单卡。 */
 function samePlanList(a: db.DayPlanRow[], b: db.DayPlanRow[]): boolean {
     if (a === b) return true;
     if (a.length !== b.length) return false;
@@ -173,9 +172,9 @@ function DayActionCard({
     }, [onClose]);
 
     // 行序：写这一天 → 设置背景（2026-11-20 用户指令：添加计划/清除背景退役）。
-    // 行卡片与 InsertMenu MenuRow 同语言：icon 容器 40×40 rounded-control + raised
-    // 触感底；行高 ~72 ≥44，不传 hitSlop（0），行距 gap-2.5（10px）为不可点间隙
-    // 从简口径（2026-11-19 用户指令）：行副标描述全线退役，标题自释
+    // 行卡片与 InsertMenu MenuRow 同语言：icon 容器走 tintIcon 收口；行高 48 ≥44，
+    // 不传 hitSlop（0），行距 gap-2.5（10px）为不可点间隙从简口径（2026-11-19
+    // 用户指令）：行副标描述全线退役，标题自释
     const rows: Array<{ action: DayCardAction; icon: React.ReactNode; title: string }> = [
         { action: 'write', icon: <LucidePenLine size={20} strokeWidth={1.9} />, title: '写这一天' },
         { action: 'set-background', icon: <LucideWallpaper size={20} strokeWidth={1.9} />, title: '设置背景' },
@@ -227,7 +226,7 @@ function DayActionCard({
  * - 无二次确认步：计划是低频轻量条目、随时可重新添加，确认步的成本高于误删
  *   成本（软删落库 + 屏级横幅可见反馈，见 runDeletePlan 取舍注）；
  * - 危险语义全部走 negative 色（icon/题文），行结构与其余操作卡行同语言
- *   （icon 容器 40×40 raised 底 + 题 + hint），颜色只上语义不上装饰。
+ *   （icon 容器 + 题 + hint），颜色只上语义不上装饰。
  */
 function PlanActionCard({
     content,
@@ -295,31 +294,31 @@ function PlanActionCard({
 }
 
 /**
- * 逐日卡片（列表主体，memo）：文字卡（日期 + 目标 + 摘要）/ 背景卡（纯图）双形态。
- * 点卡 → 该日行程表页（未锁定 /trip/[id]/day/[date]；锁定且已有日记走
- * /journal/[id] 只读，无日记同样落行程表页只读浏览）；
- * 长按（web 桌面双击）→ 日卡操作卡（onRequestAction，仅未锁定）。
+ * 日卡卡面（堆项 node，memo）：文字卡（日期行 + 计划预览 + 摘要/邀请）/
+ * 背景卡（纯图铺满，deck 壳已负责圆角/纸面/卡影，卡面不再自套卡壳——
+ * v0.4.6「卡体零自壳」堆纪律）。点卡/长按语义在 deck 壳层（DeckItem），
+ * 卡面内部只保留计划行的勾选与长按删除。
  * 背景图走 useFileUrlState 三态：loading = raised 占位（无文字，纯底）；
  * missing = 降级文字卡（背景文件缺失是可自愈降级，不渲染坏引用）；ready = 纯图。
+ * memo 生效前提（与旧 DayCard 同一契约）：data 引用恒等复用（reload 比较器）
+ * + 回调全稳定——计划勾选/删除后整堆重建只重渲数据变化的单卡。
  */
-const DayCard = memo(function DayCard({
-    tripId,
+const DayDeckFace = memo(function DayDeckFace({
     data,
     locked,
+    endDate,
     onChanged,
-    onRequestAction,
     onRequestPlanDelete,
 }: {
-    tripId: string;
     data: DayCardData;
     locked: boolean;
+    /** 固定行程的结束日（open 行程 null）——「返程」徽章判定（纯逻辑收口）。 */
+    endDate: string | null;
     onChanged(): void;
-    onRequestAction(date: string): void;
     /** 长按计划行 → 删除操作卡（屏级 PlanActionCard；仅未锁定可达，锁定态
      *  计划行是非按压 View，入口天然不存在）。 */
     onRequestPlanDelete(plan: db.DayPlanRow): void;
 }) {
-    const router = useRouter();
     const palette = usePalette();
     const [actionError, setActionError] = useState<string | null>(null);
 
@@ -328,27 +327,14 @@ const DayCard = memo(function DayCard({
     const showBackground = bg != null && bgState.status !== 'missing';
 
     const { monthDay, weekday } = formatDateParts(data.localDate);
-    const isToday = data.localDate === todayLocal();
-    const journalBlocks = data.journal ? parseBlocks(data.journal.blocks) : null;
-
-    // 进日页（2026-11-19 行程表重构）：未锁定 = 「行程表」页（/trip/[id]/day/[date]，
-    // 当天行程项 deck），不再直达日记编辑器——写日记入口保留在长按操作卡「写这一
-    // 天」（write 路由原样保留）；锁定 = 已有日记走 /journal/[id] 只读页（只读
-    // 内容原访问路径不变），无日记则落行程表页只读浏览（无写入口，不凭空建页）
-    const open = useCallback(() => {
-        if (!locked || !data.journal) {
-            router.push(`/trip/${tripId}/day/${data.localDate}`);
-            return;
-        }
-        router.push({ pathname: '/journal/[id]', params: { id: data.journal.id } });
-    }, [locked, tripId, data.localDate, data.journal, router]);
-
-    // 卡片手势：长按（web 桌面双击）→ 操作卡仅未锁定；锁定仅剩点按（只读路径）
-    const gestures = useBlockActionGestures({
-        enabled: !locked,
-        onBlockAction: !locked ? () => onRequestAction(data.localDate) : undefined,
-        onSinglePress: open,
+    const tags = dayFaceTags({
+        dayNo: data.dayNo,
+        localDate: data.localDate,
+        endDate,
+        today: todayLocal(),
     });
+    const journalBlocks = data.journal ? parseBlocks(data.journal.blocks) : null;
+    const planPreview = dayFacePlanPreview(data.plans);
 
     const togglePlan = async (plan: db.DayPlanRow) => {
         try {
@@ -364,66 +350,56 @@ const DayCard = memo(function DayCard({
         }
     };
 
-    // ── 背景卡形态：铺满 rounded-card16 cover，不渲染任何文字（用户硬口径）。
-    //    loading = raised 纯占位；missing 已在上游降级为文字卡 ──
+    // ── 背景卡形态：纯图铺满卡面（用户硬口径：不渲染任何文字，点卡走 deck
+    //    壳层 onPress）。loading = raised 纯占位；missing 已在上游降级文字卡 ──
     if (showBackground && bg) {
-        return (
-            <View className="mb-4">
-                <BouncyPressable onPress={gestures.onPress} onLongPress={gestures.onLongPress} scaleTo={0.985}>
-                    <View
-                        className="h-56 w-full overflow-hidden rounded-card bg-ink-raised dark:bg-inkd-raised"
-                        accessibilityRole="button"
-                        accessibilityLabel={`D${data.dayNo} ${monthDay} ${weekday}，有背景图，点开这一天`}
-                    >
-                        {bgState.status === 'ready' && bgState.uri ? (
-                            <Image source={{ uri: bgState.uri }} className="h-full w-full" resizeMode="cover" />
-                        ) : null}
-                    </View>
-                </BouncyPressable>
-            </View>
+        return bgState.status === 'ready' && bgState.uri ? (
+            <Image source={{ uri: bgState.uri }} className="h-full w-full" resizeMode="cover" />
+        ) : (
+            <View className="h-full w-full bg-ink-raised dark:bg-inkd-raised" />
         );
     }
 
-    // ── 文字卡形态（现代化：base 上 surface tone 分层，无描边无阴影；卡内
-    //    分区靠留白不靠线；色彩只上数据——今天/进行中/勾选完成态 accent）。
-    //    内边距口径（#尺寸组反馈）：水平 px-6（24，内容距卡缘 ≥20 档的上档）；
-    //    垂直日期行 pt-5（20）/ 摘要区 pb-5（20），顶底留白均 ≥18；min-h-[150px]
-    //    默认体量（空/未写邀请态卡不干瘪，内容不足时由卡体撑住）──
+    // ── 文字卡形态（v0.4.7 堆纪律：卡面无自壳，内边距即纸面留白 p-5=20；
+    //    色彩只上数据——今天/进行中/勾选完成态 accent，字阶 20/16/12/11）──
+    const invitation = dayFaceInvitation(locked, data.journal != null);
     return (
-        <View className="mb-4">
-            <BouncyPressable onPress={gestures.onPress} onLongPress={gestures.onLongPress} scaleTo={0.985}>
-                <View
-                    className="min-h-[150px] rounded-card bg-ink-surface px-6 dark:bg-inkd-surface"
-                    accessibilityRole="button"
-                    accessibilityLabel={`D${data.dayNo} ${monthDay} ${weekday}${data.journal ? '，已写' : '，未写'}，点开这一天`}
+        <View className="flex-1 flex-col p-5">
+            {/* 日期行：D 序号是卡面的「大字锚」（堆叠扫读的节奏点），tabular
+                数字位；徽章（今天/出发/返程）11 档 pill，accent 只上「今天」
+                这枚数据事实 */}
+            <View className="flex-row items-center">
+                <Text
+                    className="text-[20px] font-semibold text-ink-text dark:text-inkd-text"
+                    style={{ fontVariant: ['tabular-nums'] }}
                 >
-                    {/* 日期行（「时间」槽：数据无独立时刻字段，日期 + 序日即时间轴）。
-                        数字位 tabular-nums 建立节奏；今天角标 = 数据状态上 accent；
-                        pt-5（20）顶留白：卡内首元素距卡缘 ≥18 口径（原 pt-4=16 贴边） */}
-                    <View className="flex-row items-baseline pt-5">
-                        <Text
-                            className="text-[12px] text-ink-secondary dark:text-inkd-secondary"
-                            style={{ fontVariant: ['tabular-nums'] }}
-                        >
-                            {`D${data.dayNo}`}
-                        </Text>
-                        <Text className="ml-2.5 text-[16px] font-semibold text-ink-text dark:text-inkd-text">
-                            {monthDay}
-                        </Text>
-                        <Text className="ml-2 text-[12px] text-ink-muted dark:text-inkd-muted">{weekday}</Text>
-                        {isToday ? (
-                            <Text className="ml-2 text-[11px] font-medium text-ink-accent dark:text-inkd-accent">
-                                今天
-                            </Text>
-                        ) : null}
-                    </View>
+                    {`D${data.dayNo}`}
+                </Text>
+                <Text className="ml-2.5 text-[16px] font-semibold text-ink-text dark:text-inkd-text">
+                    {monthDay}
+                </Text>
+                <Text className="ml-2 text-[12px] text-ink-muted dark:text-inkd-muted">{weekday}</Text>
+                {tags.map((tag) => (
+                    <Text
+                        key={tag}
+                        className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                            tag === '今天'
+                                ? 'bg-ink-accent-bg text-ink-accent dark:bg-inkd-accent-bg dark:text-inkd-accent'
+                                : 'bg-ink-raised text-ink-secondary dark:bg-inkd-raised dark:text-inkd-secondary'
+                        }`}
+                    >
+                        {tag}
+                    </Text>
+                ))}
+            </View>
 
-                    {/* 行程目标（该日 day_plans）：锁定 = 只读行（不可按压，避免「点了
-                        禁用框却跳页」的语义错位）；未锁定 = 可勾选（复用 setDayPlanDone）。
-                        44px 命中行：行本体垫高（py-3 + min-h 双保险）而非 hitSlop——相邻
-                        行间距小于 2×slop 会命中区交叠误触；勾选框 rounded-thumb（8）在
-                        半径 token 体系内，完成态 accent 填充（色只上数据） */}
-                    {data.plans.map((plan) =>
+            {/* 计划预览（≤DAY_FACE_PLAN_LIMIT 行，勾选/长按删与旧形态同语义）；
+                完成统计含隐藏行——「+N 项」说的是去向不是口径。
+                44dp 命中行沿用旧口径：行本体垫高（py-3 + min-h-11 双保险）而非
+                hitSlop；勾选框 accent 填充只在完成态（色只上数据） */}
+            {planPreview.visible.length > 0 ? (
+                <View className="mt-2">
+                    {planPreview.visible.map((plan) =>
                         locked ? (
                             <View key={plan.id} className="flex-row items-center py-3 min-h-11">
                                 <View
@@ -438,11 +414,12 @@ const DayCard = memo(function DayCard({
                                     ) : null}
                                 </View>
                                 <Text
-                                    className={`ml-2.5 flex-1 text-[16px] ${
+                                    className={`ml-2.5 flex-1 text-[15px] ${
                                         plan.done === 1
                                             ? 'text-ink-muted line-through dark:text-inkd-muted'
                                             : 'text-ink-text dark:text-inkd-text'
                                     }`}
+                                    numberOfLines={1}
                                 >
                                     {plan.content}
                                 </Text>
@@ -451,14 +428,11 @@ const DayCard = memo(function DayCard({
                             <Pressable
                                 key={plan.id}
                                 onPress={() => void togglePlan(plan)}
-                                // 长按 → 删除操作卡（PlanActionCard，屏级单件）：与勾选
-                                // 点按并存于同一 Pressable——Pressability 语义长按触发后
-                                // 本次松手不补发 onPress，勾选与删除天然二选一；行本体
-                                // min-h-11（44）即命中盒，长按目标区与勾选区一致
+                                // 长按 → 删除操作卡（与勾选点按并存于同一 Pressable：
+                                // Pressability 语义长按触发后本次松手不补发 onPress；
+                                // 行本体 min-h-11（44）即命中盒）
                                 onLongPress={() => onRequestPlanDelete(plan)}
-                                // 按压反馈补齐（一致性收敛轮）：勾选态非乐观更新（落库后
-                                // reload 才变），行本体给 active 底色即时反馈，语言同
-                                // Me/搜索行卡（active:bg-ink-raised）
+                                // 按压反馈（勾选态非乐观更新，active 底色即时反馈）
                                 className="flex-row items-center rounded-control py-3 min-h-11 active:bg-ink-raised dark:active:bg-inkd-raised"
                                 accessibilityRole="checkbox"
                                 accessibilityLabel={`计划：${plan.content}`}
@@ -476,65 +450,100 @@ const DayCard = memo(function DayCard({
                                     ) : null}
                                 </View>
                                 <Text
-                                    className={`ml-2.5 flex-1 text-[16px] ${
+                                    className={`ml-2.5 flex-1 text-[15px] ${
                                         plan.done === 1
                                             ? 'text-ink-muted line-through dark:text-inkd-muted'
                                             : 'text-ink-text dark:text-inkd-text'
                                     }`}
+                                    numberOfLines={1}
                                 >
                                     {plan.content}
                                 </Text>
                             </Pressable>
                         ),
                     )}
-
-                    {actionError ? (
-                        <Text className="pt-2 text-[12px] text-ink-negative dark:text-inkd-negative">
-                            {actionError}
+                    {planPreview.hidden > 0 ? (
+                        <Text
+                            className="py-2 text-[12px] text-ink-muted dark:text-inkd-muted"
+                            style={{ fontVariant: ['tabular-nums'] }}
+                        >
+                            {`+${planPreview.hidden} 项 · 当日完成 ${planPreview.done}/${data.plans.length}`}
                         </Text>
                     ) : null}
-
-                    {/* 摘要区（该日 journal）：previewText 2-3 行 + meta 一行（媒体计数
-                        角标 + 收笔状态，一处 meta 收口、密度克制）；未写 = 邀请态
-                        （空态是行动邀请，不是 mood 板）；pb-5（20）底留白：卡内末元素
-                        距卡缘 ≥18 口径（原 pb-4=16 贴边） */}
-                    <View className="pb-5 pt-3.5">
-                        {data.journal && journalBlocks ? (
-                            <>
-                                <Text
-                                    numberOfLines={3}
-                                    className="text-[16px] leading-6 text-ink-secondary dark:text-inkd-secondary"
-                                >
-                                    {previewText(journalBlocks) || '[图片与视频]'}
-                                </Text>
-                                <View className="mt-2 flex-row items-center gap-2">
-                                    {data.mediaCount > 0 ? (
-                                        <Text
-                                            className="text-[11px] text-ink-muted dark:text-inkd-muted"
-                                            style={{ fontVariant: ['tabular-nums'] }}
-                                        >
-                                            {`${data.mediaCount} 条媒体`}
-                                        </Text>
-                                    ) : null}
-                                    <Text
-                                        className={`text-[11px] ${
-                                            data.journal.status === 'open'
-                                                ? 'text-ink-accent dark:text-inkd-accent'
-                                                : 'text-ink-muted dark:text-inkd-muted'
-                                        }`}
-                                    >
-                                        {data.journal.status === 'open' ? '进行中' : '已收笔'}
-                                    </Text>
-                                </View>
-                            </>
-                        ) : (
-                            <Text className="text-[13px] text-ink-muted dark:text-inkd-muted">
-                                {locked ? '未写' : '未写，点开写这一天'}
-                            </Text>
-                        )}
-                    </View>
                 </View>
-            </BouncyPressable>
+            ) : null}
+
+            {actionError ? (
+                // 卡内失败反馈（settings 同源 tinted 横幅语言）
+                <View className="mt-2 rounded-control bg-ink-negative-bg px-3 py-2 dark:bg-inkd-negative-bg">
+                    <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
+                        {actionError}
+                    </Text>
+                </View>
+            ) : null}
+
+            {/* 摘要区贴底（flex-1 弹垫把「那一天写了什么」压到卡面下半——
+                堆叠扫读时先见日期再见内容）；未写 = 邀请态（空态是行动邀请）；
+                锁定态无写入口 → 邀请退空（dayFaceInvitation 纯逻辑闸） */}
+            <View className="min-h-0 flex-1 justify-end">
+                {data.journal && journalBlocks ? (
+                    <>
+                        <Text
+                            numberOfLines={2}
+                            className="text-[15px] leading-6 text-ink-secondary dark:text-inkd-secondary"
+                        >
+                            {previewText(journalBlocks) || '[图片与视频]'}
+                        </Text>
+                        <View className="mt-2 flex-row items-center gap-2">
+                            {data.mediaCount > 0 ? (
+                                <Text
+                                    className="text-[11px] text-ink-muted dark:text-inkd-muted"
+                                    style={{ fontVariant: ['tabular-nums'] }}
+                                >
+                                    {`${data.mediaCount} 条媒体`}
+                                </Text>
+                            ) : null}
+                            <Text
+                                className={`text-[11px] ${
+                                    data.journal.status === 'open'
+                                        ? 'text-ink-accent dark:text-inkd-accent'
+                                        : 'text-ink-muted dark:text-inkd-muted'
+                                }`}
+                            >
+                                {data.journal.status === 'open' ? '进行中' : '已收笔'}
+                            </Text>
+                        </View>
+                    </>
+                ) : invitation ? (
+                    // 未写日 = 设计过的邀请块（raised 井，首页行程卡「还没写
+                    // 这一页」同源配方）：空态是行动指引，不是一行孤零零弱字
+                    <View className="rounded-control bg-ink-raised px-4 py-4 dark:bg-inkd-raised">
+                        <Text className="text-[14px] leading-5 text-ink-secondary dark:text-inkd-secondary">
+                            {invitation.title}
+                        </Text>
+                        <Text className="mt-1 text-[12px] text-ink-muted dark:text-inkd-muted">
+                            {invitation.hint}
+                        </Text>
+                    </View>
+                ) : (
+                    // 锁定只读：无写入口，邀请退空（dayFaceInvitation 闸），
+                    // 留一行状态事实
+                    <Text className="text-[13px] text-ink-muted dark:text-inkd-muted">未写</Text>
+                )}
+            </View>
+
+            {/* 底行行动提示：点卡去向说清楚——未锁定/无日记读「当日行程」，
+                锁定有日记读「查看日记」（提示与 tripDayTarget 分流同源，不
+                撒谎）；accent 是导航语义不是装饰；D 序号/状态词上文已占位，
+                此行不再复读（字阶纪律：一行只说一件事） */}
+            <View className="mt-3 flex-row items-center justify-end">
+                <Text className="text-[12px] font-medium text-ink-accent dark:text-inkd-accent">
+                    {locked && data.journal ? '查看日记' : '当日行程'}
+                </Text>
+                <View pointerEvents="none">
+                    <LucideChevronRight size={13} color={palette.accent} strokeWidth={2} />
+                </View>
+            </View>
         </View>
     );
 });
@@ -555,8 +564,14 @@ export function TripDetailScreen() {
     const [locked, setLocked] = useState(false);
     // dayCards 镜像（reload 内最新值）：①恒等复用比较的基准；②openDayAction
     // 免依赖读取——回调身份不随 dayCards 变化（修前 useCallback 依赖 dayCards，
-    // 每次重载都换新引用，DayCard（memo）被击穿、勾选/删除一 plans 行整列重渲）
+    // 每次重载都换新引用，卡面（memo）被击穿、勾选/删除一 plans 行整堆重渲）
     const dayCardsRef = useRef<DayCardData[]>([]);
+    // 载入瞬时失败自动重试闸（v0.4.7 修）：启动期单运行者锁竞态等瞬时 db 失败
+    // 不再一次异常即落「找不到这个行程」死路（CDP 基线实测踩中）；成功/真删
+    // 清除计数，重试预算 2 次（700ms / 1600ms 递增退避——真实设备锁释放的
+    // 尾部时长会越过单发 700ms，双档覆盖；死路语义仍是最终可重试降级）
+    const loadRetryRef = useRef(0);
+    const loadRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // 背景设置流守卫（相册 picker 异步窗口防重入；无常驻指示器——picker 自带 UI）
     const [busy, setBusy] = useState(false);
@@ -567,7 +582,7 @@ export function TripDetailScreen() {
     // 封面视频管理菜单（长按封面视频 → 更换/移除，2026-11-19 用户指令「行程 ui
     // 长按视频封面没有办法更改删除」）：仅未锁定可达
     const [coverMenu, setCoverMenu] = useState(false);
-    // 删除可见反馈横幅（软删+可见反馈口径）：ListHeader 呈现，at 供自动消退
+    // 删除可见反馈横幅（软删+可见反馈口径）：短带呈现，at 供自动消退
     // effect 精确复位（连删两条同文计划时计时器也能正确重启）
     const [deleteNotice, setDeleteNotice] = useState<{ text: string; at: number } | null>(null);
 
@@ -660,7 +675,7 @@ export function TripDetailScreen() {
             }
             const start = row.start_date;
             // DayCardData 恒等复用（#15：计划勾选/删除/添加只重渲目标日）：db 行每次
-            // 查询都是新引用，逐字段全等的日沿用旧对象引用——DayCard（memo）据此
+            // 查询都是新引用，逐字段全等的日沿用旧对象引用——DayDeckFace（memo）据此
             // 跳过未变日的重渲；行程日期变化经 dayNo/骨架 keys 差异自然失效，不吞更新
             const prevByDate = new Map(dayCardsRef.current.map((card) => [card.localDate, card]));
             const nextCards: DayCardData[] = days.map((localDate) => {
@@ -689,23 +704,40 @@ export function TripDetailScreen() {
             setLocked(isTripLocked(row, today));
             setTrip(decorateTrip(row, today));
             setMissing(false);
+            loadRetryRef.current = 0;
         } catch {
-            // db 抛错：走「行程不存在」降级态（可重试语义），不能永久卡 Loading + unhandled rejection
+            // db 抛错区分两类：瞬时失败（启动竞态/锁）自动重试一次；再失败才走
+            // 「行程不存在」降级态（可重试语义，不能永久卡 Loading + unhandled
+            // rejection）。真删除在上面按 row==null 即时死路，不占本重试预算。
+            if (loadRetryRef.current < 2) {
+                loadRetryRef.current += 1;
+                clearTimeout(loadRetryTimerRef.current);
+                loadRetryTimerRef.current = setTimeout(() => void reload(), loadRetryRef.current === 1 ? 700 : 1600);
+                return;
+            }
             setMissing(true);
-        } finally {
             setLoading(false);
+        } finally {
+            if (loadRetryRef.current === 0) setLoading(false);
         }
     }, [id]);
 
     useEffect(() => {
         void reload();
     }, [reload, revision]);
+    // 重试定时器卸载收口（导航离开后不得再触 setState 链）
+    useEffect(
+        () => () => {
+            clearTimeout(loadRetryTimerRef.current);
+        },
+        [],
+    );
 
     // ── 日卡背景流（长按操作卡 → 相册选图 / 直接清除）──
 
     /**
-     * 长按日卡 → 操作卡（回调身份恒定——openDayAction 传给每张 DayCard，若随
-     * dayCards 重载换引用，DayCard（memo）会被击穿，计划勾选整列重渲的根因
+     * 长按日卡 → 操作卡（回调身份恒定——openDayAction 传给每个堆项，若随
+     * dayCards 重载换引用，卡面（memo）会被击穿，计划勾选整堆重渲的根因
      * 之一，已修）。
      */
     const openDayAction = useCallback((date: string) => {
@@ -823,23 +855,55 @@ export function TripDetailScreen() {
         }
     };
 
-    // 行渲染收口（useCallback 恒定）：配合 DayCardData 恒等复用 + 全稳定回调，
-    // 计划勾选/删除后 DayCard（memo）只重渲数据变化的单卡——修前 renderItem
-    // 内联新建 + openDayAction 随 dayCards 换引用，每次重载整列重渲（已修）。
-    // trip 未就绪时占位空串（仅影响类型完备性，此时列表不渲染任何行）。
-    const renderDayCard = useCallback(
-        ({ item }: { item: DayCardData }) => (
-            <DayCard
-                tripId={trip?.id ?? ''}
-                data={item}
-                locked={locked}
-                onChanged={reload}
-                onRequestAction={openDayAction}
-                onRequestPlanDelete={requestPlanDelete}
-            />
-        ),
-        [trip?.id, locked, reload, openDayAction, requestPlanDelete],
+    /** 点前卡 → 当日行程表页（锁定分流见 tripDayTarget 注）。 */
+    const openDay = useCallback(
+        (card: DayCardData) => {
+            if (!trip) return;
+            const target = tripDayTarget(locked, card.journal);
+            if (target.kind === 'journal') {
+                router.push({ pathname: '/journal/[id]', params: { id: target.id } });
+                return;
+            }
+            router.push(`/trip/${trip.id}/day/${card.localDate}`);
+        },
+        [locked, trip, router],
     );
+
+    // ── 堆项装配（v0.4.7 重构核心）──
+    // 引用稳定纪律同旧 renderDayCard：dayCards（恒等复用）+ locked + trip 变化
+    // 才重建数组；face（memo）按 data/回调恒等跳过未变日。背景卡页码走 light
+    // 色调（deck 契约：渐变/图片卡面白页码）。
+    const deckItems = useMemo<DeckItem[]>(() => {
+        if (!trip) return [];
+        const endDate = isTripOpenEnded(trip) ? null : trip.end_date;
+        return dayCards.map((card) => {
+            const { monthDay, weekday } = formatDateParts(card.localDate);
+            const hasBg = card.background != null;
+            return {
+                key: `day-${card.localDate}`,
+                accessibilityLabel: `D${card.dayNo} ${monthDay} ${weekday}${
+                    hasBg ? '，有背景图' : card.journal ? '，已写' : '，未写'
+                }，点开这一天`,
+                pageLabelTone: hasBg ? ('light' as const) : undefined,
+                onPress: () => openDay(card),
+                onLongPress: locked ? undefined : () => openDayAction(card.localDate),
+                node: (
+                    <DayDeckFace
+                        data={card}
+                        locked={locked}
+                        endDate={endDate}
+                        onChanged={reload}
+                        onRequestPlanDelete={requestPlanDelete}
+                    />
+                ),
+            };
+        });
+    }, [trip, dayCards, locked, openDay, openDayAction, requestPlanDelete, reload]);
+
+    // 堆高：视口比例夹紧档（纯函数有单测；旋转/窗口变化经 Dimensions 读取，
+    // 详情屏低频重挂，不走 useWindowDimensions 常驻订阅——滚动页不需要
+    // 每帧高度响应，那正是旧 FlatList 反馈环要防的东西）
+    const deckHeight = dayDeckHeight(Dimensions.get('window').height);
 
     if (loading) return <LoadingView />;
 
@@ -933,82 +997,97 @@ export function TripDetailScreen() {
                         </Text>
                     ) : null}
                 </View>
-                <FlatList
-                    data={dayCards}
-                    keyExtractor={(item) => `day-${item.localDate}`}
-                    keyboardShouldPersistTaps="handled"
-                    ListHeaderComponent={
-                        <View className="pt-1">
-                            {trip.video_key ? (
-                                <View className="mb-4">
-                                    {/* 长按封面 → 封面管理菜单（更换/移除；锁定态长按
-                                        入口关断，#7 只读） */}
-                                    <TripCoverVideo
-                                        fileKey={trip.video_key}
-                                        height={190}
-                                        onCoverAction={
-                                            locked
-                                                ? undefined
-                                                : () => {
-                                                      haptics.impact('medium');
-                                                      setCoverMenu(true);
-                                                  }
-                                        }
-                                    />
-                                </View>
-                            ) : null}
-                            {trip.description ? (
-                                <Text className="mb-4 text-[16px] leading-6 text-ink-secondary dark:text-inkd-secondary">
-                                    {trip.description}
-                                </Text>
-                            ) : null}
-                            {plansTotal > 0 ? (
-                                <View className="mb-4">
-                                    <ProgressBar done={plansDone} total={plansTotal} />
-                                    <View className="mt-1">
-                                        <ProgressLabel done={plansDone} total={plansTotal} />
-                                    </View>
-                                </View>
-                            ) : null}
-                            {/* store.error 通道（背景设置/清除失败等）统一在此可见 */}
-                            {storeError ? (
-                                <Text className="mb-2 text-[12px] text-ink-negative dark:text-inkd-negative">
-                                    {storeError}
-                                </Text>
-                            ) : null}
-                            {/* 计划删除成功横幅（软删+可见反馈口径，4s 自动消退，
-                                见 deleteNotice）：与 storeError 同槽位分行，中性
-                                secondary 色——完成态确认不是错误也不是行动邀请 */}
-                            {deleteNotice ? (
-                                <Text className="mb-2 text-[12px] text-ink-secondary dark:text-inkd-secondary">
-                                    {deleteNotice.text}
-                                </Text>
-                            ) : null}
-                            {/* 逐日区头：日卡列的开场白（open 无固定分母不报天数） */}
-                            <View className="mb-2.5 mt-1 flex-row items-baseline">
-                                <Text className="text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                    逐日
-                                </Text>
-                                {!openEnded ? (
-                                    <Text
-                                        className="ml-2 text-[11px] text-ink-muted dark:text-inkd-muted"
-                                        style={{ fontVariant: ['tabular-nums'] }}
-                                    >
-                                        {`共 ${dayCards.length} 天`}
-                                    </Text>
-                                ) : null}
-                            </View>
-                        </View>
-                    }
-                    renderItem={renderDayCard}
+
+                {/* 当日之外的短滚动带（v0.4.7 重构：日卡本体进堆、不占滚动；
+                    本带只装封面/描述/进度/横幅——整页位移 ≤一屏，纵向滚动从
+                    「23 张卡的回收风暴」退化为「几乎不用滚」，卡顿主通道就此
+                    结构关闭）。单级 ScrollView，无嵌套容器。 */}
+                <ScrollView
+                    className="flex-1"
                     contentContainerStyle={{
                         paddingHorizontal: 24,
-                        paddingBottom: insets.bottom + 32,
+                        paddingBottom: insets.bottom + 28,
                         alignSelf: 'center',
                         width: '100%',
                         maxWidth: 668,
                     }}
-                />
+                    keyboardShouldPersistTaps="handled"
+                    showsVerticalScrollIndicator={false}
+                >
+                    {storeError ? (
+                        // store.error 通道（背景设置/清除失败等）统一在此可见：
+                        // v0.4.7 令 3 对齐 settings——tinted 横幅卡，不再裸行
+                        <View className="mb-3 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">
+                            <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
+                                {storeError}
+                            </Text>
+                        </View>
+                    ) : null}
+                    {deleteNotice ? (
+                        // 计划删除成功横幅（软删+可见反馈口径，4s 自动消退）：
+                        // settings 完成横幅同款 surface 卡 + secondary 字——完成态
+                        // 确认不是错误也不是行动邀请
+                        <View className="mb-3 rounded-control bg-ink-surface px-4 py-3 dark:bg-inkd-surface">
+                            <Text className="text-[13px] leading-5 text-ink-secondary dark:text-inkd-secondary">
+                                {deleteNotice.text}
+                            </Text>
+                        </View>
+                    ) : null}
+                    {trip.video_key ? (
+                        <View className="mb-4">
+                            {/* 长按封面 → 封面管理菜单（更换/移除；锁定态长按
+                                入口关断，#7 只读） */}
+                            <TripCoverVideo
+                                fileKey={trip.video_key}
+                                height={160}
+                                onCoverAction={
+                                    locked
+                                        ? undefined
+                                        : () => {
+                                              haptics.impact('medium');
+                                              setCoverMenu(true);
+                                          }
+                                }
+                            />
+                        </View>
+                    ) : null}
+                    {trip.description ? (
+                        <Text className="mb-4 text-[16px] leading-6 text-ink-secondary dark:text-inkd-secondary">
+                            {trip.description}
+                        </Text>
+                    ) : null}
+                    {plansTotal > 0 ? (
+                        <View className="mb-4">
+                            <ProgressBar done={plansDone} total={plansTotal} />
+                            <View className="mt-1">
+                                <ProgressLabel done={plansDone} total={plansTotal} />
+                            </View>
+                        </View>
+                    ) : null}
+
+                    {/* 逐日区头：堆叠的开场白（open 无固定分母不报天数）+
+                        右注操作提示（左右翻 · 点卡进当日——新形态的读法一句话说清） */}
+                    <View className="mb-3 flex-row items-baseline justify-between">
+                        <View className="flex-row items-baseline">
+                            <Text className="text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                逐日
+                            </Text>
+                            {!openEnded ? (
+                                <Text
+                                    className="ml-2 text-[11px] text-ink-muted dark:text-inkd-muted"
+                                    style={{ fontVariant: ['tabular-nums'] }}
+                                >
+                                    {`共 ${dayCards.length} 天`}
+                                </Text>
+                            ) : null}
+                        </View>
+                        <Text className="text-[11px] text-ink-faint dark:text-inkd-faint">左右翻 · 点卡看当日</Text>
+                    </View>
+
+                    {/* 日卡左右堆（deck 现 props 消费，卡面无自壳；水平居中
+                        阅读列 + 屏边距与首页/堆页同构图） */}
+                    <CardDeck items={deckItems} height={deckHeight} />
+                </ScrollView>
             </View>
             {/* 覆盖层（条件渲染，禁 Modal）：日卡操作卡单件（写这一天 / 设置背景）
                 ——媒体动作/拍摄/录音/删除确认随「行程媒体」时间线退役，添加计划/
@@ -1033,9 +1112,9 @@ export function TripDetailScreen() {
                     content={planAction.content}
                     onClose={() => setPlanAction(null)}
                     onDelete={() => {
-                        const { id, content } = planAction;
+                        const { id: deadPlanId, content } = planAction;
                         setPlanAction(null);
-                        void runDeletePlan(id, content);
+                        void runDeletePlan(deadPlanId, content);
                     }}
                 />
             ) : null}

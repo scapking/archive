@@ -8,6 +8,7 @@ import {
     ScrollView,
     Text,
     View,
+    type ViewStyle,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -20,6 +21,7 @@ import {
 import { imagePicker } from '@/core/image-picker';
 import { useArchiveStore } from './store';
 import {
+    addDaysLocal,
     dayDiff,
     isTripLocked,
     isTripOpenEnded,
@@ -34,7 +36,6 @@ import { safeBack } from './ui';
 import { FieldInput } from './ui/field-input';
 import {
     ActionMenuCard,
-    DateInput,
     EmptyState,
     isDateInputComplete,
     PAPER_CARD_SHADOW,
@@ -46,6 +47,10 @@ import {
     TripCoverVideo,
     usePalette,
 } from './ui';
+// 深路径注记（v0.4.7 日期选择重构）：DateField / DatePickerSheet 新组件族，
+// ui/index.ts 不在本组改动权限内（扩表清单见交付报告），域内深取直连
+// （FieldInput / field-input 先例同款）。
+import { DateField, DatePickerSheet } from './ui/date-picker';
 import type { TripRow } from './db';
 
 /**
@@ -53,6 +58,10 @@ import type { TripRow } from './db';
  * 线性徽标呈现；🐼 无线性对应（呈现会退回 emoji 原样，选择环内观感不一），换 🧳。
  * 首位 🧭 与 TRIP_ICON_DEFAULT 同值，仅为展示顺序——默认值来源是具名常量，不是「取第一个」。
  */
+/** 横向图标带的滚动链收口样式（见消费处注释；overscrollBehavior* 为 RNW
+ *  消费键，RN core 类型面未收录——单点 cast，值禁散写第二处）。 */
+const ICON_STRIP_STYLE = { overscrollBehaviorX: 'contain' } as unknown as ViewStyle;
+
 const ICON_CHOICES = ['🧭', '⛰️', '🌊', '🏛️', '🏙️', '🚗', '✈️', '🚄', '🏕️', '🍜', '📷', '🎡', '⛷️', '🏝️', '🧳', '🗺️'];
 
 /**
@@ -94,6 +103,12 @@ function DeleteTripControl({
 
 /**
  * 行程表单（新建 / 编辑双模式，DEV.md #4 工作台口径的「创建像计划一样轻量」）。
+ *
+ * v0.4.7 行程域重构（令 2）：出发/返回日期从「三段裸数字输入格 + 嵌套在卡内」
+ * 改为 DateField（纸井显示格式化日期）+ DatePickerSheet（月历浮层两步选定，
+ * 区间闸网格禁选，手输兜底保留）；图标横滑带加滚动链收口（overscroll 截断 +
+ * nestedScrollEnabled，纵向滚动卡顿归因见交付报告）；错误可见性收进 tinted
+ * 横幅卡（settings 同源）。
  *
  * 极简化口径（用户需求「较少不必要的描述、减少步骤」）：
  * - 无分区标题：名称/日期/描述字段全部自说明（placeholder、分段标签、入口文案
@@ -152,6 +167,8 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
     const [coverMenu, setCoverMenu] = useState(false);
     // 图标选择格展开态：默认收起（徽章已展示当前图标）；选完即收（一步完成）
     const [iconPickerOpen, setIconPickerOpen] = useState(false);
+    // 日期选择浮层目标（v0.4.7 重构：点字段开月历，两步选定；null = 无浮层）
+    const [pickerTarget, setPickerTarget] = useState<'start' | 'end' | null>(null);
 
     const isEdit = Boolean(trip);
     // 锁定（#7）：已结束行程只读。store.updateTrip 无锁预检，UI 是唯一闸门——
@@ -196,6 +213,21 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
         });
         return () => sub.remove();
     }, [coverMenu]);
+
+    /** 月历选定回写（DateField 主路径）：start 且返回日早于新出发日时把返回
+     *  日同步挪到同一天（同日往返最常见形态，「不出错」——绝不让校验在用户
+     *  看不见的位置炸开）；end 直接落值。上抛值已由 DatePickerSheet 过区间闸。 */
+    const handlePickDate = (target: 'start' | 'end', date: string) => {
+        if (target === 'start') {
+            setStartDate(date);
+            if (endMode === 'fixed' && isDateInputComplete(endDate) && endDate < date) {
+                setEndDate(date);
+            }
+        } else {
+            setEndDate(date);
+        }
+        setPickerTarget(null);
+    };
 
     const switchEndMode = (mode: 'open' | 'fixed') => {
         setEndMode(mode);
@@ -406,6 +438,14 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                         className="mt-3"
                         contentContainerStyle={{ gap: 8, paddingRight: 8 }}
                         keyboardShouldPersistTaps="handled"
+                        // 纵向滚动卡顿修因（v0.4.7 令 4，实测归因见交付报告）：
+                        // 横向带嵌在垂直 ScrollView 里，触屏沿「双轴接管」竞态——
+                        // Android 显式声明嵌套（nestedScrollEnabled），web 用
+                        // overscroll-behavior-x: contain 掐断横向滚动链上浮（该键
+                        // RN ViewStyle 类型未收录，RNW 消费，单点 cast；纯纵向
+                        // 手势不再被外层滚动仲裁拖进本容器的滚动管线）
+                        nestedScrollEnabled
+                        style={ICON_STRIP_STYLE}
                     >
                         {ICON_CHOICES.map((choice) => {
                             const active = icon === choice;
@@ -428,9 +468,14 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                     </ScrollView>
                 ) : null}
 
-                {/* ── 日期卡：结束可选（DEV.md #4）——分段切换「持续进行 / 设定结束」
-                    （v0.4.6：私有 EndModeSwitch 退役，收口 ui/segmented row 档 +
-                    radio 语义；日期字段升 raised 井与开关同卡成组）── */}
+                {/* ── 日期卡（v0.4.7 重构令 2：「一眼、两步、不出错」）：
+                    结束语义仍走 ui/segmented row 档；日期本体从三段裸数字格
+                    升为 DateField 纸井（显示「11月13日 周五」格式化文案 =
+                    一眼）+ DatePickerSheet 月历浮层（开层点日即选定 = 两步；
+                    返回日区间闸 [出发日, +365] 在网格禁选 = 不出错）。「手输」
+                    兜底通道在浮层内保留（DateInput 语义原样，键盘可达）。
+                    天数反馈挪上「返回日期」eyebrow 行尾 pill（数据与标签
+                    同位，卡内不再多占一行散文）。── */}
                 <View className="mt-4 rounded-card bg-ink-surface p-4 dark:bg-inkd-surface" style={PAPER_CARD_SHADOW}>
                     <Segmented
                         density="row"
@@ -443,32 +488,42 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                         onChange={switchEndMode}
                         labelPrefix="结束日期"
                     />
-                    {endMode === 'open' ? (
-                        <View className="mt-3">
-                            <Text className="mb-1.5 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">出发</Text>
-                            <DateInput value={startDate} onChange={setStartDate} />
-                        </View>
-                    ) : (
-                        <View className="mt-3 flex-row items-end gap-3">
-                            <View className="flex-1">
-                                <Text className="mb-1.5 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">出发</Text>
-                                <DateInput value={startDate} onChange={setStartDate} />
-                            </View>
-                            <View className="flex-1">
-                                <Text className="mb-1.5 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">返回</Text>
-                                <DateInput value={endDate} onChange={setEndDate} />
-                            </View>
-                        </View>
-                    )}
-                    {/* 天数反馈仅固定结束态保留（数据性信息，必保）；持续进行的
-                        「不设固定结束」说明已删——分段标签「持续进行」自说明 */}
-                    {endMode === 'fixed' && dayCount !== null ? (
-                        <Text
-                            className="mt-2 text-[12px] text-ink-secondary dark:text-inkd-secondary"
-                            style={{ fontVariant: ['tabular-nums'] }}
-                        >
-                            共 {dayCount} 天，每天会自动生成一格
+                    <View className="mt-4">
+                        <Text className="mb-1.5 text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                            出发日期
                         </Text>
+                        <DateField
+                            value={startDate}
+                            accessibilityLabel="出发日期"
+                            onPress={() => setPickerTarget('start')}
+                        />
+                    </View>
+                    {endMode === 'fixed' ? (
+                        <View className="mt-4">
+                            <View className="mb-1.5 flex-row items-center justify-between">
+                                <Text className="text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                    返回日期
+                                </Text>
+                                {dayCount !== null ? (
+                                    <Text
+                                        className="rounded-full bg-ink-raised px-2.5 py-0.5 text-[12px] font-medium text-ink-text dark:bg-inkd-raised dark:text-inkd-text"
+                                        style={{ fontVariant: ['tabular-nums'] }}
+                                    >
+                                        {`共 ${dayCount} 天`}
+                                    </Text>
+                                ) : null}
+                            </View>
+                            <DateField
+                                value={endDate}
+                                accessibilityLabel="返回日期"
+                                onPress={() => setPickerTarget('end')}
+                            />
+                            {dayCount !== null ? (
+                                <Text className="mt-2 text-[12px] text-ink-muted dark:text-inkd-muted">
+                                    每天会自动生成一格
+                                </Text>
+                            ) : null}
+                        </View>
                     ) : null}
                 </View>
 
@@ -556,11 +611,15 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                     />
                 ) : null}
 
-                {validation ? (
-                    <Text className="mt-3 text-[12px] text-ink-negative dark:text-inkd-negative">{validation}</Text>
-                ) : null}
-                {!validation && storeError ? (
-                    <Text className="mt-3 text-[12px] text-ink-negative dark:text-inkd-negative">{storeError}</Text>
+                {/* 错误可见性（v0.4.7 令 3 对齐 settings）：tinted 横幅卡取代
+                    裸行红字——校验错与 store 错同一语言，validation 优先
+                    （输入闸在本地，先于远端态） */}
+                {validation || storeError ? (
+                    <View className="mt-4 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">
+                        <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
+                            {validation ?? storeError}
+                        </Text>
+                    </View>
                 ) : null}
 
                 <View className="mt-6">
@@ -582,6 +641,26 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                     <ActivityIndicator color={palette.spinner} style={{ marginTop: 12 }} />
                 ) : null}
             </ScrollView>
+            {/* 日期选择浮层（条件渲染，禁 Modal；层级在滚动容器外，scrim 盖整屏）
+                区间闸：start 无上界（出发日可任意，校验只约束相对关系）；
+                end ∈ [出发日, 出发日+365]（与 validateTripInput 的 366 天上限
+                同源——闸与校验不漂移） */}
+            {pickerTarget ? (
+                <DatePickerSheet
+                    title={pickerTarget === 'start' ? '出发日期' : '返回日期'}
+                    value={pickerTarget === 'start' ? startDate : endDate}
+                    minDate={
+                        pickerTarget === 'end' && isDateInputComplete(startDate) ? startDate : undefined
+                    }
+                    maxDate={
+                        pickerTarget === 'end' && isDateInputComplete(startDate)
+                            ? addDaysLocal(startDate, 365)
+                            : undefined
+                    }
+                    onPick={(date) => handlePickDate(pickerTarget, date)}
+                    onClose={() => setPickerTarget(null)}
+                />
+            ) : null}
         </KeyboardAvoidingView>
     );
 }

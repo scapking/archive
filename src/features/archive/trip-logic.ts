@@ -1,4 +1,8 @@
-import { TRIP_OPEN_ENDED, type TripRow } from './db';
+// TRIP_OPEN_ENDED 改从纯常量源 schema 直取（值同一，db/index 的 re-export 保留）：
+// db 入口运行时引 expo，widget 快照纯函数链（node 单测直导 trip-logic）需要
+// 本文件零重运行时——v0.4.7。TripRow 仅类型面，import type 无运行时。
+import { TRIP_OPEN_ENDED } from './db/schema.ts';
+import type { TripRow } from './db';
 
 /**
  * 行程纯逻辑（R8）：日期工具、天骨架生成、行程状态派生、输入校验。
