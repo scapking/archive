@@ -11,6 +11,7 @@ import {
     BackHandler,
     Image,
     Keyboard,
+    Platform,
     Pressable,
     ScrollView,
     Text,
@@ -322,9 +323,11 @@ const TripItemCardFace = memo(function TripItemCardFace({
  * **结束**事件（onMomentumScrollEnd + onScrollEndDrag 双通道——Android 慢拖
  * 可能不发 momentum 事件）做一次 y→index 换算；**结构上禁 onScroll 逐帧
  * 监听/逐帧 setState/逐帧动画驱动选中**。RNW 0.21 未实现 snapToInterval
- * （源码无该 prop，web 上被静默忽略）——web 靠 settle 后的一次 native
- * 平滑 scrollTo 归位补齐「松手必吸附到合法档位」，与 editor.tsx 滚动应答
- * 同款 <1px 去重闸，收敛不死循环。
+ * （源码无该 prop，web 上被静默忽略）——web 靠 settle 的 animated:false
+ * 即时硬对齐 + **一次性延迟复检**（120ms 读实时 scrollTop 再对齐，两轮
+ * 封顶，补掉 endDrag 后残余惯性拖离的窗口）收敛「松手必落中线」；复检走
+ * setTimeout 单次链，不引入逐帧机制。native 吸附由 snapToInterval 原生
+ * 完成，复检通道平台短路不挂。
  */
 const WHEEL_ROW_H = 44;
 /** 上下垫行数：(5 行窗口 − 1 中线) / 2 = 2，把首末项滚到中线；渐隐遮罩同高。 */
@@ -405,15 +408,62 @@ function TimeScrollColumn({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    // 延迟复检通道（终测定点修：mouse/touch 抬起后浏览器惯性并未真正停止，
+    // onScrollEndDrag 硬对齐后残余惯性继续把 scrollTop 拖离档位——dark
+    // 实测 offCenterPx=10；web 上可能没有下一次结束事件来再修）。
+    // 形态红线：一次性 setTimeout（120ms 读最新 scrollTop 再硬对齐），
+    // **最多两轮封顶、全程幂等**；周期定时与逐帧监听两禁；
+    // native 端 snapToInterval 原生吸附已落位，复检不挂（短路 no-op 都不必）。
+    const recheckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const recheckRounds = useRef(0);
+    useEffect(() => () => {
+        if (recheckTimer.current != null) clearTimeout(recheckTimer.current);
+    }, []);
+
+    /** 行 y → 档位下标（clamp 取整，「松手必落合法档」不依赖事件顺序）。 */
+    const rowIndexFor = (y: number): number =>
+        Math.max(0, Math.min(values.length - 1, Math.round(y / WHEEL_ROW_H)));
+
+    /** 读 web 滚动容器实时 scrollTop（getScrollableNode → DOM 节点；
+     *  native 返回原生 handle，无 scrollTop 面，返回 null 即复检缺席）。 */
+    const readScrollTop = (): number | null => {
+        const node = (
+            scrollRef.current as unknown as
+            { getScrollableNode?: () => { scrollTop?: number } | null } | null
+        )?.getScrollableNode?.();
+        const top = node?.scrollTop;
+        return typeof top === 'number' && Number.isFinite(top) ? top : null;
+    };
+
+    const scheduleRecheck = () => {
+        if (Platform.OS !== 'web') return;
+        if (recheckTimer.current != null) clearTimeout(recheckTimer.current);
+        recheckTimer.current = setTimeout(() => {
+            recheckTimer.current = null;
+            const top = readScrollTop();
+            if (top == null) return;
+            const snapped = rowIndexFor(top) * WHEEL_ROW_H;
+            if (Math.abs(top - snapped) <= 1) {
+                recheckRounds.current = 0; // 已落中线：终态收敛，轮数归零
+                return;
+            }
+            if (recheckRounds.current >= 2) {
+                recheckRounds.current = 0; // 两轮封顶：残余漂移交下一次结束事件
+                return;
+            }
+            recheckRounds.current += 1;
+            scrollRef.current?.scrollTo({ y: snapped, animated: false });
+            scheduleRecheck(); // 本轮也可能被惯性再拖走：链式挂下一轮（封顶在上方）
+        }, 120);
+    };
+
     // settle = 滚动结束后的一次性换算（性能红线：不在 onScroll 里跑）。
-    // 取模恒成立：index 先 clamp 到 [0, count-1]，「松手必落合法档」不依赖
-    // 事件顺序。吸附归位 = **animated:false 即时硬对齐**（终验 race 修正：
-    // 平滑 scrollTo 与惯性/二次 settle 竞态，500ms 测量窗口内仍未回中
-    // offCenterPx=5；settle 本就是结束事件后的最后一拍，直接落位没有
-    // 动画可抢——顺带消掉松手后再调度的滚动动画帧，drag perf 压线 jank
-    // 同根因退场）；偏移 ≤1px 不动（幂等，双通道重复回调无害）
+    // 吸附归位 = **animated:false 即时硬对齐**（平滑动画与惯性/二次 settle
+    // 竞态且多调度一帧滚动动画，皆为实测缺陷根因）；>1px 才动（幂等，
+    // 双通道重复回调无害）；随后挂 web 延迟复检把「松手必落中线」收敛成
+    // 终态（残余惯性再拖走 → 120ms 后读实时 scrollTop 再对齐，两轮封顶）
     const settle = (y: number) => {
-        const next = Math.max(0, Math.min(values.length - 1, Math.round(y / WHEEL_ROW_H)));
+        const next = rowIndexFor(y);
         if (next !== index) {
             haptics.selection();
             onSelect(next);
@@ -422,6 +472,7 @@ function TimeScrollColumn({
         if (Math.abs(y - snapped) > 1) {
             scrollRef.current?.scrollTo({ y: snapped, animated: false });
         }
+        scheduleRecheck();
     };
 
     return (

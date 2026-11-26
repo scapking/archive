@@ -87,6 +87,18 @@ test('滚动选时性能闸：原生 ScrollView 物理 + 结束事件 settle，�
     assert.match(times, /Math\.abs\(y - snapped\) > 1/, '缺去重阈值的 scrollTo 归位');
     assert.match(times, /scrollTo\(\{ y: snapped, animated: false \}\)/, '归位 scrollTo 必须即时硬对齐（animated:false 锁形）');
     assert.ok(!/scrollTo\(\{ y: snapped, animated: true \}\)/.test(times), '平滑归位动画回潮（race 同根因）');
+    // 延迟复检双通道在场（终测：endDrag 后残余惯性仍会拖离档位，web 可能
+    // 没有下一次结束事件）——一次性 setTimeout 链 + 两轮封顶 + 卸载清理；
+    // 形态红线：禁 setInterval/逐帧监听，native 平台短路不挂
+    assert.ok(times.includes('scheduleRecheck'), '缺延迟复检通道');
+    assert.match(times, /setTimeout\(\(\) => \{/, '复检必须是单次 setTimeout（非 interval）');
+    assert.ok(!times.includes('setInterval'), 'setInterval 周期回潮（复检必须一次性链）');
+    assert.match(times, /if \(Platform\.OS !== 'web'\) return;/, '复检未在 native 短路（snapToInterval 已原生落位）');
+    assert.match(times, /recheckRounds\.current >= 2/, '复检缺两轮封顶（收敛必须有界）');
+    assert.match(times, /\}, 120\);/, '复检窗口 120ms 锁形');
+    assert.match(times, /getScrollableNode/, '复检须读实时 scrollTop（DOM 滚动节点）');
+    assert.ok(times.includes('clearTimeout(recheckTimer.current)'), '复检缺卸载/重挂清理（泄漏闸）');
+    assert.match(times, /scrollTo\(\{ y: snapped, animated: false \}\);\s*\n\s*scheduleRecheck/, '复检链断：再对齐后未续挂下一轮');
     // 取模恒成立：settle 先 clamp 再选值（松手必落合法档位）
     assert.match(times, /Math\.max\(0, Math\.min\(values\.length - 1, Math\.round\(y \/ WHEEL_ROW_H\)\)\)/, 'settle 缺 clamp 取整');
 });
