@@ -104,15 +104,20 @@ class AlarmModule : Module() {
                     "fullScreen" to true,
                     "batteryOptimized" to false,
                 )
+            // v0.5.3 发布纠错（Release #30 Android 编译红：K2 在 `!` 开行的块尾
+            // 表达式报 Unexpected token——全模块唯一一处该行 `!` 先例，改保守
+            // 两分支形态；语义逐字等价：fullScreen=14+ 查系统授予否则恒 true，
+            // batteryOptimized=「仍受优化」即未豁免，Android 6 前恒 false）。
+            val notificationManager = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val fullScreen = if (Build.VERSION.SDK_INT >= 34) {
-                (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-                    .canUseFullScreenIntent()
+                notificationManager.canUseFullScreenIntent()
             } else {
                 true
             }
+            val powerManager = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
             val batteryOptimized = if (Build.VERSION.SDK_INT >= 23) {
-                val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
-                !pm.isIgnoringBatteryOptimizations(ctx.packageName)
+                val ignoring = powerManager.isIgnoringBatteryOptimizations(ctx.packageName)
+                if (ignoring) false else true
             } else {
                 false
             }
