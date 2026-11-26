@@ -3,9 +3,11 @@ import test from 'node:test';
 import {
     alarmCardContent,
     alarmDeepLink,
+    alarmMonitorNotificationText,
     alarmRoutePath,
     confirmAlarmSession,
     decideAlarmLadder,
+    deriveAlarmMonitorSummary,
     isAlarmConfirmed,
     isAlarmHandled,
     isAlarmSettled,
@@ -194,5 +196,34 @@ test('alarmCardContent: time + title card copy, both platforms isomorphic (v0.5.
     assert.deepEqual(
         alarmCardContent({ time: '09:30', title: '还书' }),
         { title: '09:30 还书', body: '还书' },
+    );
+});
+
+// ─── 常驻监控摘要（v0.5.2 令3：Android「N 个行程提醒监控中」状态行的
+//     TS 侧纯函数镜像；Kotlin boot 兜底同构由 alarm-android-source 闸锁定）───
+
+test('deriveAlarmMonitorSummary counts only future pendings (at > now)', () => {
+    const now = 1_000;
+    const scheduled = [entry('fired', now - 1), entry('due-equal', now), entry('a', now + 5_000), entry('b', now + 1_200)];
+    assert.deepEqual(deriveAlarmMonitorSummary(scheduled, now), { count: 2, nearestAt: now + 1_200 });
+    // 边界：at === now = 已到点（与 pickDueEntries/rescheduleAll 同判据）不计
+    assert.equal(deriveAlarmMonitorSummary([entry('due-equal', now)], now), null);
+    // 全部过点 / 注册表空 = null（常驻通知即停，用户令「全部过点/删除即停」）
+    assert.equal(deriveAlarmMonitorSummary([entry('fired', now - 1)], now), null);
+    assert.equal(deriveAlarmMonitorSummary([], now), null);
+});
+
+test('alarmMonitorNotificationText renders the user-ordered copy (N 监控中 · 最近 HH:mm)', () => {
+    // 本地时刻构造（非 UTC 常量）——HH:mm 取系统时区，测试同口径才可复现
+    const nearest = new Date(2026, 10, 27, 8, 5).getTime();
+    const midnight = new Date(2026, 10, 28, 0, 0).getTime();
+    assert.deepEqual(
+        alarmMonitorNotificationText({ count: 3, nearestAt: nearest }),
+        { title: '3 个行程提醒监控中', body: '最近 08:05' },
+    );
+    // 补零（00:00 不写 0:0）；单数 N 不加「个」前缀空格样式不变
+    assert.deepEqual(
+        alarmMonitorNotificationText({ count: 1, nearestAt: midnight }),
+        { title: '1 个行程提醒监控中', body: '最近 00:00' },
     );
 });

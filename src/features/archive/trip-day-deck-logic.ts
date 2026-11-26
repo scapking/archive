@@ -3,10 +3,19 @@
  * CardDeck 左右堆叠）。禁止 import react / react-native（node 单测直导）。
  *
  * 卡面是「那一天」的摘要而非全文：计划只带预览档（超出收进「+N」行），完整
- * 当日行程表在 /trip/[id]/day/[date]（点前卡进入）。本文件只管三件可测的事：
+ * 当日行程表在 /trip/[id]/day/[date]（点前卡进入）。本文件管四件可测的事：
  * ①堆高重分配（与首页/堆页同一「实测夹紧」构图口径）；②日头徽章词表
- * （出发/返程/今天，可叠合但最多两枚，卡面节奏优先）；③计划预览切分。
+ * （出发/返程/今天，可叠合但最多两枚，卡面节奏优先）；③计划预览切分；
+ * ④当日行程项卡堆的堆叠优先级（v0.5.2 令 7，见 orderTripItemsByDayDeckPriority
+ * 与 tripDayDeckPriority 注）。
  */
+
+import {
+    tripItemDueAt,
+    tripItemPhaseMap,
+    type TripItemPhase,
+    type TripItemPhaseInput,
+} from './trip-item-logic.ts';
 
 /** 日卡堆高度区间（dp）：下限 = 卡面「日期行+3 计划行+摘要+行动行」的最小
  *  可读体量；上限 = 高屏防卡面文字区无度撑大。 */
@@ -93,4 +102,71 @@ export function tripDayTarget(
 ): { kind: 'day' } | { kind: 'journal'; id: string } {
     if (locked && journal) return { kind: 'journal', id: journal.id };
     return { kind: 'day' };
+}
+
+/** 卡堆组优先级（v0.5.2 令 7，用户点名「逻辑错误」的改正）：pending=0
+ *  （未到点优先前排）/ ongoing=1 / done=2 / wrap=3 / terminal=4。数值即排序
+ *  权重，越小越靠前排。阶段推导不在这里重写——tripItemPhaseMap 单源。 */
+export function tripDayDeckPriority(phase: TripItemPhase): number {
+    switch (phase) {
+        case 'pending':
+            return 0;
+        case 'ongoing':
+            return 1;
+        case 'done':
+            return 2;
+        case 'wrap':
+            return 3;
+        case 'terminal':
+            return 4;
+    }
+}
+
+/** 到点时间升序比较（local_date + time 换算 epoch ms；同刻恒等序稳定）。 */
+function compareByDueAsc<T extends TripItemPhaseInput>(a: T, b: T): number {
+    const dueA = tripItemDueAt(a.local_date, a.time);
+    const dueB = tripItemDueAt(b.local_date, b.time);
+    if (dueA !== dueB) return dueA < dueB ? -1 : 1;
+    return 0;
+}
+
+/** 阶段表里是否仍有未到点/进行中项（决定 settled 段的组内方向）。 */
+function hasUpcomingOrOngoing(phases: Map<string, TripItemPhase>): boolean {
+    for (const phase of phases.values()) {
+        if (phase === 'pending' || phase === 'ongoing') return true;
+    }
+    return false;
+}
+
+/**
+ * 两两比较（纯函数，供排序与单测共用）：先组优先级；同组时
+ * pending/ongoing 按到点时间升序；settled（done/wrap/terminal）在「仍有
+ * 未到点/进行中项」时倒序（最新在前，旧卡垫底），全部过点后回到时序升序。
+ */
+export function compareDayDeckPriority<T extends TripItemPhaseInput>(
+    a: T,
+    b: T,
+    phases: Map<string, TripItemPhase>,
+): number {
+    const priorityA = tripDayDeckPriority(phases.get(a.id) ?? 'pending');
+    const priorityB = tripDayDeckPriority(phases.get(b.id) ?? 'pending');
+    if (priorityA !== priorityB) return priorityA - priorityB;
+    const byDue = compareByDueAsc(a, b);
+    // settled 组且当日还有活口（未到点/进行中）→ 保持旧口径：新在前、旧垫底
+    if (priorityA >= 2 && !hasUpcomingOrOngoing(phases)) return byDue;
+    if (priorityA >= 2) return byDue === 0 ? 0 : -byDue;
+    return byDue;
+}
+
+/**
+ * 当日卡堆排序（trip-day-screen 消费）：未到点项优先占前排展示位——例：
+ * 14:30 闹钟已过（ongoing/done），新增 16:00 未到点行程 → 16:00 卡排在前排；
+ * 全部过点后回到默认时序。Array.prototype.sort 稳定，同刻同组保持输入序。
+ */
+export function orderTripItemsByDayDeckPriority<T extends TripItemPhaseInput>(
+    items: T[],
+    now: number,
+): T[] {
+    const phases = tripItemPhaseMap(items, now);
+    return [...items].sort((a, b) => compareDayDeckPriority(a, b, phases));
 }

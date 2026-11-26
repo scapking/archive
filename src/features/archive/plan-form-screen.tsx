@@ -30,7 +30,7 @@ import {
     planFormStepAt,
     planTitleValid,
 } from './plan-logic';
-import { CloseButton, PAPER_CARD_SHADOW, safeBack, usePalette } from './ui';
+import { PAPER_CARD_SHADOW, ScreenHeader, usePalette } from './ui';
 // 深路径注记：FieldInput 未入 ui/index.ts 出口（该文件不在本组改动权限内），
 // 域内深取；ui/index.ts 出口扩充时收口（同 close-button / editor-icons 先例）。
 import { FieldInput } from './ui/field-input';
@@ -48,12 +48,10 @@ import { formatDateParts, todayLocal } from './trip-logic';
  *   校验同源），空标题时两个动作禁用；步骤指示「X / 2」（tabular，与事件
  *   「X / 7」、deck 页码同语言）；步进状态机收口在 plan-logic 纯函数
  *   （node 测试直接覆盖）；
- * - **页头带描述（v0.4.5 用户点名口径；v0.4.6 指令 3 字阶同步）**：内联屏头
- *   （trip-detail / 计划编辑同一几何 px-6 pb-3 pt-2 + h-11 + CloseButton 返回
- *   钮）+ 屏题「新建计划」24 档 + 一行 16 档说明（起名字、补描述、随时续写
- *   标记完成——描述价值保留、措辞收紧，「计划是一件要做的事」由下方卡面预览
- *   的画面自证，不再全说在字上）；ScreenHeader（agent C 资产，20 档屏题）
- *   不再用于本屏，避免向导页头与编辑/详情页头字阶漂移；
+ * - **屏头（v0.5.2 轮 B 统一）**：ScreenHeader 单点收口——屏题「新建计划」
+ *   24 semibold / px-6 pb-3 pt-2 / h-11 带 + CloseButton 返回钮，与 trip-form
+ *   参考屏同规格；旧内联屏头 + 16 档介绍副行（起名字、补描述、随时续写标记
+ *   完成）退场——「计划要做的事」由字段与卡面预览自证，介绍句删除；
  * - **卡面预览（v0.4.6 指令 7「稀疏即罪」）**：页底一块与首页/计划堆同语言
  *   的计划卡静态预览，随输入实时更新——向导下半死白收进真实反馈内容，且
  *   「建完会进堆」的因果一眼可见；
@@ -217,24 +215,24 @@ export function PlanFormScreen() {
             className="flex-1 bg-ink-base dark:bg-inkd-base"
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
-            {/* 屏头固定带（v0.4.6 指令 3 字阶纪律）：与计划编辑 / trip-detail /
-                library 内联屏头同一几何（px-6 pb-3 pt-2 + h-11 行 + CloseButton
-                44 钮 + 屏题 24 semibold），副行 16 档 */}
+            {/* 屏头固定带（v0.5.2 轮 B：内联屏头退役，统一走 ScreenHeader——
+                24 semibold 屏题 / px-6 pb-3 pt-2 / h-11 带，与 trip-form 参考屏
+                同规格）。旧 16 档介绍副行已删（v0.5.2 令 2：字段自说明，
+                删后任务照常完成） */}
             <View style={{ paddingTop: insets.top }}>
-                <View className="px-6 pb-3 pt-2">
-                    <View className="h-11 flex-row items-center">
-                        <CloseButton icon="back" onPress={safeBack} />
+                {/* 步骤指示升屏头右位（X / 2，tabular 12）：与事件向导同语言——
+                    进度与屏题同带，向导页屏头即状态栏 */}
+                <ScreenHeader
+                    title="新建计划"
+                    right={
                         <Text
-                            numberOfLines={1}
-                            className="ml-2.5 min-w-0 flex-1 text-[24px] font-semibold text-ink-text dark:text-inkd-text"
+                            className="ml-2 text-[12px] text-ink-muted dark:text-inkd-muted"
+                            style={{ fontVariant: ['tabular-nums'] }}
                         >
-                            新建计划
+                            {`${step + 1} / ${PLAN_FORM_STEP_TOTAL}`}
                         </Text>
-                    </View>
-                    <Text className="mt-1 text-[16px] leading-6 text-ink-secondary dark:text-inkd-secondary">
-                        起个名字、补句描述，之后随时续写与标记完成。
-                    </Text>
-                </View>
+                    }
+                />
             </View>
             <ScrollView
                 className="flex-1"
@@ -258,15 +256,6 @@ export function PlanFormScreen() {
                         </Text>
                     </View>
                 ) : null}
-
-                {/* 步骤指示（与事件「X / 7」、deck 页码同语言：X / 2，tabular
-                    11 eyebrow 档；与上方副行拉开一档呼吸） */}
-                <Text
-                    className="mb-3 mt-4 text-[11px] text-ink-muted dark:text-inkd-muted"
-                    style={{ fontVariant: ['tabular-nums'] }}
-                >
-                    {`${step + 1} / ${PLAN_FORM_STEP_TOTAL}`}
-                </Text>
 
                 {/* ── 当前步骤的字段（一次只出一个）：StepPane 以 key={step}
                     换步重挂 → 新字段按方向滑入（前进右，200ms ease-out + 淡入；
@@ -385,16 +374,16 @@ export function PlanFormScreen() {
                         >
                             {title.trim() || PLAN_TITLE_FALLBACK}
                         </Text>
-                        <Text
-                            numberOfLines={2}
-                            className={`mt-2.5 text-[16px] leading-6 ${
-                                description.trim()
-                                    ? 'text-ink-text dark:text-inkd-text'
-                                    : 'text-ink-muted dark:text-inkd-muted'
-                            }`}
-                        >
-                            {description.trim() || '描述可以留空，进计划页后随时补。'}
-                        </Text>
+                        {/* 描述预览行：空描述不渲染（v0.5.2 令 2——「描述可以
+                            留空…」指引句退场，预览只镜像真实输入） */}
+                        {description.trim() ? (
+                            <Text
+                                numberOfLines={2}
+                                className="mt-2.5 text-[16px] leading-6 text-ink-text dark:text-inkd-text"
+                            >
+                                {description.trim()}
+                            </Text>
+                        ) : null}
                         <Text className="mt-4 text-right text-[12px] font-medium text-ink-accent dark:text-inkd-accent">
                             进行中
                         </Text>

@@ -5,7 +5,6 @@ import {
     Animated,
     Dimensions,
     Easing,
-    Image,
     Keyboard,
     PanResponder,
     Platform,
@@ -15,6 +14,12 @@ import {
     View,
     type ScrollViewInstance,
 } from 'react-native';
+// v0.5.2 令6：deck 卡体图片统一换 expo-image——它的静态 prefetch 打的
+// 原生解码/内存缓存才是本堆预载能命中的缓存（RN Image 的加载器与 expo-image
+// 不同栈，prefetch 对 RN Image 渲染位无效）；web 侧 expo-image 渲染 <img>，
+// blob/远程 URL 行为与 RN Image 等价（cover 铺满固定盒的口径由 contentFit
+// 承接，resizeMode→contentFit 逐处对译）。
+import { Image as DeckImage } from 'expo-image';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { Circle, Svg } from 'react-native-svg';
 import {
@@ -45,7 +50,17 @@ import {
 } from './media-view';
 import { usePalette, useMediaAlignPref } from './theme';
 import { useDataRevision } from '../data-revision';
-import { useFileUrlState, prewarmFileUrl, prewarmImageDecode } from './use-file-url';
+import {
+    useFileUrlState,
+    prewarmImageDecode,
+    prefetchDeckMedia,
+} from './use-file-url';
+// 堆叠有界预载调度（v0.5.2 令6，纯函数层：窗口/上限/50% 重启 + deck 相等器）
+import {
+    PREFETCH_SET_MAX,
+    deckItemsEqual,
+    nextPrefetchWindow,
+} from './deck-prefetch';
 // 全屏查看请求汇点（中立层，谁引都不成环，见其文件头）
 import { requestViewer } from '../viewer-request';
 import type { JournalBlock, JournalMediaRow } from '../db';
@@ -665,6 +680,15 @@ const CONTINUE_PLACEHOLDER = '继续写…';
  * （失焦即存双通道契约不变；屏层 800ms 自动保存节拍原样沿用，本窗只发生在
  * 它之前）。onChange 经 ref 取最新闭包（防 pending 窗内块序/内容换代后旧
  * 闭包回写覆盖）。
+ *
+ * **v0.5.2 换行闪烁加固（用户令 6）**：native 侧击键不再落 setState——草稿
+ * 只进 draftRef（提交/采纳事实源），draft state 在 native 恒为挂载初值、仅
+ * 采纳通道更新（= defaultValue/text 原生 prop 编辑期零重发，「往前闪」的
+ * 重灌通道结构性封死）；高度 native 走 minHeight + 原生自长（旧「定高 +
+ * onContentSizeChange → setState → 下一拍提交」的 JS 回环让新行先被旧盒
+ * 裁切再扩容——真机换行闪动的直接病灶）。web 维持受控 draft + 显式 height
+ * （RNW 在 change 事件内同步量高，与 value 回写同批落地，无滞后帧）。
+ * 逐段重渲隔离见下方 TextBlockRow 注。
  */
 const DRAFT_COMMIT_MS = 200;
 
@@ -706,7 +730,13 @@ function TextBlock({
     // focusedRef = 编辑中闸（blur 前一切外部 value 漂移都视而不见）。
     const [draft, setDraft] = useState(value);
     const draftRef = useRef(draft);
-    draftRef.current = draft;
+    // v0.5.2 换行闪烁修复（native 零 setState 击键）：native 编辑面归原生
+    // 编辑器所有——onChangeText 只写 draftRef（提交/采纳的事实源），不写
+    // draft state；每键一次 setState = 每键一次 TextInput 重渲染 + `text`
+    // 原生 prop 重发（RN core 把 defaultValue 也映射进 text prop）+ 高度
+    // 走 JS 回环，是「换行后上面的字闪一下」的重渲/滞后源。web 的 draft
+    // 是受控 value 的事实源，渲染期照常同步。
+    if (Platform.OS === 'web') draftRef.current = draft;
     const committedRef = useRef(value);
     const focusedRef = useRef(false);
     const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -773,6 +803,12 @@ function TextBlock({
         }
         committedRef.current = value;
         setDraft(value);
+        // native 击键不进 draft state（见 onChangeText v0.5.2 注），采纳必须
+        // 同步补写 draftRef——否则迟到的挂起提交会拿旧草稿上抛；setDraft 在
+        // native 同样落一笔，作为 setNativeProps 之外的重渲兜底（未聚焦态，
+        // 无光标扰动面；Fabric setNativeProps 个别宿主缺位时 defaultValue
+        // 换代路径接管）
+        draftRef.current = value;
         if (Platform.OS !== 'web') {
             (inputRef.current as unknown as {
                 setNativeProps?(o: { text: string }): void;
@@ -863,7 +899,10 @@ function TextBlock({
                 // 写过锁存：首字落下即按内容段处理（72 → 两行固定底的唯一跳变
                 // 点，之后随行数平滑增高；同值 setState 被 React 合并，无额外渲染）
                 setWritten((current) => current || text.length > 0);
-                setDraft(text);
+                // 草稿事实源（两平台同写）；state 只 web 同步——native 不落
+                // setState（零击键重渲染，见组件头注 v0.5.2 段）
+                draftRef.current = text;
+                if (Platform.OS === 'web') setDraft(text);
                 // 防抖提交（替代旧的逐键上抛整块数组）：连续击键合并为一拍，
                 // 屏层与画布子树不再每字重渲
                 scheduleCommit();
@@ -891,9 +930,18 @@ function TextBlock({
                 // 同值守卫丢弃逐键同值触发，防无谓 re-render / layout 抖动
                 const next = readContentHeight(event);
                 if (next === null) return;
-                setContentHeight((current) =>
-                    current !== null && Math.abs(next - current) < 1 ? current : next,
-                );
+                // v0.5.2 换行闪烁修复（native 高度零 JS 回环）：native 多行
+                // TextInput 不写死 height、只给 minHeight——视图随内容在原生
+                // 帧内自然长高，零滞后零裁切；旧实现「定高 + onContentSizeChange
+                // → setState → 下一拍提交高度」让新行先被旧盒裁切/内部滚动、
+                // 一帧后才扩容归位——真机换行闪动的直接病灶。web 保留显式
+                // height（textarea 不自长；RNW 在 change 事件内同步量 scrollHeight
+                // 上报，setState 与 value 回写同批落地，无滞后帧）。
+                if (Platform.OS === 'web') {
+                    setContentHeight((current) =>
+                        current !== null && Math.abs(next - current) < 1 ? current : next,
+                    );
+                }
                 // 内容增高（触发③，#12b）：聚焦中段落变高（多行回车/粘贴）后
                 // 光标行重新入位——定位器激活闸内排程（未聚焦空操作），延时正好
                 // 覆盖新高度提交与重排落稳
@@ -905,7 +953,10 @@ function TextBlock({
             // + 平台 props（下划线/纵向对齐）从 field-input 单点取；focus 反馈 =
             // 光标 + 占位符消隐，不上底色盒/outline
             style={[
-                { height },
+                // native：minHeight 托底 + 内容自长（见 onContentSizeChange v0.5.2
+                // 注——固定 height 的 JS 回环滞后是换行闪动病灶）；web：显式
+                // height（同批提交无滞后，且 written 塌缩修复依赖数值高）
+                Platform.OS === 'web' ? { height } : { minHeight: height },
                 INPUT_TRANSPARENT_STYLE,
                 FIELD_TONE_TEXT.canvas,
                 { color: palette.text },
@@ -914,6 +965,92 @@ function TextBlock({
         />
     );
 }
+
+/**
+ * 文本块行（v0.5.2 换行闪烁修复的 memo 面）：BlockReveal + 定位壳 + TextBlock
+ * + 聚焦 ⋯ 钮打包成**一个 memo 行**。此前每次防抖提交（编辑期每 200ms 一拍）
+ * blocks 换代 → BlockEditor 全子树 reconcile：所有 TextBlock 重新执行渲染体、
+ * 每个 TextInput 重新过一遍 Fabric/DOM 提交——文本内容虽然相等短路不重灌，
+ * 提交噪声本身在真机上就是「上面的字跟着刷一下」的可感扰动。行内 props 全部
+ * 是原始值或恒定引用（blockId/value/index/布尔位/canvas/稳定回调），浅比较即
+ * 挡住「别的段提交/聚焦别的段」对本行的重渲——**按回车时，上方已输入的文本
+ * 零重渲染**自此由结构保证（key=block.id 在调用处挂，重排不换行实例）。
+ */
+const TextBlockRow = memo(function TextBlockRow({
+    blockId,
+    value,
+    index,
+    editable,
+    autoFocus,
+    firstBlock,
+    focused,
+    canvas,
+    onCommitText,
+    onFocusBlock,
+    onBlurBlock,
+    onInputFocus,
+    onInputBlur,
+    onOpenAction,
+}: {
+    blockId: string;
+    value: string;
+    index: number;
+    editable: boolean;
+    autoFocus: boolean;
+    firstBlock: boolean;
+    /** 本行是否聚焦中（驱动 ⋯ 钮显隐 + BlockReveal 脉冲抑制）。 */
+    focused: boolean;
+    canvas?: EditorCanvasHandle;
+    /** 以下回调全部由 BlockEditor 以 ref 通道收口，终生恒定（memo 契约）。 */
+    onCommitText(blockId: string, text: string): void;
+    onFocusBlock(blockId: string): void;
+    onBlurBlock(blockId: string): void;
+    onInputFocus(blockId: string, input: React.ComponentRef<typeof TextInput> | null): void;
+    onInputBlur(blockId: string, input: React.ComponentRef<typeof TextInput> | null): void;
+    onOpenAction(blockId: string): void;
+}) {
+    const commit = useCallback(
+        (text: string) => onCommitText(blockId, text),
+        [blockId, onCommitText],
+    );
+    const focus = useCallback(() => onFocusBlock(blockId), [blockId, onFocusBlock]);
+    const blur = useCallback(() => onBlurBlock(blockId), [blockId, onBlurBlock]);
+    const inputFocus = useCallback(
+        (input: React.ComponentRef<typeof TextInput> | null) => onInputFocus(blockId, input),
+        [blockId, onInputFocus],
+    );
+    const inputBlur = useCallback(
+        (input: React.ComponentRef<typeof TextInput> | null) => onInputBlur(blockId, input),
+        [blockId, onInputBlur],
+    );
+    const openAction = useCallback(() => onOpenAction(blockId), [blockId, onOpenAction]);
+    return (
+        <BlockReveal index={index} muted={focused}>
+            <View className="relative">
+                {/* 统一文本块（#3）：首段/续写段/+ 添加输入框段同一组件，
+                    差异只经 firstBlock（占位文案）/written（高度档）表达 */}
+                <TextBlock
+                    value={value}
+                    editable={editable}
+                    autoFocus={autoFocus}
+                    firstBlock={firstBlock}
+                    canvas={canvas}
+                    onChange={commit}
+                    onInputFocus={inputFocus}
+                    onInputBlur={inputBlur}
+                    onFocus={focus}
+                    onBlur={blur}
+                />
+                {/* 聚焦态微型 ⋯ 钮（块操作卡入口）：块内右上角，与相邻
+                    媒体块角部零重叠（几何核算见 MICRO_BUTTON 注）；非聚焦
+                    零渲染，聚焦挂载 150ms 淡入 */}
+                {editable && focused ? (
+                    <BlockMicroButton onPress={openAction} />
+                ) : null}
+            </View>
+        </BlockReveal>
+    );
+});
 
 /**
  * 落盘进度环（2026-11-08 进度可视化）：28px 单圈 ring——底圈 muted 25% +
@@ -1410,10 +1547,10 @@ function DeckFrontCardImpl({
                 style={{ width, height, borderRadius: DECK_CARD_RADIUS }}
             >
                 {ready ? (
-                    <Image
+                    <DeckImage
                         source={{ uri }}
                         style={{ width, height, borderRadius: DECK_CARD_RADIUS }}
-                        resizeMode="cover"
+                        contentFit="cover"
                     />
                 ) : status === 'missing' ? (
                     <View className="flex-1 items-center justify-center gap-1.5">
@@ -1478,7 +1615,7 @@ function DeckBackCardImpl({
             style={{ width, height, padding: DECK_MAT, borderRadius: DECK_CARD_RADIUS }}
         >
             {status === 'ready' && uri ? (
-                <Image
+                <DeckImage
                     source={{ uri }}
                     style={{
                         width: width - DECK_MAT * 2,
@@ -1486,7 +1623,7 @@ function DeckBackCardImpl({
                         // 内层同值圆角双保险（Android 旋转位形下不依赖父裁切）
                         borderRadius: DECK_CARD_RADIUS,
                     }}
-                    resizeMode="cover"
+                    contentFit="cover"
                 />
             ) : null}
         </View>
@@ -1613,10 +1750,10 @@ function DeckVideoCoverFaceImpl({
     const { status, uri } = useVideoThumbState(media.file_key);
     if (status === 'ready' && uri) {
         return (
-            <Image
+            <DeckImage
                 source={{ uri }}
                 style={{ width, height, borderRadius: DECK_CARD_RADIUS }}
-                resizeMode="cover"
+                contentFit="cover"
             />
         );
     }
@@ -1780,7 +1917,7 @@ function DeckVideoBackCardImpl({
             style={{ width, height, padding: DECK_MAT, borderRadius: DECK_CARD_RADIUS }}
         >
             {ready ? (
-                <Image
+                <DeckImage
                     source={{ uri }}
                     style={{
                         width: width - DECK_MAT * 2,
@@ -1788,7 +1925,7 @@ function DeckVideoBackCardImpl({
                         // 内层同值圆角双保险（Android 旋转位形下不依赖父裁切）
                         borderRadius: DECK_CARD_RADIUS,
                     }}
-                    resizeMode="cover"
+                    contentFit="cover"
                 />
             ) : (
                 /* 内层同值圆角 + overflow-hidden 双保险（Android 与图堆同口径，
@@ -2629,39 +2766,70 @@ function MediaDeckStack({
     const leftItem = itemCount >= 3 ? items[(safeIndex - 1 + itemCount) % itemCount] : null;
     const rightItem = items[(safeIndex + 1) % itemCount];
 
-    // 邻卡预热（v0.4.4 零占位帧 → v0.4.6 连滑零解码帧，两级）：
-    // ① URI 级（即时，零字节）：换张后成为新前卡的邻卡提前 acquire（acquire
-    //   即 release——条目留会话缓存，引用计数 0 + 延迟撤销），换 key 渲染期
-    //   peek 恒命中，前卡首帧就是真图（file-url-state 的同步 ready 路径）。
-    // ② 位图级（web-only，见 prewarmImageDecode）：图片邻卡按前卡 frame 尺寸、
-    //   视频邻卡按封面起面位（缩略图，同尺寸）预解码。**排期铁律：
-    //   DECK_WARM_DECODE_DELAY_MS 去抖 + 邻卡变化即重排**——effect 触发点恰是
-    //   换张收口帧，立即解码会和转场/下一轮拖拽抢 raster（CDP 实测：无去抖
-    //   时图片堆滑移期帧距反升 20→35ms）；去抖后预热只落在「停手」的静默窗，
-    //   连滑期间永不抢占交互帧，停一拍后下一次翻卡天然零解码。
+    // ── 有界预载窗口（v0.5.2 用户令 6「预先加载但有上限，到上限后不再预载，
+    // 切换超过 50% 后重新预载」，状态机纯函数在 ui/deck-prefetch.ts）：
+    // 取代 v0.4.4「只热左右各一张」的前瞻窗口——从当前位向后热至多
+    // PREFETCH_LOOKAHEAD=3 张；「已热位置」记账上限 PREFETCH_SET_MAX=6，
+    // 到顶停载；累计向前越过半程线（index ≥ ⌈total/2⌉）→ 以当前位重启
+    // 窗口（清账，旧窗条目不再补 revoke——web blob 由 urlCache 引用计数 +
+    // 延迟撤销层回收，native memo 是路径字符串无字节账）。
+    // 排期纪律（v0.4.6/v0.4.7 红线口径不变，两级成本分账）：
+    // ① URI 级即时（零主线程 raster）：nativeUriMemo 落账 / blob 句柄引用
+    //   计数预热 / expo-image prefetch（原生解码缓存，deck 卡体同栈故真实
+    //   命中）/ web 隐藏 video 头字节——换张收口帧立即做，撞不进转场；
+    // ② 位图级预解码（web 重字节）仍走 DECK_WARM_DECODE_DELAY_MS 去抖窗 +
+    //   warmedDecodes 档位去重，只落「停手」静默窗。
+    // deps 恒不含 items/dataRevision：buildRenderUnits 每次渲染重算、items
+    // 引用每拍换代，进 deps 会让去抖 timer 被持续清排——v0.4.7「连滑预热
+    // 永不落地」病灶回潮；取数走 itemsRef、revision 读渲染期快照。组成员
+    // 变化（增删/移块）由 media-id 签名触发账本重建，位置记账不陈旧。
+    const prefetchedRef = useRef<number[]>([]);
+    const deckSignatureRef = useRef('');
     const dataRevision = useDataRevision();
     useEffect(() => {
-        for (const neighbor of [leftItem, rightItem]) {
-            if (!neighbor) continue;
-            // URI 级即时预热（廉价，引用计数操作）
-            prewarmFileUrl(neighbor.media.file_key, dataRevision);
-            if (neighbor.deckKind === 'video') {
-                prewarmFileUrl(videoThumbKeyFor(neighbor.media.file_key), dataRevision);
+        if (itemCount < 2 || cardWidth <= 0) return;
+        const list = itemsRef.current;
+        const signature = list.map((item) => item.media.id).join('|');
+        const membershipChanged = deckSignatureRef.current !== signature;
+        deckSignatureRef.current = signature;
+        const revision = dataRevision;
+        const { cleared, indices } = nextPrefetchWindow(
+            safeIndex,
+            itemCount,
+            membershipChanged ? [] : prefetchedRef.current,
+        );
+        const ledger = cleared || membershipChanged ? [] : prefetchedRef.current.slice();
+        const fresh: number[] = [];
+        for (const position of indices) {
+            if (ledger.length >= PREFETCH_SET_MAX) break;
+            ledger.push(position);
+            fresh.push(position);
+        }
+        prefetchedRef.current = ledger;
+        if (fresh.length === 0) return;
+        for (const position of fresh) {
+            const item = list[position];
+            if (!item) continue;
+            if (item.deckKind === 'image' || item.deckKind === 'video') {
+                prefetchDeckMedia(item.deckKind, item.media.file_key, revision);
             }
         }
         const timer = setTimeout(() => {
-            for (const neighbor of [leftItem, rightItem]) {
-                if (!neighbor || cardWidth <= 0) continue;
-                if (neighbor.deckKind === 'video') {
-                    // 视频文件只热 URI（player 面自带延迟窗）；封面位图（缩略图）按前卡尺寸预解码
-                    prewarmImageDecode(videoThumbKeyFor(neighbor.media.file_key), dataRevision, cardWidth, cardHeight);
-                } else if (neighbor.deckKind !== 'audio') {
-                    prewarmImageDecode(neighbor.media.file_key, dataRevision, cardWidth, cardHeight);
+            for (const position of fresh) {
+                const item = itemsRef.current[position];
+                if (!item) continue;
+                if (item.deckKind === 'video') {
+                    // 视频字节由 warmVideoBytesWeb 预热（prefetchDeckMedia 内）；
+                    // 此处只按前卡尺寸预解码封面位图（与旧露边层口径同源）
+                    prewarmImageDecode(videoThumbKeyFor(item.media.file_key), revision, cardWidth, cardHeight);
+                } else if (item.deckKind === 'image') {
+                    prewarmImageDecode(item.media.file_key, revision, cardWidth, cardHeight);
                 }
             }
         }, DECK_WARM_DECODE_DELAY_MS);
         return () => clearTimeout(timer);
-    }, [leftItem, rightItem, dataRevision, cardWidth, cardHeight]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 见上注：items/revision 恒不入 deps（防去抖窗被换代拍击穿）
+    }, [safeIndex, itemCount, cardWidth, cardHeight]);
 
     return (
         <View
@@ -2881,6 +3049,23 @@ function MediaDeckStack({
     );
 }
 
+/**
+ * 堆叠相等器（v0.5.2 令6 memo 面）：items 走 deck-prefetch 的引用浅比较
+ * （buildRenderUnits 对未变更块透传原对象——文本防抖提交的新数组不换代
+ * 媒体块/media 行，deck 因此整体 bail-out：转场动画值、frontIndex 状态、
+ * 卡体 Image 实例全部零扰动），selection/onBlockAction 在调用处恒为
+ * 「同一对象或 null」/恒定 useCallback。组首块被删 → key 更替重挂（原口径，
+ * memo 不影响换 key 语义）。
+ */
+const MemoDeckStack = memo(
+    MediaDeckStack,
+    (prev, next) =>
+        prev.editable === next.editable &&
+        prev.selection === next.selection &&
+        prev.onBlockAction === next.onBlockAction &&
+        deckItemsEqual(prev.items, next.items),
+);
+
 /** 块重排/删除的轻量反馈：位置变化时透明度脉冲一次（RN Animated，别过度）。
     Animated.View 的 opacity 动画在 web 上输出 will-change:opacity → 每个块
     各自成 stacking context：块内浮层（聚焦态 ⋯ 微钮）在本块内后渲染、天然
@@ -3059,6 +3244,18 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(funct
     // 重排），恒从 ref 取当帧数组重算——杜绝「旧闭包回写覆盖新块序」
     const blocksRef = useRef(blocks);
     blocksRef.current = blocks;
+    // 回调 props 的最新闭包镜像（v0.5.2 行级 memo 配套）：TextBlockRow /
+    // MemoDeckStack 的相等契约要求下传回调引用恒定，而 onChange/onFocusText/
+    // onBlurText/onRequestActionBlock 是屏层每渲染重建的 inline 箭头——一律
+    // 经 ref 取当帧，行侧只接恒定壳。
+    const onChangeRef = useRef(onChange);
+    onChangeRef.current = onChange;
+    const onFocusTextRef = useRef(onFocusText);
+    onFocusTextRef.current = onFocusText;
+    const onBlurTextRef = useRef(onBlurText);
+    onBlurTextRef.current = onBlurText;
+    const onRequestActionRef = useRef(onRequestActionBlock);
+    onRequestActionRef.current = onRequestActionBlock;
     const updateText = (id: string, text: string) => {
         const current = blocksRef.current;
         // 恒等 bail：目标块已删（卸载兜底迟于删块）或文本同值（blur 收口与防抖
@@ -3074,8 +3271,33 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(funct
             return block;
         });
         if (!changed) return;
-        onChange(next);
+        onChangeRef.current(next);
     };
+    // 稳定通道（updateText 依赖渲染闭包，经 ref 中转后对外引用终生恒定）
+    const updateTextRef = useRef(updateText);
+    updateTextRef.current = updateText;
+    const handleCommitText = useCallback(
+        (id: string, text: string) => updateTextRef.current(id, text),
+        [],
+    );
+    const handleFocusBlock = useCallback((id: string) => {
+        setActiveBlockId(id);
+        onFocusTextRef.current?.(id);
+    }, []);
+    const handleBlurBlock = useCallback((id: string) => {
+        // 快速换焦点时 blur 后到：只清自己的 id（#4 原口径）
+        setActiveBlockId((current) => (current === id ? null : current));
+        onBlurTextRef.current?.();
+    }, []);
+    const handleInputFocus = useCallback((_id: string, input: React.ComponentRef<typeof TextInput> | null) => {
+        activeInputRef.current = input;
+    }, []);
+    const handleInputBlur = useCallback((_id: string, input: React.ComponentRef<typeof TextInput> | null) => {
+        // 实例身份守卫：快速换焦点时旧 blur 后到，不清新聚焦段的引用（#4 同口径）
+        if (activeInputRef.current === input) {
+            activeInputRef.current = null;
+        }
+    }, []);
 
     const isPending = (block: JournalBlock) =>
         block.t === 'media' && block.mediaId === PENDING_MEDIA_ID;
@@ -3084,11 +3306,12 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(funct
     const isFreshNote = blocks.length === 1;
 
     /** 打开块操作卡前的统一动作：收键盘（键盘态浮层以收起后的窗口布局为准，
-        与全屏查看器同一口径）。 */
-    const openActionBlock = (blockId: string) => {
+        与全屏查看器同一口径）。useCallback([]) + ref 通道：引用恒定——
+        TextBlockRow 的 memo 契约与 MediaDeckStack 的相等器都吃这个不变量。 */
+    const openActionBlock = useCallback((blockId: string) => {
         Keyboard.dismiss();
-        onRequestActionBlock?.(blockId);
-    };
+        onRequestActionRef.current?.(blockId);
+    }, []);
 
     // 渲染单元（纯派生，见 buildRenderUnits）：连续同 kind 媒体合并堆叠
     // （图片堆 / 视频堆，混排按 kind 分段），其余原样
@@ -3128,7 +3351,7 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(funct
                     return (
                         <BlockReveal key={unit.items[0].block.id} index={firstIndex}>
                             <View style={groupMargin}>
-                                <MediaDeckStack
+                                <MemoDeckStack
                                     items={unit.items}
                                     editable={editable}
                                     selection={deckSelection}
@@ -3141,54 +3364,27 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(funct
                 const block = unit.block;
                 const index = unit.index;
                 if (block.t === 'p') {
-                    const microVisible = editable && activeBlockId === block.id;
+                    // v0.5.2 行级 memo：整行经 TextBlockRow 浅比较短路——别的段
+                    // 提交/聚焦换段时本行 props 全等则零重渲（key=block.id 恒定，
+                    // 不含内容/序号；重排不换行实例，焦点与光标天然保持）
                     return (
-                        <BlockReveal
+                        <TextBlockRow
                             key={block.id}
+                            blockId={block.id}
+                            value={block.text}
                             index={index}
-                            muted={activeBlockId === block.id}
-                        >
-                            <View className="relative">
-                                {/* 统一文本块（#3）：首段/续写段/+ 添加输入框段同一组件，
-                                    差异只经 firstBlock（占位文案）/written（高度档）表达 */}
-                                <TextBlock
-                                    value={block.text}
-                                    editable={editable}
-                                    autoFocus={focusTextId === block.id}
-                                    firstBlock={isFreshNote}
-                                    canvas={canvas}
-                                    onChange={(text) => updateText(block.id, text)}
-                                    onInputFocus={(input) => {
-                                        activeInputRef.current = input;
-                                    }}
-                                    onInputBlur={(input) => {
-                                        // 实例身份守卫：快速换焦点时旧 blur 后到，
-                                        // 不清新聚焦段的引用（#4 同口径）
-                                        if (activeInputRef.current === input) {
-                                            activeInputRef.current = null;
-                                        }
-                                    }}
-                                    onFocus={() => {
-                                        setActiveBlockId(block.id);
-                                        onFocusText?.(block.id);
-                                    }}
-                                    onBlur={() => {
-                                        // 失焦即隐（#4 非聚焦零渲染）：只清自己的 id——
-                                        // 快速换焦点时 blur 后到，不误清新聚焦块
-                                        setActiveBlockId((current) =>
-                                            current === block.id ? null : current,
-                                        );
-                                        onBlurText?.();
-                                    }}
-                                />
-                                {/* 聚焦态微型 ⋯ 钮（块操作卡入口）：块内右上角，与相邻
-                                    媒体块角部零重叠（几何核算见 MICRO_BUTTON 注）；
-                                    非聚焦零渲染，聚焦挂载 150ms 淡入 */}
-                                {microVisible ? (
-                                    <BlockMicroButton onPress={() => openActionBlock(block.id)} />
-                                ) : null}
-                            </View>
-                        </BlockReveal>
+                            editable={editable}
+                            autoFocus={focusTextId === block.id}
+                            firstBlock={isFreshNote}
+                            focused={activeBlockId === block.id}
+                            canvas={canvas}
+                            onCommitText={handleCommitText}
+                            onFocusBlock={handleFocusBlock}
+                            onBlurBlock={handleBlurBlock}
+                            onInputFocus={handleInputFocus}
+                            onInputBlur={handleInputBlur}
+                            onOpenAction={openActionBlock}
+                        />
                     );
                 }
                 const verticalMargin = {

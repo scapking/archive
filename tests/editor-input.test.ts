@@ -77,7 +77,13 @@ test('updateText 走最新 blocks 镜像 + 恒等 bail（迟到提交不覆盖�
 });
 
 test('聚焦段抑制重排脉冲（BlockReveal muted），其余段反馈保留', () => {
-    assert.match(editorSource, /muted=\{activeBlockId === block\.id\}/);
+    // v0.5.2 行级 memo 改版：聚焦判定经 focused 原始值传入 TextBlockRow、
+    // 行内转接 BlockReveal.muted——语义与旧 inline `muted={activeBlockId ===
+    // block.id}` 全等，仅接线随重构迁移（focused 同时驱动 ⋯ 钮显隐）。
+    assert.match(editorSource, /focused=\{activeBlockId === block\.id\}/);
+    const rowSrc = editorSource.split('const TextBlockRow = memo(')[1]?.slice(0, 4000) ?? '';
+    assert.ok(rowSrc.length > 0, 'TextBlockRow 结构变了，测试口径需同步');
+    assert.match(rowSrc, /muted=\{focused\}/);
     const revealSrc = editorSource.split('function BlockReveal({')[1]?.split('\nfunction ')[0] ?? '';
     assert.ok(revealSrc.length > 0, 'BlockReveal 结构变了，测试口径需同步');
     assert.match(revealSrc, /if \(mutedRef\.current\) return;/);

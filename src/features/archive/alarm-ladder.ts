@@ -210,6 +210,51 @@ export function pickDueEntries(
     return entries.filter((entry) => entry.at <= now).sort((a, b) => a.at - b.at);
 }
 
+// ─── 常驻监控摘要（v0.5.2 用户令3「创建行程的时候就创建常驻通知」）─────────
+//
+// TS 侧镜像（store/watcher 钩子消费，tests 有契约用例）；Android 原生
+// AlarmMonitorService 的 boot/sticky 自算文案与此同构（源码正则闸锁定）。
+// iOS/web 无等价前台服务：「常驻」退化为已排期本地通知在通知中心可见
+// （iOS 系统行为），门面层 syncMonitor no-op——平台差异口径见 core/alarm。
+
+export interface AlarmMonitorSummary {
+    /** 未到点 pending 条目数。 */
+    count: number;
+    /** 最近一次待触发时刻（epoch ms）。 */
+    nearestAt: number;
+}
+
+/** 注册表 → 监控摘要：pending = at > now（与原生 pendingSummary 同判据；
+ *  已到点条目滞留注册表等确认出账，但不再属于「监控中」）。全空 = null
+ *  （= 停常驻通知，用户令「全部过点/删除即停」）。 */
+export function deriveAlarmMonitorSummary(
+    entries: readonly ScheduledAlarmEntry[],
+    now: number,
+): AlarmMonitorSummary | null {
+    let count = 0;
+    let nearestAt = Number.POSITIVE_INFINITY;
+    for (const entry of entries) {
+        if (entry.at <= now) continue;
+        count += 1;
+        if (entry.at < nearestAt) nearestAt = entry.at;
+    }
+    return count === 0 ? null : { count, nearestAt };
+}
+
+/** 常驻通知文案（用户令口径）：title =「N 个行程提醒监控中」，
+ *  body =「最近 HH:mm」（本地 24 小时制）。 */
+export function alarmMonitorNotificationText(
+    summary: AlarmMonitorSummary,
+): { title: string; body: string } {
+    const nearest = new Date(summary.nearestAt);
+    const hh = String(nearest.getHours()).padStart(2, '0');
+    const mm = String(nearest.getMinutes()).padStart(2, '0');
+    return {
+        title: `${summary.count} 个行程提醒监控中`,
+        body: `最近 ${hh}:${mm}`,
+    };
+}
+
 /** 通知 identifier → 行程项 id（前缀不匹配返回 null）。 */
 export function itemIdFromNotificationId(identifier: string): string | null {
     return identifier.startsWith(TRIP_ITEM_NOTIFICATION_PREFIX)

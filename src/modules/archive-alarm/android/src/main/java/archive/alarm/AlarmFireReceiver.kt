@@ -73,6 +73,11 @@ class AlarmFireReceiver : BroadcastReceiver() {
             } catch (e: Exception) {
                 Log.w(TAG, "keep-alive service start refused (FGS background limit): $id", e)
             }
+
+            // v0.5.2 令3：本项过点 = pending 集合变小，同拍刷新常驻监控通知
+            // （sync 以注册表自算 N/最近时刻，空则停；内部全兜底永不抛——
+            // 后台 FGS 受限场景呈现退化为「下次进 app/boot 再收敛」）
+            AlarmMonitorService.sync(context)
         } catch (e: Exception) {
             // 通知失败只留痕：闹钟数据面不受影响（增强失败文档化降级口径）
             Log.w(TAG, "alarm notification failed: $id", e)

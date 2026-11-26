@@ -21,7 +21,7 @@ import {
 } from '@/core/icons';
 import { haptics } from '@/core/haptics';
 import { useArchiveRevision, useArchiveStore } from './store';
-import { LineChart, LoadingView, PAPER_CARD_SHADOW, usePalette } from './ui';
+import { LineChart, LoadingView, PAPER_CARD_SHADOW, ScreenHeader, usePalette } from './ui';
 
 /**
  * Me：身份行（Me 标题 + 连续天数）、指标卡（3 格 KPI 单行 + 30 天曲线）、
@@ -29,8 +29,9 @@ import { LineChart, LoadingView, PAPER_CARD_SHADOW, usePalette } from './ui';
  * 本屏唯一问题："我坚持得怎么样，东西在哪？"
  *
  * 信息收敛口径（v0.4.6 指令 5 再收敛——「我的内容卡片容器信息负担太大，砍了」）：
- * - 身份行：纯文本标题行（无头像/UID），连续天数只在此出现一次——KPI 不再
- *   重复渲染同语义数值；屏题档 24、副行 16（字阶纪律）；
+ * - 身份行（v0.5.2 轮 B）：ScreenHeader back={false}（屏题档 24 / px-6 /
+ *   h-11 带统一）+ 连续天数状态行 16 档（仅 streak>0 上屏，口号句退场）；
+ *   连续天数只在此出现一次——KPI 不再重复渲染同语义数值；
  * - 指标：3 格 KPI 单行 + 30 天曲线并作一张 surface 卡。数值升 24 档（卡内
  *   屏题等档，一屏只留两个大字号声部），标签 11、曲线题 16 + 单位 11。
  *   卡内**无任何内部分隔线**：KPI 格间靠两侧 px-3 留白相加（24px），曲线段与
@@ -175,17 +176,22 @@ export function MeScreen() {
     return (
         <View className="flex-1 bg-ink-base dark:bg-inkd-base">
             <View style={{ paddingTop: insets.top }} className="flex-1">
-                <View className="px-6 pb-1 pt-2">
-                    <Text className="text-[24px] font-semibold text-ink-text dark:text-inkd-text">Me</Text>
-                    {/* streak 轻动画：纯淡入（y=0），不位移不抢戏（用户口径「可选、不要过度」） */}
-                    <Enter delay={80} y={0}>
-                        <Text
-                            className="mt-1 text-[16px] text-ink-secondary dark:text-inkd-secondary"
-                            style={{ fontVariant: ['tabular-nums'] }}
-                        >
-                            {metrics.streak > 0 ? `连续 ${metrics.streak} 天，别断` : '从今天开始连续记录'}
-                        </Text>
-                    </Enter>
+                {/* 屏头（v0.5.2 轮 B：tab 根屏无返回钮，走 ScreenHeader back={false}
+                    ——屏题档/几何带与推入屏同一套）；streak 行是实时状态：仅
+                    streak>0 渲染，尾缀与零值态两句口号文案退场 */}
+                <ScreenHeader title="Me" back={false} />
+                <View className="px-6">
+                    {metrics.streak > 0 ? (
+                        // streak 轻动画：纯淡入（y=0），不位移不抢戏（用户口径「可选、不要过度」）
+                        <Enter delay={80} y={0}>
+                            <Text
+                                className="text-[16px] text-ink-secondary dark:text-inkd-secondary"
+                                style={{ fontVariant: ['tabular-nums'] }}
+                            >
+                                {`连续 ${metrics.streak} 天`}
+                            </Text>
+                        </Enter>
+                    ) : null}
                     {error ? (
                         // 错误横幅卡（v0.4.7 令 3，settings 同源）：tinted 圆角卡承载
                         <View className="mt-2 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">

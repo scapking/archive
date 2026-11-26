@@ -544,6 +544,9 @@ export function TripDetailScreen() {
     const insets = useSafeAreaInsets();
     const revision = useArchiveRevision();
     const palette = usePalette();
+    // v0.5.2 收口（与 trip-day 同款）：冷启动直达深链时首拍查询可能跑在
+    // store.loadAll 就绪前，被 catch 锁存成死路——ready 入依赖，未就绪不查库。
+    const storeReady = useArchiveStore((s) => s.ready);
     const setTripDayBackground = useArchiveStore((s) => s.setTripDayBackground);
     const storeError = useArchiveStore((s) => s.error);
 
@@ -590,6 +593,7 @@ export function TripDetailScreen() {
             setLoading(false);
             return;
         }
+        if (!storeReady) return; // hydration 竞态闸（见 storeReady 注）
         try {
             const row = await db.getTrip(id);
             if (!row) {
@@ -710,7 +714,7 @@ export function TripDetailScreen() {
         } finally {
             if (loadRetryRef.current === 0) setLoading(false);
         }
-    }, [id]);
+    }, [id, storeReady]);
 
     useEffect(() => {
         void reload();
@@ -930,25 +934,25 @@ export function TripDetailScreen() {
     return (
         <View className="flex-1 bg-ink-base dark:bg-inkd-base">
             <View style={{ paddingTop: insets.top }} className="flex-1">
-                {/* 屏头内联（几何同 ScreenHeader：px-6 pb-3 pt-2 / h-11 行）：ScreenHeader 的
-                    title 槽只收 string，装不下 TripBadge 徽章，故按其规格展开。
-                    命中区核算：返回钮 = CloseButton 44 圆形触感底盒（#8 打磨轮：
-                    裸图标箭头升级，替代旧 36 盒 + hitSlop 10）；编辑钮 = 36 视觉盒 +
-                    hitSlop 10 → 56×56 ≥44 规范；返回钮 44 盒（无 slop）与右邻徽章 40
-                    为非按压体（间距 ml-2 停车距），标题 flex-1 收缩让位。锁定态编辑
-                    钮整体不渲染（#7 只读），标题独占行尾。 */}
+                {/* 屏头（v0.5.2 轮 B 统一规格：px-6 pb-3 pt-2 / h-11 行 / 24px
+                    semibold 屏题；题侧无徽章带——徽章无卡位，收进行尾 right
+                    槽，与编辑钮同侧）。命中区核算：返回钮 = CloseButton 44
+                    圆形触感底盒（无 slop）；编辑钮 = 44 圆形 raised 底盒
+                    （event-detail 设置钮同款解剖）+ hitSlop 10；TripBadge 40
+                    非按压体，与编辑钮 ml-2 停车距；标题 flex-1 收缩让位。
+                    锁定态编辑钮整体不渲染（#7 只读），徽章是行程事实恒可见。 */}
                 <View className="px-6 pb-3 pt-2">
                     <View className="h-11 flex-row items-center">
                         <CloseButton icon="back" onPress={safeBack} />
-                        <View className="ml-2">
-                            <TripBadge icon={trip.icon} size="detail" />
-                        </View>
                         <Text
                             numberOfLines={1}
                             className="ml-2.5 min-w-0 flex-1 text-[24px] font-semibold text-ink-text dark:text-inkd-text"
                         >
                             {tripDisplayTitle(trip.title)}
                         </Text>
+                        <View className="ml-2">
+                            <TripBadge icon={trip.icon} size="detail" />
+                        </View>
                         {!locked ? (
                             <BouncyPressable
                                 onPress={() =>
@@ -961,9 +965,9 @@ export function TripDetailScreen() {
                                 <View
                                     accessibilityRole="button"
                                     accessibilityLabel="编辑行程"
-                                    className="h-9 w-9 items-center justify-center rounded-control border border-ink-border bg-ink-surface dark:border-inkd-border dark:bg-inkd-surface"
+                                    className="ml-2 h-11 w-11 items-center justify-center rounded-full bg-ink-raised dark:bg-inkd-raised"
                                 >
-                                    <LucidePencil size={16} strokeWidth={1.9} color={palette.secondary} />
+                                    <LucidePencil size={18} strokeWidth={1.9} color={palette.secondary} />
                                 </View>
                             </BouncyPressable>
                         ) : null}

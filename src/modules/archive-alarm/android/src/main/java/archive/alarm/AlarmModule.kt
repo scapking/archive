@@ -54,6 +54,17 @@ class AlarmModule : Module() {
             AlarmScheduler.cancel(ctx, id)
         }
 
+        /** 常驻监控通知刷新（v0.5.2 用户令3）：JS 在 hydration / 行程项增删改
+         *  后幂等 poke；start/stop 判据 = 原生注册表 pending 集合（非 JS 传参），
+         *  title/body 传空 = 原生自算文案（boot/sticky 同构口径）。失败语义：
+         *  sync 内部全兜底不抛，本函数只在 context 缺失时 reject——core/alarm
+         *  门面 catch 后 warn 降级。 */
+        AsyncFunction("syncMonitor") { title: String, body: String ->
+            val ctx = appContext.reactContext
+                ?: throw IllegalStateException("Android context unavailable")
+            AlarmMonitorService.sync(ctx, title, body)
+        }
+
         /** 精确闹钟 + 通知权限综合判定：granted / denied / unsupported。 */
         AsyncFunction("permission") {
             val ctx = appContext.reactContext

@@ -404,17 +404,22 @@ export function ArchiveScreen() {
     return (
         <View className="flex-1 bg-ink-base dark:bg-inkd-base">
             <View style={{ paddingTop: insets.top }} className="flex-1">
-                {/* 屏头（v0.4.6 字阶纪律：屏题 24 / 正文行 16 / meta 12 / eyebrow 11） */}
+                {/* 屏头（v0.4.6 字阶纪律：屏题 24 / 正文行 16 / meta 12 /
+                    eyebrow 11）——首页大标题形态按 v0.5.2 轮 B 口径豁免保留
+                    （无返回钮的 tab 根屏）；零值态口号副行已删，streak 行仅
+                    streak>0 时上屏（实时状态） */}
                 <View className="px-6 pb-1 pt-2">
                     <Text className="text-[24px] font-semibold text-ink-text dark:text-inkd-text">
                         Archive
                     </Text>
-                    <Text
-                        className="mt-1 text-[16px] text-ink-secondary dark:text-inkd-secondary"
-                        style={{ fontVariant: ['tabular-nums'] }}
-                    >
-                        {metrics.streak > 0 ? `连续记录 ${metrics.streak} 天` : '今天的记录都在这里'}
-                    </Text>
+                    {metrics.streak > 0 ? (
+                        <Text
+                            className="mt-1 text-[16px] text-ink-secondary dark:text-inkd-secondary"
+                            style={{ fontVariant: ['tabular-nums'] }}
+                        >
+                            {`连续记录 ${metrics.streak} 天`}
+                        </Text>
+                    ) : null}
                     {/* store.error 通道：v0.4.7 令 3 对齐 settings 错误横幅语言
                         （tinted negative-bg 圆角卡，错误是设计面不是贴留白的小字） */}
                     {error ? (
@@ -737,7 +742,7 @@ function DeckEmptyInvite() {
                 这一页已收笔
             </Text>
             <Text className="mt-2 text-center text-[13px] leading-5 text-ink-muted dark:text-inkd-muted">
-                明天会翻开新的一页。想再记点什么，点右下角 +。
+                想再记点什么，点右下角 +。
             </Text>
         </View>
     );

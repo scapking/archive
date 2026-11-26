@@ -14,6 +14,10 @@ import type { TripItemStatus } from './db';
  * 排序（用户裁决 #5）：进行中（最早到点在前）→ 未来 pending 按时间**倒序**
  * （最新时间恒在最前）→ 已完成/收尾按时间**倒序**（旧的卡片在最后面，最旧
  * 的垫底）→ terminal 收尾段（同样倒序）。
+ * 注意（v0.5.2 令 7）：当日行程表卡堆不再消费本模块的 orderTripItems——
+ * 堆叠优先级改为「未到点项占前排」，唯一实现在 trip-day-deck-logic 的
+ * orderTripItemsByDayDeckPriority（阶段推导仍共用本模块 tripItemPhaseMap
+ * 单源；本函数保留为通用时刻排序原语，调用方与测试口径不变）。
  *
  * 本文件是 node 测试直接 import 的纯函数模块（不引 store/db 运行时）——
  * 时刻换算的唯一实现在这里，store.ts 重导出保持既有消费面不变。

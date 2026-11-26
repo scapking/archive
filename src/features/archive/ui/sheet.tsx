@@ -53,6 +53,14 @@ import { PAPER_FLOAT_SHADOW } from './paper-shadow';
  *
  * 卡体拦截：卡体（View）显式 onStartShouldSetResponder 认领触摸（旧 0.4.9 弹层
  * 卡体无认领，点卡空白处会冒泡到 scrim 误关——本原语一并补上）。
+ *
+ * v0.5.2 滚轮手势重建：新增 `scroll` 开关（默认 true，既有宿主零改动）。
+ * 含自绘滚轮的快速态传 scroll={false} 关掉外层 ScrollView——同轴嵌套滚动是
+ * 滚轮手势被吞的主根因之一（外层 ScrollView 与滚轮争抢纵向手势，三端表现
+ * 各不相同）；无输入框、内容不超限时外层滚动本无必要。滚轮手势走 RNGH 独立
+ * 域（宿主自包 GestureHandlerRootView），不经外层 ScrollView；卡体 responder
+ * 认领保留（防误关），其在 RNW 上对滚轮 preventDefault 的干扰由「关外层滚动
+ * + 滚轮段 activeOffsetY 阈值认领」双重消解（真机/浏览器验收清单在册）。
  */
 
 /** 上下最小气口（卡缘与键盘顶/屏缘的呼吸距离，也是 scrollIntoView 的追加余量）。 */
@@ -120,6 +128,11 @@ export interface CenteredSheetProps {
     maxWidth?: number;
     /** 卡底钉死区（主按钮等「恒在键盘上方」的内容），渲染在 ScrollView 之外。 */
     footer?: ReactNode;
+    /**
+     * 卡体内容是否走内滚 ScrollView（默认 true）。含自绘滚轮的页面传 false
+     * 根除同轴嵌套滚动对滚轮手势的吞抢（v0.5.2；见文件头注）。
+     */
+    scroll?: boolean;
     children: ReactNode;
 }
 
@@ -134,6 +147,7 @@ export function CenteredSheet({
     sheetAccessibilityLabel,
     maxWidth = 384,
     footer = null,
+    scroll = true,
     children,
 }: CenteredSheetProps) {
     const insets = useSafeAreaInsets();
@@ -232,14 +246,29 @@ export function CenteredSheet({
                                 （原 20 与 settings/事件卡内 p-4 不齐）；footer 同
                                 宽，卡头内容与钉底动作行左右缘对齐；底部呼吸留给
                                 宿主内容自带（date-picker 尾块自垫先例，原语不越权） */}
-                            <ScrollView
-                                ref={scrollRef}
-                                style={{ flexGrow: 1, flexShrink: 1 }}
-                                contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 16 }}
-                                keyboardShouldPersistTaps="handled"
-                            >
-                                {children}
-                            </ScrollView>
+                            {scroll ? (
+                                <ScrollView
+                                    ref={scrollRef}
+                                    style={{ flexGrow: 1, flexShrink: 1 }}
+                                    contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 16 }}
+                                    keyboardShouldPersistTaps="handled"
+                                >
+                                    {children}
+                                </ScrollView>
+                            ) : (
+                                // 滚轮快速态：无输入框、无内滚——外层 ScrollView 与
+                                // 滚轮同轴嵌套正是手势吞失根因，此处直接静态铺排
+                                <View
+                                    style={{
+                                        flexGrow: 1,
+                                        flexShrink: 1,
+                                        paddingHorizontal: 16,
+                                        paddingTop: 16,
+                                    }}
+                                >
+                                    {children}
+                                </View>
+                            )}
                             {footer ? (
                                 <View className="px-4 pb-4 pt-3">{footer}</View>
                             ) : null}

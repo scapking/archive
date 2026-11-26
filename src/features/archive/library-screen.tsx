@@ -7,7 +7,7 @@ import type { JournalRow } from './db';
 import { useArchiveRevision, useArchiveStore, type TripCard } from './store';
 import { isPlanOpen } from './plan-logic';
 import { tripDisplayTitle } from './trip-logic';
-import { CardDeck, CloseButton, LoadingView, PAPER_CARD_SHADOW, safeBack, type DeckItem } from './ui';
+import { CardDeck, LoadingView, PAPER_CARD_SHADOW, ScreenHeader, type DeckItem } from './ui';
 // 深路径注记（v0.4.6 指令 4/7）：堆叠卡面与首页**同一实现源**——行程卡/计划卡
 // 直接复用 archive-screen 导出的 TripCard / NoteDeckCard（屏间深取，同
 // trip-detail ← DeadEndView 先例；两屏均在本组改动权限内）。首页卡面口径
@@ -45,7 +45,9 @@ const DECK_MAX = 680;
 /**
  * 空堆邀请态（deck emptyState 槽）：空区是行动指引，不是空白。
  * v0.4.7 令 3：收进 settings 同源卡面——rounded-card surface + PAPER_CARD
- * 静止卡影，eyebrow 升 11 medium secondary；空态也是一张浮在页底上的纸卡。
+ * 静止卡影；空态也是一张浮在页底上的纸卡。
+ * v0.5.2 轮 B（令 2/5 收拢）：类型 eyebrow 行删除（与屏题同义重复，堆叠
+ * eyebrow 退场）；引导句只留行动出路，前半两句口号删——不读也能完成任务。
  */
 function EmptyPile({ kind }: { kind: LibraryKind }) {
     return (
@@ -53,19 +55,14 @@ function EmptyPile({ kind }: { kind: LibraryKind }) {
             className="items-center rounded-card bg-ink-surface px-8 py-10 dark:bg-inkd-surface"
             style={PAPER_CARD_SHADOW}
         >
-            <Text className="text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                {kind === 'note' ? '计划' : '行程'}
-            </Text>
-            <Text className="mt-2 text-[24px] font-semibold text-ink-text dark:text-inkd-text">
+            <Text className="text-[24px] font-semibold text-ink-text dark:text-inkd-text">
                 {kind === 'note' ? '没有进行中的计划' : '没有在途的行程'}
             </Text>
             {/* v0.4.9 令5：引导行 muted→secondary——13px 连续阅读行在
                 surface 上 muted 对比不足（settings 基准：muted 只做单点
                 meta，指引句是次文本声部） */}
             <Text className="mt-2 text-center text-[13px] leading-5 text-ink-secondary dark:text-inkd-secondary">
-                {kind === 'note'
-                    ? '计划是一件要做的事——回首页点 +，起个名字就成立。'
-                    : '旅途从一段日期开始——回首页点 +，建好就进堆。'}
+                {kind === 'note' ? '回首页点 +，起个名字就成立。' : '回首页点 +，建好就进堆。'}
             </Text>
         </View>
     );
@@ -165,26 +162,18 @@ export function LibraryScreen({ kind }: { kind: LibraryKind }) {
     return (
         <View className="flex-1 bg-ink-base dark:bg-inkd-base">
             <View style={{ paddingTop: insets.top }} className="flex-1">
-                {/* 屏头内联（trip-detail 同规格，v0.4.6 字阶纪律屏题档 24），无副标 */}
-                <View className="px-6 pb-3 pt-2">
-                    <View className="h-11 flex-row items-center">
-                        <CloseButton icon="back" onPress={safeBack} />
-                        <Text
-                            numberOfLines={1}
-                            className="ml-2.5 min-w-0 flex-1 text-[24px] font-semibold text-ink-text dark:text-inkd-text"
-                        >
-                            {kind === 'note' ? '计划' : '行程'}
+                {/* 屏头（v0.5.2 轮 B：内联手写法退役，统一 ScreenHeader——与
+                    search-results / trip-form 同规格，无副标） */}
+                <ScreenHeader title={kind === 'note' ? '计划' : '行程'} />
+                {error ? (
+                    // 错误横幅卡（v0.4.7 令 3，settings 同源 tinted 圆角卡；
+                    // search-results 同位——屏头带外独立横幅）
+                    <View className="mx-6 mt-2 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">
+                        <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
+                            {error}
                         </Text>
                     </View>
-                    {error ? (
-                        // 错误横幅卡（v0.4.7 令 3，settings 同源 tinted 圆角卡）
-                        <View className="mt-2 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">
-                            <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
-                                {error}
-                            </Text>
-                        </View>
-                    ) : null}
-                </View>
+                ) : null}
 
                 {/* deck 主体（重叠露条多卡泛化）：v0.4.7 令 1 延伸——高度按屏内
                     剩余实测（520 下限 / 680 封顶），死白收进卡面节奏；水平居中

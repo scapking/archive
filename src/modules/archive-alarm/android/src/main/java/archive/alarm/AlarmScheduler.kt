@@ -153,6 +153,24 @@ internal object AlarmScheduler {
         return out
     }
 
+    /** 常驻监控摘要（v0.5.2 令3）：仍「未到点」（at > now）的待触发条目数与
+     *  最近时刻；无 = null（常驻通知即停）。与 rescheduleAll 的过期口径同源：
+     *  已到点条目虽滞留注册表等待确认出账，但不再属于「监控中」。 */
+    fun pendingSummary(context: Context, now: Long): Pair<Int, Long>? {
+        val alarms = readAll(context)
+        var count = 0
+        var nearest = Long.MAX_VALUE
+        val keys = alarms.keys()
+        while (keys.hasNext()) {
+            val entry = alarms.optJSONObject(keys.next()) ?: continue
+            val at = entry.optLong("at", 0L)
+            if (at <= now) continue
+            count += 1
+            if (at < nearest) nearest = at
+        }
+        return if (count == 0) null else Pair(count, nearest)
+    }
+
     /** 开机/时区变化后重排：丢弃已过期项，未触发的逐个重新注册。 */
     fun rescheduleAll(context: Context) {
         val alarms = readAll(context)

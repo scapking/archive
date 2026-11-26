@@ -33,6 +33,7 @@ type SystemAlarmNative = {
     listScheduled(): Promise<FiredAlarmEntry[]>;
     drainFired(): Promise<FiredAlarmEntry[]>;
     confirm(id: string): Promise<void>;
+    syncMonitor(title: string, body: string): Promise<void>;
 };
 
 /**
@@ -151,6 +152,24 @@ export const alarm = {
             await native.confirm(id);
         } catch (error) {
             console.warn('[alarm] 确认停止失败（id: %s）:', id, error);
+        }
+    },
+
+    /**
+     * 常驻监控通知刷新（v0.5.2 用户令3「创建行程的时候就创建常驻通知」）：
+     * Android 只要注册表存在未到点 pending 闹钟即以前台服务挂「N 个行程提醒
+     * 监控中 · 最近 HH:mm」静默状态行（点击回 app），维持进程不被冻结；
+     * start/stop 判据在原生注册表（幂等，可任意频次 poke）。
+     * **平台差异如实**：iOS 无第三方前台服务 API——「常驻」退化为已排期本地
+     * 通知在系统通知中心可见（本就是 iOS 行为）；web 无系统面。两端门面
+     * no-op。best-effort 契约同 schedule/cancel：失败仅 warn，不阻塞数据面。
+     */
+    async syncMonitor(title: string, body: string): Promise<void> {
+        if (native == null) return;
+        try {
+            await native.syncMonitor(title, body);
+        } catch (error) {
+            console.warn('[alarm] 常驻监控刷新失败（不阻塞数据面）:', error);
         }
     },
 };

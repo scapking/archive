@@ -25,13 +25,18 @@ import {
 } from './trip-item-logic';
 // 系统闹钟门面（v0.4.4 用户指令 #9）：Android 真闹钟 / iOS·web unsupported
 // 自动 no-op——best-effort 增强，失败仅 warn 不阻塞数据面
-import { alarm } from '@/core/alarm';
+import { alarm, type FiredAlarmEntry } from '@/core/alarm';
 // 桌面 widget 门面（v0.4.4 用户指令 #7）：快照推送 best-effort，iOS/web no-op
 import { widget } from '@/core/widget';
 // v0.4.7 D 接线：widget 快照编排收口进纯函数（status/dueAt/跨日时间格式），
 // 闹钟深链路径由 alarm-ladder 单源提供（三端一律路径参数，勿 query）。
 import { buildWidgetSnapshot } from './widget-snapshot';
-import { alarmCardContent, alarmRoutePath } from './alarm-ladder';
+import {
+    alarmCardContent,
+    alarmMonitorNotificationText,
+    alarmRoutePath,
+    deriveAlarmMonitorSummary,
+} from './alarm-ladder';
 
 export { tripItemDueAt };
 import * as db from './db';
@@ -336,6 +341,13 @@ interface ArchiveStore {
      * 「结束收尾」的防御路径）。true = 成功。
      */
     closeTripItemWrap(id: string): Promise<boolean>;
+    /**
+     * 行程项内容编辑（v0.5.2 令7：卡面笔记位/「进入编辑」）：title /
+     * description 给了才动（空串 = 清空，合法——空标题只报时刻是既有口径）。
+     * 已过点项同样可编辑（「编辑没有关闭时间」）。内容变了就把闹钟/通知文案
+     * 重挂一次（未到点且 pending 才重排，已过点不动调度）。true = 成功。
+     */
+    updateTripItemContent(id: string, patch: { title?: string; description?: string }): Promise<boolean>;
     /**
      * 删除行程项：软删 + 摘 item_id 媒体关联（媒体行保留，记录留档）+ 取消通知。
      * true = 成功。
@@ -772,6 +784,33 @@ async function scheduleTripItemNotification(
     }
 }
 
+/**
+ * 常驻监控通知刷新（v0.5.2 用户令3「正确应该是创建行程的时候就创建常驻通知，
+ * 如果不是这样后台就会冻结没有办法使用」）：
+ * - Android：以原生注册表为准（alarm.listScheduled 回读，非 store 状态镜像），
+ *   pending =「未到点且有闹钟」非空 → 前台服务挂「N 个行程提醒监控中 ·
+ *   最近 HH:mm」静默常驻通知（点击回 app）维持进程存活；空 → 停。触发时机 =
+ *   hydration（loadAll 尾部）+ 每次创建/编辑/删除/收尾行程项与删行程（本文件
+ *   各 alarm.schedule/cancel 之后链入）——幂等，原生侧同样自判 start/stop，
+ *   JS 文案只是呈现镜像（boot/sticky 重入时无 JS 在场由 Kotlin 自算同构文案）。
+ * - **平台差异如实**：iOS 无第三方前台服务 API，「常驻」退化为已排期本地通知
+ *   在通知中心可见（本就是 iOS 行为，闹钟链不因此减弱）；web 无系统面。
+ *   两端经门面 no-op（alarm.isSupported()=false 早退）。
+ * - best-effort：链上每一环（listScheduled/syncMonitor）门面内全兜底不抛，
+ *   本函数失败不阻塞任何数据面。
+ */
+export async function refreshAlarmMonitor(scheduled?: FiredAlarmEntry[]): Promise<void> {
+    if (!alarm.isSupported()) return;
+    const summary = deriveAlarmMonitorSummary(
+        scheduled ?? (await alarm.listScheduled()),
+        Date.now(),
+    );
+    const text = summary
+        ? alarmMonitorNotificationText(summary)
+        : { title: '', body: '' };
+    await alarm.syncMonitor(text.title, text.body);
+}
+
 // ─── 桌面 widget 快照（v0.4.4 用户指令 #7）───────────────────────────────
 
 /**
@@ -979,6 +1018,9 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         }
         // 桌面 widget 快照（best-effort）：行程集合变化 = 「最新行程」选择变化
         queueWidgetRefresh();
+        // v0.5.2 令3：hydration 完成即对齐常驻监控通知（app 启动/回前台重建；
+        // 被杀期间过点的陈旧计数在此收敛。幂等——原生以注册表自判 start/stop）
+        void refreshAlarmMonitor();
     },
 
     deck(): DeckData {
@@ -1071,6 +1113,11 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             await db.softDeleteTripCascade(id, Date.now());
             // ②' 行程项通知随级联取消（best-effort；identifier 已在 ① 收集）
             await Promise.all(tripItems.map((item) => cancelTripItemNotification(item.id)));
+            // v0.5.2 D 审计纠错：级联软删同样要摘 Android 系统闹钟——此前只取消
+            // expo 通知链，注册表条目存活 = 删掉的行程照样到点炸铃（僵尸闹钟）。
+            // alarm.cancel 幂等（未注册 = 无操作）；同拍清 fired 账与呈现面，
+            // 常驻监控通知由末尾 loadAll → refreshAlarmMonitor 收敛。
+            await Promise.all(tripItems.map((item) => alarm.cancel(item.id)));
             // ③ 文件清理不阻塞行删除：失败聚合上浮（行已删，孤儿文件只浪费存储不再被引用）
             const failures = await removeFilesBestEffort(fileKeys);
             set({
@@ -1333,16 +1380,69 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             // v0.5.1 令2：Android 注册表快照与 iOS 通知同走 alarmCardContent
             // 单源（空标题只报时刻，双端卡片文案一致）
             const alarmCard = alarmCardContent(row);
+            // v0.5.2 令3：链在 schedule 落地之后再刷常驻监控——同拍 poke 可能
+            // 读到未写入新条目的注册表，计数少一且无后续触发点纠正
             void alarm.schedule({
                 id: row.id,
                 at: tripItemDueAt(row.local_date, row.time),
                 title: alarmCard.title,
                 body: alarmCard.body,
-            });
+            }).then(() => refreshAlarmMonitor());
         }
         set({ error: null, revision: get().revision + 1 });
         queueWidgetRefresh();
         return row;
+    },
+
+    async updateTripItemContent(id, patch) {
+        try {
+            const item = await db.getTripItem(id);
+            if (!item) {
+                set({ error: '行程项不存在或已删除' });
+                return false;
+            }
+            const trip = await db.getTrip(item.trip_id);
+            if (!trip) {
+                set({ error: '行程不存在或已删除' });
+                return false;
+            }
+            if (isTripLocked(trip)) {
+                set({ error: '行程已结束，内容锁定，不能编辑' });
+                return false;
+            }
+            const nextTitle = patch.title !== undefined ? patch.title.trim() : undefined;
+            const nextDescription = patch.description !== undefined ? patch.description.trim() : undefined;
+            if (nextTitle === undefined && nextDescription === undefined) return false;
+            const wrote = await db.updateTripItemContent(
+                id,
+                { title: nextTitle, description: nextDescription },
+                Date.now(),
+            );
+            if (!wrote) {
+                set({ error: '行程项编辑失败' });
+                return false;
+            }
+            const updated = await db.getTripItem(id);
+            if (updated) {
+                // 文案单源重挂（v0.5.1 alarmCardContent 口径）：只动「未到点且
+                // pending」的调度——已过点重排会立刻炸响；收尾/终态项调度已清账。
+                const due = tripItemDueAt(updated.local_date, updated.time);
+                if (due > Date.now() && updated.status === 'pending') {
+                    void scheduleTripItemNotification(updated);
+                    const card = alarmCardContent(updated);
+                    // 文案变了监控文案也可能变（body 快照同 alarmCardContent）：
+                    // 链在 schedule 落地后刷新，pending 集合本身变少时同样收敛
+                    void alarm.schedule({ id: updated.id, at: due, title: card.title, body: card.body })
+                        .then(() => refreshAlarmMonitor());
+                }
+            }
+        } catch (error) {
+            set({ error: `行程项编辑失败：${toMessage(error)}` });
+            return false;
+        }
+        set({ error: null, revision: get().revision + 1 });
+        queueWidgetRefresh();
+        return true;
     },
 
     async startTripItemWrap(id) {
@@ -1374,7 +1474,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             }
             await db.startTripItemWrap(id, Date.now());
             // v0.4.7 D 接线 4：进入收尾 = 该项闹钟/通知不应再响（幂等 best-effort）
-            void alarm.cancel(id);
+            void alarm.cancel(id).then(() => refreshAlarmMonitor());
             void cancelTripItemNotification(id);
         } catch (error) {
             set({ error: `收尾操作失败：${toMessage(error)}` });
@@ -1409,7 +1509,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
             if ((item.wrap_closed_at ?? null) != null) return true;
             await db.closeTripItemWrap(id, Date.now());
             // v0.4.7 D 接线 4：收尾关闭 = 同拍清账（与删除链同款）
-            void alarm.cancel(id);
+            void alarm.cancel(id).then(() => refreshAlarmMonitor());
             void cancelTripItemNotification(id);
         } catch (error) {
             set({ error: `结束收尾失败：${toMessage(error)}` });
@@ -1445,8 +1545,9 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         }
         // 通知取消（best-effort：行已软删，提醒不应再响；失败仅告警不回滚）
         void cancelTripItemNotification(id);
-        // 系统闹钟同拍取消（幂等 best-effort；未注册过 = 无操作）
-        void alarm.cancel(id);
+        // 系统闹钟同拍取消（幂等 best-effort；未注册过 = 无操作）；
+        // v0.5.2 令3：出账后链刷常驻监控（删到最后一个 pending 即撤通知）
+        void alarm.cancel(id).then(() => refreshAlarmMonitor());
         set({ error: null, revision: get().revision + 1 });
         queueWidgetRefresh();
         return true;

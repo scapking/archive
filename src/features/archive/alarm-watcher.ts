@@ -13,6 +13,7 @@ import {
     pickDueEntries,
     shouldPresentAlarm,
 } from './alarm-ladder';
+import { refreshAlarmMonitor } from './store';
 
 /**
  * 闹钟提醒 watcher（v0.4.7 令 #2/#3 JS 侧薄层；v0.5.1 令 2/3 扩为统一阶梯
@@ -24,7 +25,10 @@ import {
  *   最近任务/桌面图标进 app 也补拉起）；每 20s 软计时扫原生注册表，非精确档
  *   （SCHEDULE_EXACT_ALARM 被拒）到点即拉 /alarm/<id>；系统拉回失败（息屏外
  *   的 heads-up 场景/OEM 吞 intent）时接收器的常驻通知卡（内容=时间+标题+
- *   描述）恒在场，其 tap 走 URL 深链由 expo-router 原生承接；
+ *   描述）恒在场，其 tap 走 URL 深链由 expo-router 原生承接；挂载/回前台/tick
+ *   同拍幂等刷「N 个行程提醒监控中」常驻监控通知（v0.5.2 令3，判据在原生
+ *   注册表，store.refreshAlarmMonitor 与 store 钩子共用；iOS 无 FGS 等价物，
+ *   「常驻」= 已排期通知在通知中心可见——门面 no-op 路径，平台上限如实）；
  * - iOS：无系统闹钟、后台无法拉起全屏（平台上限如实）——「拉回不可得」的
  *   默认兜底 = timeSensitive 本地通知（内容=时间+标题+描述，alarmCardContent
  *   同构文案）；本 hook 承接其 **tap 进 app 呈现**（v0.5.1 令 2 补的洞：
@@ -84,8 +88,14 @@ export function useAlarmReminderWatcher(): void {
             if (Platform.OS === 'android') {
                 // 非精确档软计时：原生注册表已到点条目（精确档由接收器到场，
                 // drainFired 同拍收账，两条路径共享账天然去重）
-                const due = pickDueEntries(await alarm.listScheduled(), Date.now());
+                const scheduled = await alarm.listScheduled();
+                const due = pickDueEntries(scheduled, Date.now());
                 for (const entry of due) pushAlarm(entry.id, entry.at);
+                // v0.5.2 令3：同拍顺带刷常驻监控通知（app 存活期间计数/最近
+                // 时刻保鲜；「全部过点即停」在进程活着时靠这条通道收口——
+                // 进程死了还有 AlarmManager 到点 + 接收器 sync / boot / sticky
+                // 三层原生兜底，JS 不在场监控面也不裸奔）
+                void refreshAlarmMonitor(scheduled);
             } else {
                 // iOS：扫已调度本地通知（date trigger 到点 = 前台拉起全屏屏）
                 try {
@@ -151,6 +161,9 @@ export function useAlarmReminderWatcher(): void {
         });
 
         void drain();
+        // v0.5.2 令3：挂载即刷一次常驻监控（hydration/冷启对齐——store.loadAll
+        // 尾部同款 poke，双通道幂等；iOS/web 门面内 no-op）
+        void refreshAlarmMonitor();
         // 冷启由通知 tap 拉起（进程未活）：response 不进订阅，挂载探测一次
         void (async () => {
             try {
@@ -171,7 +184,11 @@ export function useAlarmReminderWatcher(): void {
 
         const timer = setInterval(() => void tick(), TICK_MS);
         const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-            if (state === 'active') void drain();
+            // 回前台：补收 fired 账 + 收敛冻结期间过点造成的陈旧监控计数
+            if (state === 'active') {
+                void drain();
+                void refreshAlarmMonitor();
+            }
         });
         return () => {
             clearInterval(timer);

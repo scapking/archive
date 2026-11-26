@@ -81,6 +81,7 @@ import {
     PAPER_CARD_SHADOW,
     PAPER_FLOAT_SHADOW,
     safeBack,
+    ScreenHeader,
     usePalette,
     type InsertAction,
 } from './ui';
@@ -1043,29 +1044,24 @@ export function EventDetailScreen() {
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
             <View style={{ paddingTop: insets.top }} className="flex-1">
-                {/* 状态头（展示 + 编辑入口，编辑统一收口设置卡）。节奏口径对齐
-                    journal-edit（报头群 px-6 pb-2 pt-2；报头→正文净间距 =
-                    pb-2(8) + 画布 paddingTop(16) = 24dp =
-                    EDITOR_RHYTHM.mastheadToFirstBlock），行间 4dp 网格（mt-2 = 8dp）。
+                {/* 状态头（v0.5.2 轮 B：标题行收口 ScreenHeader——24 semibold 屏题
+                    / px-6 pb-3 pt-2 / h-11 带全站一档；返回经 onBack=handleLeave
+                    注入（离开先冲刷保存，非裸 safeBack），设置钮走 right 槽）。
+                    状态/meta 行留在带下方自持容器（报头→正文净间距口径不变：
+                    本块 pb-2(8) + 画布 paddingTop(16) = 24dp）。
                     命中区核算：
-                    - 返回钮：CloseButton 44 视觉盒（无 slop）；
-                    - 设置钮：36 视觉盒 + hitSlop 10 → 56×56 ≥44（journal 编辑钮
-                      同款几何，右侧贴屏内边距 px-6，外扩落画布留白无相邻命中）；
+                    - 返回钮：ScreenHeader 自带 CloseButton 44 视觉盒（无 slop）；
+                    - 设置钮：44 圆形底盒 + hitSlop 10（journal 编辑钮同款几何，
+                      右侧贴屏内边距，外扩落画布留白无相邻命中）；
                     - 状态片：24 视觉盒 + hitSlop 10 → 44 等效；
                     - 处理人/对象行：hitSlop 6 = 12px 命中外扩，段间距 gap-3(12)
                       ≥ 6+6 相切不重叠。 */}
-                <View className="px-6 pb-2 pt-2">
-                    <View className="h-11 flex-row items-center">
-                        <CloseButton icon="back" onPress={handleLeave} />
-                        <Text
-                            numberOfLines={1}
-                            className="ml-2.5 min-w-0 flex-1 text-[24px] font-semibold text-ink-text dark:text-inkd-text"
-                        >
-                            {event.title}
-                        </Text>
-                        {/* 设置入口（全部元信息编辑的统一门）：v0.4.6 起与
-                            CloseButton 同一圆钮解剖（44 触感底盒 + 裸图标，
-                            描边方盒退役——报头两个圆钮左右呼应，一个回一个调） */}
+                <ScreenHeader
+                    title={event.title}
+                    onBack={handleLeave}
+                    right={
+                        // 设置入口（全部元信息编辑的统一门）：与返回钮同一圆钮
+                        // 解剖（44 触感底盒 + 裸图标）——报头两圆钮左右呼应
                         <BouncyPressable
                             onPress={() => setSettingsOpen(true)}
                             scaleTo={0.9}
@@ -1079,11 +1075,13 @@ export function EventDetailScreen() {
                                 <LucideSettings size={18} strokeWidth={1.9} color={palette.secondary} />
                             </View>
                         </BouncyPressable>
-                    </View>
+                    }
+                />
+                <View className="px-6 pb-2">
                     {/* 状态 + 创建时间行：状态片点按打开设置卡（状态编辑统一收口
                         设置卡——快切直改已收编，避免双编辑面漂移）；时间线只留
                         「创建」一档（方向令 §2 冗余串退役），tabular-nums */}
-                    <View className="mt-2 flex-row items-center gap-2">
+                    <View className="flex-row items-center gap-2">
                         <BouncyPressable
                             onPress={() => setSettingsOpen(true)}
                             scaleTo={0.92}

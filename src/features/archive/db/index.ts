@@ -1085,6 +1085,35 @@ export async function insertTripItem(row: Omit<TripItemRow, 'deleted_at'>): Prom
 }
 
 /**
+ * 行程项内容编辑（v0.5.2 store.updateTripItemContent 编排）：title /
+ * description 给了才动列（undefined = 不出现于 SET，保持原值）。合法性校验
+ * （锁定/存在性）在 store 层，这里只落列值 + updated_at 并回报是否命中行。
+ */
+export async function updateTripItemContent(
+    id: string,
+    patch: { title?: string; description?: string },
+    at: number,
+): Promise<boolean> {
+    const db = await getDb();
+    const sets: string[] = [];
+    const args: (string | number)[] = [];
+    if (patch.title !== undefined) {
+        sets.push('title = ?');
+        args.push(patch.title);
+    }
+    if (patch.description !== undefined) {
+        sets.push('description = ?');
+        args.push(patch.description);
+    }
+    if (sets.length === 0) return false;
+    const result = await db.run(
+        `UPDATE trip_items SET ${sets.join(', ')}, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
+        [...args, at, id],
+    );
+    return result.changes > 0;
+}
+
+/**
  * 行程项「进入收尾」（store.startTripItemWrap 编排）：completed_at = now
  * （幂等：已非空则 COALESCE 保持原值）。前置校验（阶段/锁定）在 store 层，
  * 这里只落列值 + updated_at。

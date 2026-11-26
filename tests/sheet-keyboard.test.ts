@@ -108,6 +108,17 @@ test('卡体拦截冒泡：点卡空白不关层（0.4.9 误关缺陷收口）',
     assert.ok(sheetSource.includes('onStartShouldSetResponder'), '卡体缺 responder 认领（点卡空白会冒泡误关）');
 });
 
+test('v0.5.2 scroll 开关：可选 prop 默认 true，含滚轮快速态关外层内滚（根除同轴嵌套）', () => {
+    // 原语契约：scroll?: boolean 默认 true——date-picker 等既有宿主不传值，
+    // 内滚通道逐字保持（上方 maxHeight 让位用例的 <ScrollView> 断言即此档）
+    assert.match(sheetSource, /scroll\?: boolean/, 'CenteredSheet 缺 scroll 可选 prop');
+    assert.match(sheetSource, /scroll = true/, 'scroll 缺 true 默认（既有宿主兼容底线）');
+    assert.match(sheetSource, /\{scroll \?/, '卡体内容未按 scroll 闸分叉内滚/静排');
+    // trip-day 快速态（滚轮页）关外层滚动；第二步保持可滚（键盘避让输入场）
+    assert.match(tripDaySource, /scroll=\{step !== 'time'\}/, 'trip-day 未按步态关外层滚动（同轴嵌套回潮风险）');
+    assert.ok(!datePickerSource.includes('scroll='), 'date-picker 显式传 scroll（默认档即内滚，多余分叉）');
+});
+
 test('app.json 键盘模式与实现口径一致（softwareKeyboardLayoutMode 在场则必为 pan）', () => {
     // 事件驱动几何按「系统不改布局、键盘悬浮」设计（pan 语义）。resize 模式在
     // SDK 54+ edge-to-edge 下失效即本案根因；键缺失 = 控制器尚未落配置

@@ -282,18 +282,15 @@ export function SearchScreen() {
                         <Calendar marks={marks} selected={selectedDate} onSelectDate={handleSelectDate} />
                     </View>
 
-                    {/* 选中日状态行：跳转语义已表达，这里只交代反选手势 */}
+                    {/* 选中日状态行：跳转语义已表达，这里只交代反选手势（实时
+                        状态信息，保留） */}
                     {selectedDate ? (
                         <Text className="mt-3 text-center text-[12px] text-ink-secondary dark:text-inkd-secondary">
                             已选 {selectedDate}（再点一次取消）
                         </Text>
                     ) : null}
-
-                    {/* 引导收一行 meta（方向令 §2：两段式宣传语退役——日历
-                        本身就是可点的指引，剩下的空白是呼吸不是残留） */}
-                    <Text className="mt-4 text-center text-[12px] text-ink-muted dark:text-inkd-muted">
-                        键盘「搜索」查当前条件，点日历某天看那天
-                    </Text>
+                    {/* 尾部操作指引小字已删（v0.5.2 令 2：输入面自明——搜索键/
+                        可点日历是系统级与视觉级 affordance，删后任务照常完成） */}
                 </ScrollView>
             </View>
         </View>

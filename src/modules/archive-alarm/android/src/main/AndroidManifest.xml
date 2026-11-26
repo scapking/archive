@@ -42,6 +42,19 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="trip-alarm-keep-alive" />
         </service>
+        <!-- v0.5.2 令3 常驻监控前台服务（用户：「创建行程的时候就创建常驻通知，
+             否则后台会冻结没办法使用」）：pending 闹钟在场期间「N 个行程提醒
+             监控中」静默状态行常驻（独立渠道、无声音无 FSI——与到点保活服务
+             分服务分通知，一个 FGS 只挂一条通知，混用即 v0.5.1 FSI 剥离教训
+             重演）；specialUse+subtype 申报类型选型同 AlarmKeepAliveService 注 -->
+        <service
+            android:name="archive.alarm.AlarmMonitorService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="trip-alarm-monitor" />
+        </service>
         <!-- 开机重排：系统广播（必须导出 + intent-filter） -->
         <receiver
             android:name="archive.alarm.BootRescheduleReceiver"

@@ -623,6 +623,13 @@ export function JournalEditScreen({
      * 挡在子树之外（比旧版「屏渲即全画布 reconcile」更省）。deps 与闭包
      * 读取严格对齐（onBlurText 读 journal/blocks/store），无陈旧闭包面。
      */
+    // BlockEditor 整数组写回的唯一入口（v0.5.2 恒定引用：applyBlocks 稳定，
+    // 编辑器行级 memo 契约的下界噪声再少一格）
+    const handleEditorChange = useCallback(
+        (next: JournalBlock[]) => applyBlocks(() => next),
+        [applyBlocks],
+    );
+
     const canvasContent = useMemo(
         () => (
             <View className="mx-auto w-full max-w-[620px]">
@@ -635,7 +642,7 @@ export function JournalEditScreen({
                     canvas={canvas}
                     selection={selection}
                     progressByPendingId={pendingProgress}
-                    onChange={(next) => applyBlocks(() => next)}
+                    onChange={handleEditorChange}
                     onFocusText={() => setFocusTextId(null)}
                     onBlurText={() => {
                         if (journal && isEditable(journal.status)) {
@@ -656,8 +663,8 @@ export function JournalEditScreen({
                 />
             </View>
         ),
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- 闭包读取项已尽数列入（applyBlocks/稳定 setter/editorRef 稳定引用）
-        [blocks, mediaById, editorEditable, focusTextId, canvas, selection, journal, store, pendingProgress],
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 闭包读取项已尽数列入（handleEditorChange/applyBlocks/稳定 setter/editorRef 稳定引用）
+        [blocks, mediaById, editorEditable, focusTextId, canvas, selection, journal, store, pendingProgress, handleEditorChange],
     );
 
     /**
@@ -1210,7 +1217,9 @@ export function JournalEditScreen({
                     行程列表的顶部导航栏」）：名称位**恒渲染**——空标题走兜底名
                     （对齐 trip-detail 屏头的 tripDisplayTitle 模式，见
                     PLAN_TITLE_FALLBACK 注），24px 屏题档与行程详情屏头等档。 */}
-                <View className={`px-6 pt-2 ${isPlan ? 'pb-3' : 'pb-2'}`}>
+                {/* v0.5.2 收口：pb 统一 pb-3（B 档 ScreenHeader 同带）、日记档名称位
+                    20→24 屏题档（令2 字阶统一；30px 日期行是内容首屏题，非导航字档） */}
+                <View className="px-6 pt-2 pb-3">
                     <View className="h-11 flex-row items-center">
                         <CloseButton icon="back" onPress={handleLeave} />
                         {trip ? (
@@ -1228,7 +1237,7 @@ export function JournalEditScreen({
                         ) : title ? (
                             <Text
                                 numberOfLines={1}
-                                className="ml-2.5 min-w-0 flex-1 text-[20px] font-semibold text-ink-text dark:text-inkd-text"
+                                className="ml-2.5 min-w-0 flex-1 text-[24px] font-semibold text-ink-text dark:text-inkd-text"
                             >
                                 {title}
                             </Text>

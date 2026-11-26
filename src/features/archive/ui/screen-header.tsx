@@ -4,32 +4,34 @@ import { CloseButton } from './close-button';
 import { safeBack } from './safe-back';
 
 /**
- * 屏头（v0.4.6 方向文档 §2 字阶纪律的全屏收口点）：
+ * 屏头（v0.4.6 方向文档 §2 字阶纪律的全屏收口点；v0.5.2 轮 B 定稿）：
  *
- * **字阶（本轮定档，全组一致）**：屏题 24 semibold / eyebrow·meta 11-12 /
- * 正文 16 / meta 12——屏题一档在此统一，各屏内联屏头（journal-edit /
- * trip-detail 等）随 B/A 同规格收敛。旧 20px 屏题在 375 屏上「设置/搜索/
- * 事件」与首页大标题「Archive」断档，24 把纸面层级一次拉开。
+ * **字阶与几何（全站一档）**：屏题 24 semibold / eyebrow·meta 11-12 /
+ * 正文 16；容器 `px-6 pb-3 pt-2` + 主行 `h-11` + 返回钮 CloseButton 44
+ * 圆形触感底盒 + 屏题 ml-2.5 停车距——几何带 = insets.top + pt-2(8) +
+ * h-11(44)，24px 文字在 h-11(44) 行内天然垂直居中。各屏内联手写法退役
+ * （journal-edit / trip-detail / trip-day 的迁移差量见 v0.5.2 交付报告）。
  *
- * **几何带不变（向后兼容承诺）**：容器 `px-6 pt-2` + 主行 `h-11` +
- * 返回钮 CloseButton 44 圆形触感底盒——几何带 = insets.top + pt-2(8) +
- * h-11(44)，与 journal-edit / trip-detail 的内联屏头逐 dp 同规格（几何带
- * 对齐轮的成果原样保留；题字号升档只动 type，不动带高）。24px 文字在
- * h-11(44) 行内天然垂直居中。
+ * **副标退役（v0.5.2 令 2）**：`subtitle` prop 已整体删除——屏头描述性
+ * 副标全线退役（字段/卡面自说明，删掉后仍可完成任务的介绍句一律不进屏
+ * 头）。实时状态（步骤计数、结果数）经 `right` 槽或页面状态通道呈现，
+ * 错误走各屏 store.error 横幅卡。源码头闸 tests/v052-header-uniform.test.ts
+ * 锁定本组件不再接受 subtitle。
  *
- * prop 契约不变：title / subtitle / right / back 全部照旧（升档是纯样式
- * 变更，调用方零改动）；副行按「发现」而非口号写，调用方负责。
+ * `onBack`（v0.5.2 轮 B 新增）：有未保存语义的屏（event-detail 的
+ * handleLeave）注入自定义返回处理，缺省仍走 safeBack——其余调用方零改动。
  */
 export function ScreenHeader({
     title,
-    subtitle,
     right,
     back = true,
+    onBack,
 }: {
     title: string;
-    subtitle?: string;
     right?: ReactNode;
     back?: boolean;
+    /** 返回钮行为（缺省 safeBack）；仅 back=true 时有意义。 */
+    onBack?: () => void;
 }) {
     return (
         <View className="px-6 pb-3 pt-2">
@@ -37,9 +39,9 @@ export function ScreenHeader({
                 <View className="min-w-0 flex-1 flex-row items-center">
                     {back ? (
                         // 返回钮：CloseButton 44 圆形触感底盒（≥44 命中规范不传
-                        // hitSlop），与 journal-edit / trip-detail 内联屏头返回钮
-                        // 同组件同规格；右邻屏题为非按压体（ml-2.5 停车距），无重叠
-                        <CloseButton icon="back" onPress={safeBack} />
+                        // hitSlop），与内联屏头旧实现同组件同规格；右邻屏题为
+                        // 非按压体（ml-2.5 停车距），无重叠
+                        <CloseButton icon="back" onPress={onBack ?? safeBack} />
                     ) : null}
                     <Text
                         numberOfLines={1}
@@ -54,11 +56,6 @@ export function ScreenHeader({
                     {right}
                 </View>
             </View>
-            {subtitle ? (
-                <Text className="mt-1 text-[12px] text-ink-secondary dark:text-inkd-secondary">
-                    {subtitle}
-                </Text>
-            ) : null}
         </View>
     );
 }

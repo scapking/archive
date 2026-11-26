@@ -102,17 +102,8 @@ export function SearchResultsScreen({ spec }: { spec: SearchSpec }) {
             ? DECK_MIN
             : Math.max(DECK_MIN, Math.min(DECK_MAX, deckAreaHeight));
 
-    // 屏头说明小字：把规格翻译成人话（本页唯一的状态说明位；不占 store.error）
-    const specLabel = useMemo(() => {
-        const parts: string[] = [];
-        const q = spec.q.trim();
-        if (q) parts.push(`关键词「${q}」`);
-        if (spec.from && spec.to) parts.push(`${spec.from} ~ ${spec.to}`);
-        else if (spec.from) parts.push(`${spec.from} 起`);
-        else if (spec.to) parts.push(`${spec.to} 止`);
-        if (parts.length === 0) return '全部日记、计划、行程与事件（不限关键词、时间与状态）';
-        return `${parts.join(' · ')} · 全状态可见`;
-    }, [spec]);
+    // 屏头检索规格副行已删（v0.5.2 令 2：条件介绍句退役——条件由用户刚在
+    // /search 的输入面自证，卡面 eyebrow 已带类型/状态/日期，删后任务照常）
 
     // 日记/计划拆组（kind 列单一事实源）。**挂在三态渲染之前**（本页无 early
     // return，位置对齐 hooks 纪律以防后续加入门禁时翻车——library 同款教训）；
@@ -229,8 +220,9 @@ export function SearchResultsScreen({ spec }: { spec: SearchSpec }) {
     return (
         <View className="flex-1 bg-ink-base dark:bg-inkd-base">
             <View style={{ paddingTop: insets.top }} className="flex-1">
-                {/* 屏头返回 + 说明小字（当前规格的人话翻译；返回回 /search 枢纽） */}
-                <ScreenHeader title="搜索结果" subtitle={specLabel} />
+                {/* 屏头（v0.5.2 令 2：检索规格副行删除——返回回 /search 枢纽，
+                    条件不在屏头复述） */}
+                <ScreenHeader title="搜索结果" />
                 {/* 全局错误通道（store.error）：搜索失败上浮于此——v0.4.7 令 3
                     升级 settings 同源 tinted 横幅卡；置于实测区之外，横幅占位
                     不叠进 deck 高 */}
@@ -248,18 +240,16 @@ export function SearchResultsScreen({ spec }: { spec: SearchSpec }) {
                         <LoadingView />
                     ) : !hasResults ? (
                         /* 无匹配空态（v0.4.7 令 3）：收进 settings 同源纸卡
-                           （rounded-card surface + PAPER_CARD 卡影，eyebrow 11
-                           medium secondary + 题 24 + hint 13——与首页 / 堆页
-                           空态一个声部）；空态是行动邀请，不是贴底的两句小字 */
+                           （rounded-card surface + PAPER_CARD 卡影，题 24 +
+                           hint 13——与首页 / 堆页空态一个声部）；空态是行动
+                           邀请，不是贴底的两句小字。v0.5.2 轮 B（令 5）：类型
+                           eyebrow「搜索」删除——与屏题同义重复的堆叠 eyebrow */
                         <View className="items-center px-6 py-12">
                             <View
                                 className="w-full max-w-[420px] items-center rounded-card bg-ink-surface px-8 py-10 dark:bg-inkd-surface"
                                 style={PAPER_CARD_SHADOW}
                             >
-                                <Text className="text-[11px] font-medium text-ink-secondary dark:text-inkd-secondary">
-                                    搜索
-                                </Text>
-                                <Text className="mt-2 text-[24px] font-semibold text-ink-text dark:text-inkd-text">
+                                <Text className="text-[24px] font-semibold text-ink-text dark:text-inkd-text">
                                     没有匹配的记录
                                 </Text>
                                 {/* v0.4.9 令5：空态引导行 muted→secondary（对比度

@@ -19,6 +19,10 @@ export interface ArchiveAlarmNativeModule {
     drainFired(): Promise<{ id: string; at: number; title: string; body: string }[]>;
     /** 确认停止：移除常驻通知 + 停保活前台服务 + 清 fired 账（v0.4.7）。 */
     confirm(id: string): Promise<void>;
+    /** 常驻监控通知刷新（v0.5.2 用户令3）：start/stop 判据 = 原生注册表
+     *  pending 集合（at > now 非空起、空停），title/body 传空 = 原生自算
+     *  「N 个行程提醒监控中 · 最近 HH:mm」（boot/sticky 重入同款文案）。 */
+    syncMonitor(title: string, body: string): Promise<void>;
 }
 
 export default requireOptionalNativeModule<ArchiveAlarmNativeModule>('ArchiveAlarm');

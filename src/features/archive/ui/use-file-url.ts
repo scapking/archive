@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
+import { Image as ExpoImage } from 'expo-image';
 import { fileStorage } from '@/core/file-storage';
 import { mediaByJournalIds } from '../db';
 // v5 依赖反转：ui 层禁止 import store（require cycle 修复）。数据变化通知走
@@ -73,6 +74,21 @@ const URL_REVOKE_DELAY_MS = 10_000;
 const urlCache = new Map<string, FileUrlCacheEntry>();
 
 const WEB = Platform.OS === 'web';
+
+/**
+ * native 侧 key → file:// 路径的同步 memo（v0.5.2 堆叠切换修复面）：
+ * web 有 urlCache 同步 peek（v0.4.4「换张零占位帧」），native 旧版每次
+ * 挂载都要 await fileStorage.url(key) 的异步解析——deck 前卡按
+ * key={media.id} 换张重挂，首帧恒经历 loading 占位底 → 真图，即用户报
+ * 「每次切换都会刷新一下」的 native 病灶。file:// 路径是 key 的确定函数
+ * （同 key 重写路径不变），故 memo 不随 revision 失效；上界 FIFO 防会话
+ * 无界增长。失效口径诚实披露：文件被外部删除后 memo 仍返回旧路径，
+ * 表现为破图而非 missing 态——本 App 的媒体删除只发生在块删除/行程删除
+ * 之后（消费方已卸载，无挂载者），可达性极低，接受该降级（冷解析路径
+ * 的 exists 检查仍是事实源，新挂载首见者走冷解析不受影响）。
+ */
+const NATIVE_URI_MEMO_LIMIT = 128;
+const nativeUriMemo = new Map<string, string>();
 
 /** 撤销条目的 blob 引用（幂等；native file:// 非 blob 直接跳过）。 */
 function revokeEntryBlob(entry: FileUrlCacheEntry): void {
@@ -148,14 +164,24 @@ function adoptCachedEntry(key: string, entry: FileUrlCacheEntry): { uri: string;
     return { uri: entry.uri, release: () => releaseEntry(entry) };
 }
 
-/** 首渲染同步 peek：同版本且未失效的条目可同步信任——包括「引用归零、撤销
-    挂起」中的条目（blob 在延迟窗口内仍有效，effect 的 acquire 会取消定时器
-    正式接管），让 FlatList 回收重挂/切屏回来零占位闪烁。挂起撤销定时器与
-    effect 之间无可达竞态（10s 窗口 vs 毫秒级 effect 时序）；即便真触发，
-    blob 失效仅一帧，acquire 冷解析后自愈。 */
+/**
+ * 首渲染同步 peek：
+ * - native：直接查 nativeUriMemo（路径解析 O(1) 且稳定，见其注）；
+ * - web：未失效条目**乐观信任既有 URI**，含 revision 漂移的场景——旧口径
+ *   要求 `entry.revision === revision` 才命中，于是「打字触发的每次自动保存
+ *   bump revision 后，第一次切堆叠」新挂载的前卡/露边层 peek 必 miss →
+ *   LOADING 占位帧（v0.4.4 修的「切换刷新一下」只修了同 revision 的一半）。
+ *   乐观读的代价：blob 仍有效（内容未变则续用；同 key 真被重写时旧 blob 是
+ *   旧内容快照，acquire 的 stat 复验完成即 setState 换新 uri 自愈）——最坏
+ *   一帧旧图，好过一帧占位底；「防 URI 串位」在换 key 场景不受影响（peek
+ *   按 key 查询）。引用归零、撤销挂起中的条目同理可信任（10s 窗口 vs 毫秒
+ *   级 effect 时序；即便真踩中，acquire 冷解析后自愈）。
+ */
 function peekCachedUrl(key: string, revision: number): string | null {
+    if (!WEB) return nativeUriMemo.get(key) ?? null;
+    void revision; // 乐观读不比 revision：复验由 acquire 的 stat 通道收口（见注）
     const entry = urlCache.get(key);
-    if (!entry || entry.invalidated || entry.revision !== revision) {
+    if (!entry || entry.invalidated) {
         return null;
     }
     return entry.uri;
@@ -168,8 +194,20 @@ function peekCachedUrl(key: string, revision: number): string | null {
  */
 async function acquireFileUrl(key: string, revision: number): Promise<{ uri: string; release(): void }> {
     if (!WEB) {
-        // native：file:// 直路径 O(1)，无缓存对象（路径字符串本身即可复用）
+        // native：file:// 直路径 O(1)，无缓存对象（路径字符串本身即可复用）。
+        // v0.5.2 起路径进 nativeUriMemo：peek 同步命中 + 重复挂载免 await
+        const memo = nativeUriMemo.get(key);
+        if (memo != null) {
+            return { uri: memo, release: () => undefined };
+        }
         const uri = await fileStorage.url(key);
+        nativeUriMemo.set(key, uri);
+        if (nativeUriMemo.size > NATIVE_URI_MEMO_LIMIT) {
+            // FIFO 摘最旧（Map 插入序）：native 路径字符串零字节成本，上限
+            // 只防会话无界增长，摘除无资源回收语义
+            const oldest = nativeUriMemo.keys().next().value;
+            if (oldest != null) nativeUriMemo.delete(oldest);
+        }
         return { uri, release: () => undefined };
     }
     const cached = urlCache.get(key);
@@ -351,6 +389,104 @@ export function prewarmImageDecode(
         .catch(() => {
             warmedDecodes.delete(bucket);
         });
+}
+
+/**
+ * web 视频头字节预热（v0.5.2 堆叠预载的「播放器预热」web 退化实现）：
+ * detached `<video preload="auto">` 让媒体管线开抓字节，收到首段数据
+ * （loadeddata）或出错即断源释放——真正的前卡 <video> 后挂时命中浏览器
+ * 媒体缓存。native 播放器预建**不做**：deck 前卡按 key={media.id} 换张
+ * 重挂、各自 useVideoPlayer 建实例（v0.4.6 错内容闪帧的既定取舍），预建
+ * 独立实例既交接不进消费卡又违背「每堆 ≤1 player」性能红线，native 视频
+ * 的预热收益落在 poster（缩略图走 expo-image prefetch，见下）。
+ */
+function warmVideoBytesWeb(uri: string): void {
+    if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+        return;
+    }
+    const video = document.createElement('video');
+    video.preload = 'auto';
+    video.muted = true;
+    video.src = uri;
+    let settled = false;
+    const settle = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        video.removeAttribute('src');
+        video.load();
+    };
+    const timer = setTimeout(settle, 15_000);
+    video.addEventListener('loadeddata', settle, { once: true });
+    video.addEventListener('error', settle, { once: true });
+}
+
+/**
+ * deck 预载执行面（v0.5.2 用户令 6，调度纯函数见 ui/deck-prefetch.ts）：
+ * 对一个堆叠成员做「可安全提前做」的全部预热，重复调用幂等（各层自带去重）：
+ * - **native**：①acquire uri → 写 nativeUriMemo（换张重挂的 peek 同步命中，
+ *   首帧不再经历 await fileStorage.url 的 loading 占位——「每次切换刷新
+ *   一下」的 native 主病灶）；②图片（含视频 poster）走 expo-image 静态
+ *   prefetch 热其原生解码/内存缓存——deck 卡体已换用 expo-image 渲染，
+ *   **渲染器与预取共用同一套原生缓存**，预取真实命中（RN Image 的 Fresco/
+ *   RCTImageLoader 缓存 expo-image prefetch 打不进，这正是换渲染器的原因）。
+ * - **web**：prewarmFileUrl 热 blob 句柄（render-phase peek 同步 ready）+
+ *   位图解码档由调用方在去抖窗走 prewarmImageDecode（raster 预算纪律，
+ *   v0.4.6/0.4.7 原口径不变）；视频字节经 warmVideoBytesWeb。
+ * - **视频（native）player 预建不做**，理由见 warmVideoBytesWeb 注。
+ * 内存账：web blob 由 urlCache 引用计数 + 10s 延迟撤销 + LRU(32) 收口
+ * （预取 acquire 即 release，留延迟撤销窗——窗口淘汰不 revoke 在用者）；
+ * native memo 只存路径字符串（上限 FIFO）；expo-image 缓存由其内部上界管理。
+ * 一切失败静默（预载是增强，不是数据依赖）。
+ */
+export function prefetchDeckMedia(
+    kind: 'image' | 'video',
+    fileKey: string,
+    revision: number,
+): void {
+    if (!fileKey) return;
+    // poster key = `${fileKey}.thumb.jpg`（与 store.videoThumbKeyFor 对向镜像的
+    // 第三处——ui 层禁 import store，media-view.videoThumbKeyFor 为对向镜像，
+    // 格式串必须三侧锁步修改）
+    const posterKey = kind === 'video' ? `${fileKey}.thumb.jpg` : null;
+    if (!WEB) {
+        // expo-image 静态 prefetch（模块级实现，非 hook 消费面）：热其原生
+        // 解码/内存缓存——deck 卡体同一渲染栈，预取真实命中
+        const prefetchImages = (uris: string[]) => {
+            try {
+                void ExpoImage.prefetch?.(uris).catch(() => undefined);
+            } catch {
+                // 个别宿主缺失静态方法：预载失败不影响按需加载兜底
+            }
+        };
+        void acquireFileUrl(fileKey, revision)
+            .then(({ uri, release }) => {
+                release();
+                prefetchImages([uri]);
+            })
+            .catch(() => undefined);
+        if (posterKey) {
+            void acquireFileUrl(posterKey, revision)
+                .then(({ uri, release }) => {
+                    release();
+                    prefetchImages([uri]);
+                })
+                .catch(() => undefined);
+        }
+        return;
+    }
+    prewarmFileUrl(fileKey, revision);
+    if (posterKey) {
+        prewarmFileUrl(posterKey, revision);
+    }
+    if (kind === 'video') {
+        void acquireFileUrl(fileKey, revision)
+            .then(({ uri, release }) => {
+                warmVideoBytesWeb(uri);
+                release();
+            })
+            .catch(() => undefined);
+    }
 }
 
 /** 某篇日记的媒体行（数据版本变化自动重载；订阅经 data-revision，不经 store）。 */
