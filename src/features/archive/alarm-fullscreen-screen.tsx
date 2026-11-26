@@ -5,7 +5,7 @@ import { router } from 'expo-router';
 import { audio, type AudioPlayer } from '@/core/audio';
 import { alarm } from '@/core/alarm';
 import * as db from './db';
-import { isAlarmSettled, markAlarmHandled } from './alarm-ladder';
+import { confirmAlarmSession, isAlarmConfirmed, isAlarmSettled } from './alarm-ladder';
 import { PAPER_FLOAT_SHADOW } from './ui/paper-shadow';
 import { usePalette } from './ui/theme';
 import { TRIP_ITEM_PHASE_LABEL, tripItemDisplayTitle, tripItemDueAt, tripItemPhase } from './trip-item-logic';
@@ -23,14 +23,19 @@ import { formatDateParts } from './trip-logic';
  * 视觉 = 「纸 × 墨 2.1」的双主题极端：闹钟是纸堆里抽出的一张「今日行程卡」
  * 放大到全屏——主题近黑/纸白（palette.sceneBg），卡用 PAPER_FLOAT 悬浮档
  * （真悬浮物才有影），信息层级严格按令：**报时时刻是主角**（84px tabular
- * 大字号）、标题次之（24px；空标题不渲染任何文字，禁兜底词）、行程名退到
- * meta 行。单主钮「停止」（primary-btn 近黑/反白），Android 返回键同出口；
- * 无遮罩点按出口。web 路由态可直接呈现（静音——web 无系统闹钟入口）。
+ * 大字号）、标题次之（24px；空标题不渲染任何文字，禁兜底词）、行程名与已过
+ * 时长并入卡内 meta 行。单主钮「停止」（primary-btn 近黑/反白），Android
+ * 返回键同出口；无遮罩点按出口。web 路由态可直接呈现（静音——web 无系统
+ * 闹钟入口）。
+ * 版面收紧（v0.5.1 实拍验收「稀疏即罪」）：正文整体在安全区内垂直居中，
+ * 停止钮恒钉底部（拇指热区，闹钟体感）；兜底态文字+钮同流居中不钉底，
+ * 杜绝钮上大片死白。
  *
  * 生命周期（v0.5.1 纠错核心）：
- * - 出口唯一 acknowledge()：先**同步**静音（pause+remove，不等卸载清理跟随
- *   导航），再 alarm.confirm 清原生账（注册表 + fired + 常驻通知 + 保活服务），
- *   最后 replace 导航——「停止即静音」；
+ * - 出口唯一 acknowledge()：先 confirmAlarmSession 出账（跨平台单源，含 web
+ *   ——确认=出账闭环不依赖原生门面），再**同步**静音（pause+remove，不等
+ *   卸载清理跟随导航），再 alarm.confirm 清原生账（注册表 + fired + 常驻
+ *   通知 + 保活服务），最后 replace 导航——「停止即静音」；
  * - 外部停铃收账：通知动作「停止」只清原生面，JS 无新事件面（Kotlin 保守
  *   纪律），循环播放器在场期间低频回读注册表，条目出账 = 已被停 → 本屏静默
  *   收口离场（isAlarmSettled 纯函数，tests 有契约用例）；
@@ -92,10 +97,12 @@ export function AlarmFullscreenScreen({ itemId }: AlarmFullscreenScreenProps) {
     const acknowledge = useCallback((): void => {
         if (acknowledgedRef.current) return;
         acknowledgedRef.current = true;
-        // 记入 alarm-ladder 共享会话账（watcher/页内检查读同一账）：确认
-        // replace 回行程日后，页内到点检查不得对同一 ongoing 项再跳回本屏
-        // （复响回路防线）；查无兜底态无计划时刻可取，记即时指纹即可。
-        markAlarmHandled(itemId, item ? tripItemDueAt(item.local_date, item.time) : Date.now());
+        // 确认 = 出账（跨平台单源，v0.5.1 返工）：id 级账无条件先写——web 无
+        // 原生注册表、alarm.confirm 门面 no-op，JS 账本必须自己闭环，否则页内
+        // 检查下一拍再把同一 ongoing 项跳回来（CDP wheel4/5/6 实锤劫持环；
+        // 旧实现用 Date.now() 即时指纹兜底会覆盖页内检查先记的 dueAt 槽位，
+        // 慢存储下 resolve 前点停止即触发）。
+        confirmAlarmSession(itemId);
         // 导航前同步静音（见头注生命周期第一条）——卸载清理只是兜底，不是出口
         stopPlayer();
         // 原生清账：注册表条目 + fired 账 + 常驻通知 + 保活服务一并移除
@@ -112,8 +119,14 @@ export function AlarmFullscreenScreen({ itemId }: AlarmFullscreenScreenProps) {
         }
     }, [itemId, item, stopPlayer]);
 
-    // 数据自取 + 终态判定（查无/已收尾 = 兜底态；清账责任仍在出口按钮）
+    // 数据自取 + 终态判定（查无/已收尾 = 兜底态；清账责任仍在出口按钮）。
+    // 已确认 id 的陈旧重入（URL 深链不经 JS 账本闸的最后一条腿）直接按「已
+    // 结束」呈现，不查库不再起声——确认 = 出账的屏侧收口。
     useEffect(() => {
+        if (isAlarmConfirmed(itemId)) {
+            setItem(null);
+            return;
+        }
         let cancelled = false;
         (async () => {
             try {
@@ -135,9 +148,10 @@ export function AlarmFullscreenScreen({ itemId }: AlarmFullscreenScreenProps) {
         };
     }, [itemId]);
 
-    // 循环提示音（web 无原生闹钟入口，静音；native 静音键下仍响 = playsInSilentMode）
+    // 循环提示音（web 无原生闹钟入口，静音；native 静音键下仍响 = playsInSilentMode）。
+    // 已确认 id 的重入不起声：兜底态只留视觉出口。
     useEffect(() => {
-        if (Platform.OS === 'web') return;
+        if (Platform.OS === 'web' || isAlarmConfirmed(itemId)) return;
         let disposed = false;
         (async () => {
             try {
@@ -164,7 +178,7 @@ export function AlarmFullscreenScreen({ itemId }: AlarmFullscreenScreenProps) {
             disposed = true;
             stopPlayer();
         };
-    }, [stopPlayer]);
+    }, [stopPlayer, itemId]);
 
     // 回前台补响（v0.5.1 令 1：后台被拉进本屏时 Android 音频焦点可能被拒 →
     // 无声洞；用户真正进 app 的一刻必须响）
@@ -238,8 +252,9 @@ export function AlarmFullscreenScreen({ itemId }: AlarmFullscreenScreenProps) {
             ]}
         >
             {settled ? (
-                // ─── 兜底态（v0.5.1「数据不存在也要设计」）：查无/已终态 ───
-                <View style={styles.heroBlock}>
+                // ─── 兜底态（v0.5.1「数据不存在也要设计」+ 实拍验收收拢）：
+                // 文字与出口钮同流垂直居中，钮不钉底——钮上方不再留大片死白 ───
+                <View style={styles.centerBlock}>
                     <Text style={[styles.eyebrow, { color: palette.muted }]}>行程闹钟</Text>
                     <Text style={[styles.endedHeading, { color: palette.text }]}>
                         这条提醒已经结束
@@ -247,86 +262,95 @@ export function AlarmFullscreenScreen({ itemId }: AlarmFullscreenScreenProps) {
                     <Text style={[styles.endedBody, { color: palette.secondary }]}>
                         对应的行程项已被删除或完成了收尾，不需要再处理。回行程看一眼就好。
                     </Text>
+                    <Pressable
+                        onPress={acknowledge}
+                        accessibilityRole="button"
+                        accessibilityLabel="知道了，返回应用"
+                        style={({ pressed }) => [
+                            styles.stopButton,
+                            styles.settledButtonGap,
+                            { backgroundColor: pressed ? palette.primaryBtnPress : palette.primaryBtn },
+                        ]}
+                    >
+                        <Text style={[styles.stopButtonText, { color: palette.onPrimaryBtn }]}>知道了</Text>
+                    </Pressable>
                 </View>
             ) : (
                 <>
-                    {/* 主角：报时时刻。84px tabular，近黑/纸白全墨大字——
-                        「时间到」的判断只看这一行（v0.5.1 令 3 信息层级） */}
-                    <Text
-                        style={[
-                            styles.time,
-                            { color: palette.text, opacity: loading ? 0.35 : 1 },
-                        ]}
-                        accessibilityRole="text"
-                        accessibilityLabel={loading ? '正在读取行程项' : `行程项时刻 ${item?.time ?? ''}`}
-                    >
-                        {loading ? '––:––' : (item?.time ?? '––:––')}
-                    </Text>
-                    {loading ? (
-                        <Text style={[styles.loadingNote, { color: palette.muted }]}>
-                            正在读取行程项…
+                    {/* 正文单块垂直居中（v0.5.1 实拍验收「中部死白过大」修正：
+                        旧结构把时刻/标题/卡/计时作为并列 flex 子项被 space-between
+                        拉开——层级必须打包成一个整体再居中） */}
+                    <View style={styles.centerBlock}>
+                        {/* 主角：报时时刻。84px tabular，近黑/纸白全墨大字——
+                            「时间到」的判断只看这一行（v0.5.1 令 3 信息层级） */}
+                        <Text
+                            style={[styles.time, { color: palette.text, opacity: loading ? 0.35 : 1 }]}
+                            accessibilityRole="text"
+                            accessibilityLabel={loading ? '正在读取行程项' : `行程项时刻 ${item?.time ?? ''}`}
+                        >
+                            {loading ? '––:––' : (item?.time ?? '––:––')}
                         </Text>
-                    ) : (
-                        <>
-                            {/* 次主角：行程项标题（卡面上方直出）。空标题**不渲染
-                                任何文字**——禁兜底词（v0.5.1 令 1 卡面纪律同源） */}
-                            {itemTitle ? (
-                                <Text style={[styles.itemTitle, { color: palette.text }]}>
-                                    {itemTitle}
-                                </Text>
-                            ) : null}
-                            {/* PAPER_FLOAT 悬浮卡：内容层（描述/行程名）浮在纸上 */}
-                            <View style={[styles.card, { backgroundColor: palette.surface }, PAPER_FLOAT_SHADOW]}>
-                                {item?.description ? (
-                                    <Text style={[styles.description, { color: palette.secondary }]}>
-                                        {item.description}
+                        {loading ? (
+                            <Text style={[styles.loadingNote, { color: palette.muted }]}>
+                                正在读取行程项…
+                            </Text>
+                        ) : (
+                            <>
+                                {/* 次主角：行程项标题。空标题**不渲染任何文字**
+                                    ——禁兜底词（v0.5.1 令 1 卡面纪律同源） */}
+                                {itemTitle ? (
+                                    <Text style={[styles.itemTitle, { color: palette.text }]}>
+                                        {itemTitle}
                                     </Text>
-                                ) : (
-                                    // 无备注时不编兜底文案，给事实：日期 + 星期
-                                    // （卡面「禁词」纪律同源，填充用真实数据）
-                                    <Text style={[styles.description, { color: palette.secondary }]}>
-                                        {item
-                                            ? `${formatDateParts(item.local_date).monthDay} · ${formatDateParts(item.local_date).weekday}`
-                                            : ''}
-                                    </Text>
-                                )}
-                                <View style={styles.cardMetaRow}>
-                                    <Text style={[styles.cardMeta, { color: palette.muted }]} numberOfLines={1}>
-                                        {tripTitle ? `行程 · ${tripTitle}` : '行程'}
-                                    </Text>
-                                    <Text style={[styles.cardMeta, { color: palette.muted }]}>
-                                        {phase}
-                                    </Text>
+                                ) : null}
+                                {/* PAPER_FLOAT 悬浮卡：内容（描述/日期事实）+
+                                    meta（行程名 · 阶段 · 已过）整体收进一张卡 */}
+                                <View style={[styles.card, { backgroundColor: palette.surface }, PAPER_FLOAT_SHADOW]}>
+                                    {item?.description ? (
+                                        <Text style={[styles.description, { color: palette.secondary }]}>
+                                            {item.description}
+                                        </Text>
+                                    ) : (
+                                        // 无备注时不编兜底文案，给事实：日期 + 星期
+                                        <Text style={[styles.description, { color: palette.secondary }]}>
+                                            {item
+                                                ? `${formatDateParts(item.local_date).monthDay} · ${formatDateParts(item.local_date).weekday}`
+                                                : ''}
+                                        </Text>
+                                    )}
+                                    <View style={styles.cardMetaRow}>
+                                        <Text style={[styles.cardMeta, { color: palette.muted }]} numberOfLines={1}>
+                                            {tripTitle ? `行程 · ${tripTitle}` : '行程'}
+                                        </Text>
+                                        {/* 已过时长并进 meta（秒动 tabular，节奏
+                                            来自数字不来自留白） */}
+                                        <Text
+                                            style={[styles.cardMeta, { color: palette.muted, fontVariant: ['tabular-nums'] }]}
+                                            numberOfLines={1}
+                                        >
+                                            {elapsedMs > 0 ? `${phase} · 已过 ${formatElapsed(elapsedMs)}` : phase}
+                                        </Text>
+                                    </View>
                                 </View>
-                            </View>
-                            {/* 已过时长（节奏感来自秒动 tabular，不来自颜色） */}
-                            {elapsedMs > 0 ? (
-                                <Text style={[styles.elapsed, { color: palette.secondary }]}>
-                                    {`已过 ${formatElapsed(elapsedMs)}`}
-                                </Text>
-                            ) : null}
-                        </>
-                    )}
+                            </>
+                        )}
+                    </View>
+                    {/* 主钮钉底（拇指热区；闹钟必须一眼找到停止） */}
+                    <View style={styles.footer}>
+                        <Pressable
+                            onPress={acknowledge}
+                            accessibilityRole="button"
+                            accessibilityLabel="停止闹钟并返回该行程当天"
+                            style={({ pressed }) => [
+                                styles.stopButton,
+                                { backgroundColor: pressed ? palette.primaryBtnPress : palette.primaryBtn },
+                            ]}
+                        >
+                            <Text style={[styles.stopButtonText, { color: palette.onPrimaryBtn }]}>停止</Text>
+                        </Pressable>
+                    </View>
                 </>
             )}
-
-            <View style={styles.footer}>
-                <Pressable
-                    onPress={acknowledge}
-                    accessibilityRole="button"
-                    accessibilityLabel={settled ? '知道了，返回应用' : '停止闹钟并返回该行程当天'}
-                    style={({ pressed }) => [
-                        styles.stopButton,
-                        {
-                            backgroundColor: pressed ? palette.primaryBtnPress : palette.primaryBtn,
-                        },
-                    ]}
-                >
-                    <Text style={[styles.stopButtonText, { color: palette.onPrimaryBtn }]}>
-                        {settled ? '知道了' : '停止'}
-                    </Text>
-                </Pressable>
-            </View>
         </View>
     );
 }
@@ -336,8 +360,10 @@ export function AlarmFullscreenScreen({ itemId }: AlarmFullscreenScreenProps) {
  * 「闹钟视觉脱离主题」的 v0.4.7 口径作废，v0.5.1 令 3 起闹钟并入纸×墨）。
  */
 const styles = StyleSheet.create({
-    root: { flex: 1, justifyContent: 'space-between' },
-    heroBlock: { flex: 1, justifyContent: 'center' },
+    root: { flex: 1 },
+    // 正文/兜底内容整体垂直居中（space-between 并列拉开的结构已废——
+    // 实拍验收「中部死白过大」的根因就是各层级成了独立 flex 子项）
+    centerBlock: { flex: 1, justifyContent: 'center' },
     eyebrow: { fontSize: 13, marginBottom: 14 },
     endedHeading: { fontSize: 34, fontWeight: '700', letterSpacing: -0.5, lineHeight: 40 },
     endedBody: { fontSize: 16, lineHeight: 24, marginTop: 12, maxWidth: 320 },
@@ -355,7 +381,6 @@ const styles = StyleSheet.create({
         gap: 12,
     },
     cardMeta: { fontSize: 13, flexShrink: 1 },
-    elapsed: { fontSize: 15, marginTop: 20, fontVariant: ['tabular-nums'] },
     footer: { marginTop: 24 },
     // 单主钮：近黑（light）/反白近纸（dark），56 高、rounded 16 同契约档
     stopButton: {
@@ -364,5 +389,7 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
     },
+    // 兜底态钮随文同流（不钉底），与正文留一次呼吸即可，不留整屏空
+    settledButtonGap: { marginTop: 40 },
     stopButtonText: { fontSize: 17, fontWeight: '600' },
 });

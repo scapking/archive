@@ -202,8 +202,16 @@ export function CenteredSheet({
                 onPress={onClose}
                 accessibilityLabel={scrimAccessibilityLabel}
             >
+                {/* 宽度定档（v0.5.1 看图验收返工）：Animated.View 此前无宽度
+                    声明，在 scrim items-center 下按内容固有宽收缩——滚轮列取代
+                    宽输入框后卡宽塌到 ~200px，「直接创建」折行、动作行挤压。
+                    抬到全宽 + 内部水平居中，卡体 w-full+maxWidth 才按档展开 */}
                 <Animated.View
-                    style={{ transform: [{ translateY: Animated.multiply(liftAnim, -1) }] }}
+                    style={{
+                        width: '100%',
+                        alignItems: 'center',
+                        transform: [{ translateY: Animated.multiply(liftAnim, -1) }],
+                    }}
                 >
                     {/* 卡体：View + 显式认领 responder——点卡空白不冒泡关层
                         （0.4.9 弹层用无 onPress 的 Pressable，父层 onPress 照样
@@ -222,7 +230,8 @@ export function CenteredSheet({
                                 footer 钉卡底（恒在键盘上方，不随内容滚走） */}
                             {/* 卡内边距 = 设计契约基线 p-4（16）：v0.5.1 逐处核
                                 （原 20 与 settings/事件卡内 p-4 不齐）；footer 同
-                                宽，卡头内容与钉底动作行左右缘对齐 */}
+                                宽，卡头内容与钉底动作行左右缘对齐；底部呼吸留给
+                                宿主内容自带（date-picker 尾块自垫先例，原语不越权） */}
                             <ScrollView
                                 ref={scrollRef}
                                 style={{ flexGrow: 1, flexShrink: 1 }}

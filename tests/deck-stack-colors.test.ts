@@ -15,7 +15,8 @@ function readFileSyncSafe(file: string): string {
  * 堆叠 deck「纸 × 墨 2.1」光影语言把关（v0.4.9，用户令「渐变深蓝什么的太丑」
  * + 继承 v0.4.6「不要灰色相进、但要可以区分」）。断言的是需求侧视觉不变量：
  * - 卡面一律纸色：deckEdge 灰板壳色全域退役；**整面渐变也全域退役**——
- *   theme 不再有 From/To 渐变端点 token，trip 卡面不再 import LinearGradient；
+ *   theme 不再有 From/To 渐变端点 token，trip 卡面不再 import LinearGradient
+ *   （v0.5.1 看图验收例外：只许滚轮上下缘功能性渐隐遮罩两枚，见渐变闸注）；
  * - 三态 = 纸面档位差：ongoing 亮于 surface、pending = surface 素面、settled
  *   沉一档（两主题方向同构），档位值全部来自 ink/inkd 家族；
  * - 状态记号只许小面积 accent：细边描色 faceAccentEdge = 本主题 accent 档，
@@ -273,12 +274,27 @@ test('小面积 accent 记号 AA：eyebrow/圆点色在当前纸面 ≥4.5，细
     }
 });
 
-test('整面渐变全域退场：trip 卡面零散落 hex、零 LinearGradient、三态走 palette 档位', () => {
+test('整面渐变全域退场：trip 卡面零散落 hex、渐变只许滚轮渐隐遮罩、三态走 palette 档位', () => {
     assert.ok(
         !/["']#[0-9A-Fa-f]{3,8}["']/.test(tripSource),
         'trip-day-screen 出现硬编码 hex 字面量（色值必须收进 theme.ts）',
     );
-    assert.ok(!tripSource.includes('LinearGradient'), 'trip-day-screen 仍在用 LinearGradient——v0.4.9 整面渐变退场');
+    // v0.4.9 禁令的本靶 = **装饰性整面渐变卡面**（「渐变深蓝太丑」）。v0.5.1
+    // 看图验收返工点名要滚轮上下缘渐隐遮罩（功能性 mask，非色场），LinearGradient
+    // 因此只许以该形态存在：闸收紧为「出现次数与遮罩枚数一致 + 逐枚带
+    // pointerEvents="none" 且不落在卡面段」——想回流装饰渐变的路没被放松。
+    const gradientCount = (tripSource.match(/<LinearGradient/g) ?? []).length;
+    assert.equal(gradientCount, 2, 'trip-day-screen LinearGradient 只许滚轮上下缘渐隐两枚');
+    assert.equal(
+        (tripSource.match(/<LinearGradient\s+pointerEvents="none"/g) ?? []).length,
+        2,
+        '渐隐遮罩必须以 pointerEvents="none" 悬浮（不挡滚动）',
+    );
+    const face = tripSource.slice(
+        tripSource.indexOf('const TripItemCardFace = memo('),
+        tripSource.indexOf('/* 时间编辑'),
+    );
+    assert.ok(!face.includes('LinearGradient'), '卡面段渐变回潮——v0.4.9 整面渐变退场红线不动');
     assert.ok(!tripSource.includes('gradientColors'), 'trip-day-screen 残留渐变端点组装逻辑');
     for (const name of FACE_TOKENS) {
         assert.ok(tripSource.includes(`palette.${name}`), `三态卡面未引用 palette.${name}`);

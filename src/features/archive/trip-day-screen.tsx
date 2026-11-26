@@ -19,6 +19,10 @@ import {
 // v0.5.1 令 1：应用内到点检查的动作通道（跳全屏闹钟屏；弹窗 TripItemAlarmCard
 // 退场后本屏唯一路由出口）。
 import { router } from 'expo-router';
+// v0.5.1 看图验收返工：滚轮上下缘渐隐遮罩（expo-linear-gradient 双端可用，
+// web 渲染为 CSS 渐变；纯功能性 mask，非装饰色场——0.4.9「整面渐变退场」
+// 禁令不覆盖同底色渐隐）
+import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { imagePicker } from '@/core/image-picker';
 import {
@@ -301,7 +305,16 @@ const TripItemCardFace = memo(function TripItemCardFace({
  * 用户点名参考 v0.4.3 的滚动选时（「卡得太死」——步进四钮把 2 小时的修正
  * 拆成 24 次拍），但要简化。形态 = 时/分双列轻量滚动：值域维持 5 分量化
  *（时 0-23、分 00-55 步进 5，与 store 'HH:mm' 口径一致，36 个值扫读成本
- * 已被列式滚轮消化）；窗口收到 3 行、行高 44（触控下限），滚动即选、跟手。
+ * 已被列式滚轮消化）；行高 44（触控下限），滚动即选、跟手。
+ *
+ * v0.5.1 看图验收返工（用户判「3 行窗不像滚轮、像 2×2 钮格」）：
+ * - 窗口升到 5 行档（iOS picker 同档密度）；
+ * - 井底改 raised 深一档 + 中带 base 白条（肉眼可辨的「当前行」容器）；
+ * - 上下缘 linear-gradient 渐隐遮罩（同井底色，行滚入边缘即化开——滚轮
+ *   深度的第一视觉信号）；
+ * - 字阶异级：中行 20 semibold text 档，非中邻行 15 regular secondary
+ *   档。异级只由 settle 通道一次性 setState 驱动（index prop 变化 →
+ *   整列重渲染一次），**不读 onScroll 逐帧位置**。
  *
  * **性能红线（0.4.3 原版滚轮本身带滑动 bug、0.4.7「卡一下然后无法持续切换」
  * 教训——只借交互语义，不原样照搬）**：滚动/惯性交原生 ScrollView 物理；
@@ -314,9 +327,9 @@ const TripItemCardFace = memo(function TripItemCardFace({
  * 同款 <1px 去重闸，收敛不死循环。
  */
 const WHEEL_ROW_H = 44;
-/** 上下垫行数：(3 行窗口 − 1 中线) / 2 = 1，把首末项滚到中线。 */
-const WHEEL_PAD_ROWS = 1;
-const WHEEL_VISIBLE_ROWS = 3;
+/** 上下垫行数：(5 行窗口 − 1 中线) / 2 = 2，把首末项滚到中线；渐隐遮罩同高。 */
+const WHEEL_PAD_ROWS = 2;
+const WHEEL_VISIBLE_ROWS = 5;
 /** 滚轮值域：时 0-23；分 5 分钟步进（00-55，行程项粒度口径，与通知分钟对齐）。 */
 const HOUR_VALUES = Array.from({ length: 24 }, (_, i) => i);
 const MINUTE_VALUES = Array.from({ length: 12 }, (_, i) => i * 5);
@@ -333,12 +346,18 @@ function nextFiveMinuteSlot(now: Date): { hour: number; minute: number } {
 }
 
 /**
- * 滚动列（纯 RN 原生 ScrollView，不引选择器依赖——date-input 同款三端可用性
- * 纪律）：snapToInterval 吸附到行、decelerationRate fast 让抬手即定档；上下
- * 各 1 行垫高 + 挂载 scrollTo 定位当前值（animated false，无飞行感）。中带
- * raised 高亮垫在行下（FieldInput 聚焦语义同源），选中行字色加重。index 的
- * 外部跳变（「此刻」）由宿主以 key 重挂本列完成定位——列内不做受控回写，
- * 省掉一次「滚动→state→回写」的往返。
+ * 滚动列（纯 RN 原生 ScrollView，不引第三方选择器依赖——date-input 同款
+ * 三端可用性纪律）：snapToInterval 吸附到行、decelerationRate fast 让抬手
+ * 即定档；上下各 2 行垫高 + 挂载 scrollTo 定位当前值（animated false，无
+ * 飞行感）。解剖（看图验收返工后定版，全部静态层——无逐帧计算）：
+ * - 井底 raised（对 base 卡面沉一档，肉眼可辨的容器）；
+ * - 中带 base 白条垫在行下（先铺 → 行滚动其上），「当前行」有实体底板；
+ * - 上下缘各 2 行高 linear-gradient 渐隐（raised→同色 alpha 0），行滚到
+ *   边缘化开 = 滚轮纵深；pointerEvents none 不挡滚动；
+ * - 字阶异级：中行 20/600 text，其余 15/400 secondary——index 只在 settle
+ *   时变，字阶随之一次性重渲染（性能红线不破）。
+ * index 的外部跳变（「此刻」）由宿主以 key 重挂本列完成定位——列内不做
+ * 受控回写，省掉一次「滚动→state→回写」的往返。
  */
 function TimeScrollColumn({
     label,
@@ -354,6 +373,7 @@ function TimeScrollColumn({
     onSelect(index: number): void;
     accessibilityLabel: string;
 }) {
+    const palette = usePalette();
     const scrollRef = useRef<ComponentRef<typeof ScrollView> | null>(null);
     useEffect(() => {
         scrollRef.current?.scrollTo({ y: index * WHEEL_ROW_H, animated: false });
@@ -384,12 +404,12 @@ function TimeScrollColumn({
             <Text className="text-[11px] font-medium text-ink-muted dark:text-inkd-muted">
                 {label}
             </Text>
-            <View className="mt-1.5 overflow-hidden rounded-control bg-ink-surface dark:bg-inkd-surface">
-                {/* 中带高亮（先铺 → 行滚动其上）：绝对定位 raised 条，pointerEvents
-                    none 不挡滚动 */}
+            <View className="mt-1.5 overflow-hidden rounded-control bg-ink-raised dark:bg-inkd-raised">
+                {/* 中带实体底板（先铺 → 行滚动其上）：base 白条对 raised 井底，
+                    light 侧 #F0F2F5→#FFFFFF 肉眼可辨；pointerEvents none 不挡滚动 */}
                 <View
                     pointerEvents="none"
-                    className="absolute left-0 right-0 bg-ink-raised dark:bg-inkd-raised"
+                    className="absolute left-0 right-0 bg-ink-base dark:bg-inkd-base"
                     style={{
                         top: WHEEL_PAD_ROWS * WHEEL_ROW_H,
                         height: WHEEL_ROW_H,
@@ -415,12 +435,12 @@ function TimeScrollColumn({
                             style={{ height: WHEEL_ROW_H }}
                         >
                             <Text
-                                className={
-                                    i === index
-                                        ? 'text-[20px] font-medium text-ink-text dark:text-inkd-text'
-                                        : 'text-[20px] text-ink-muted dark:text-inkd-muted'
-                                }
-                                style={{ fontVariant: ['tabular-nums'] }}
+                                style={{
+                                    fontSize: i === index ? 20 : 15,
+                                    fontWeight: i === index ? '600' : '400',
+                                    color: i === index ? palette.text : palette.secondary,
+                                    fontVariant: ['tabular-nums'],
+                                }}
                             >
                                 {pad2(value)}
                             </Text>
@@ -428,6 +448,31 @@ function TimeScrollColumn({
                     ))}
                     <View style={{ height: WHEEL_PAD_ROWS * WHEEL_ROW_H }} />
                 </ScrollView>
+                {/* 上下缘渐隐遮罩（盖在行上，pointerEvents none）：井底色 raised →
+                    同色 alpha 0，各 2 行高——行滚入边缘化开，「滚轮」纵深信号；
+                    web = CSS 渐变 / native = expo-linear-gradient，同一实现双端 */}
+                <LinearGradient
+                    pointerEvents="none"
+                    colors={[palette.raised, `${palette.raised}00`]}
+                    style={{
+                        position: 'absolute',
+                        left: 0,
+                        right: 0,
+                        top: 0,
+                        height: WHEEL_PAD_ROWS * WHEEL_ROW_H,
+                    }}
+                />
+                <LinearGradient
+                    pointerEvents="none"
+                    colors={[`${palette.raised}00`, palette.raised]}
+                    style={{
+                        position: 'absolute',
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        height: WHEEL_PAD_ROWS * WHEEL_ROW_H,
+                    }}
+                />
             </View>
         </View>
     );
@@ -566,7 +611,9 @@ function TripItemSheet({
     };
 
     // 动作行两枚共用语言（照新建事件表单）：ghost = surface 底 secondary 字，
-    // primary = palette.primaryBtn 近黑 + onPrimaryBtn 字；等分一行不被容器包裹
+    // primary = palette.primaryBtn 近黑 + onPrimaryBtn 字；等分一行不被容器包裹。
+    // 看图验收返工：文案一律 numberOfLines=1（实拍「直接创/建」折行禁绝——
+    // 折行根因 = 卡宽塌缩到内容固有宽，见 ui/sheet Animated.View 宽度定档）
     const ghostBtn = (label: string, onPress: () => void) => (
         <Pressable
             onPress={() => {
@@ -580,7 +627,10 @@ function TripItemSheet({
             accessibilityRole="button"
             accessibilityLabel={label}
         >
-            <Text className="text-[16px] font-medium text-ink-secondary dark:text-inkd-secondary">
+            <Text
+                numberOfLines={1}
+                className="text-[16px] font-medium text-ink-secondary dark:text-inkd-secondary"
+            >
                 {label}
             </Text>
         </Pressable>
@@ -597,7 +647,11 @@ function TripItemSheet({
             accessibilityRole="button"
             accessibilityLabel={label}
         >
-            <Text className="text-[16px] font-semibold" style={{ color: palette.onPrimaryBtn }}>
+            <Text
+                numberOfLines={1}
+                className="text-[16px] font-semibold"
+                style={{ color: palette.onPrimaryBtn }}
+            >
                 {label}
             </Text>
         </Pressable>
@@ -647,7 +701,9 @@ function TripItemSheet({
 
             {step === 'time' ? (
                 <>
-                    {/* 快速态 = 时刻滚动 + 动作行（footer），中间再无别的字段 */}
+                    {/* 快速态 = 时刻滚动 + 动作行（footer），中间再无别的字段。
+                        节奏（看图验收返工）：头→eyebrow mt-4、eyebrow→滚轮 mt-4、
+                        滚轮→动作行 pb-4（footer pt-3 合计 ≈28 区块档） */}
                     <View className="mt-4 flex-row items-center justify-between">
                         <Text className="text-[11px] font-medium text-ink-muted dark:text-inkd-muted">
                             开始时间
@@ -662,7 +718,7 @@ function TripItemSheet({
                             }}
                         />
                     </View>
-                    <View className="mt-4 flex-row gap-3">
+                    <View className="mt-4 flex-row gap-3 pb-4">
                         <TimeScrollColumn
                             key={`hour-${wheelEpoch}`}
                             label="时"

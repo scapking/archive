@@ -4,7 +4,9 @@ import {
     alarmCardContent,
     alarmDeepLink,
     alarmRoutePath,
+    confirmAlarmSession,
     decideAlarmLadder,
+    isAlarmConfirmed,
     isAlarmHandled,
     isAlarmSettled,
     itemIdFromAlarmPath,
@@ -134,6 +136,33 @@ test('shouldPresentAlarm: reads the shared ledger, /alarm route presence gates t
     assert.equal(shouldPresentAlarm('w-2', 6_000, '/trip/t1/day/2026-11-26'), true);
     // 判定注入位（纯函数可测性保持：handled 谓参可替换）
     assert.equal(shouldPresentAlarm('w-3', 7_000, '/', () => true), false);
+});
+
+// v0.5.1 返工（CDP wheel4/5/6 web 实锤）：慢存储下「停止」点早于行程项 resolve，
+// 旧出口写 Date.now() 即时指纹会**覆盖**页内检查先记的 dueAt 槽 → 回页判据失配
+// → ≤15s 再跳全屏屏，连续劫持。新契约：**确认 = id 级出账**，与抢占标记分账、
+// 优先于任何 at、跨平台单源（web 无注册表/门面 no-op 也闭环）。
+test('confirm = unconditional settle-account, web loop regression (wheel4/5/6 repro)', () => {
+    const dueAt = 1_700_000_000_000;
+    // 页内检查：抢占标记 + 跳屏
+    markAlarmHandled('loop-1', dueAt);
+    // 行程项未 resolve 时点「停止」（item undefined 分支）——只出账，不写覆盖槽
+    confirmAlarmSession('loop-1');
+    // 回页下一拍：必须不再在场
+    assert.equal(isAlarmHandled('loop-1', dueAt), true);
+    assert.equal(shouldPresentAlarm('loop-1', dueAt, '/'), false);
+    // 确认账对任何 at 优先（同会话重排也不自动呈现——用户刚亲手停过）
+    assert.equal(shouldPresentAlarm('loop-1', dueAt + 60_000, '/'), false);
+    assert.equal(isAlarmConfirmed('loop-1'), true);
+    assert.equal(isAlarmConfirmed('loop-never'), false);
+});
+
+test('confirm and preempt marks live in separate ledgers (no overwrite both ways)', () => {
+    confirmAlarmSession('loop-2');
+    markAlarmHandled('loop-2', 42); // 后到的抢占标记不得洗掉确认账
+    assert.equal(isAlarmHandled('loop-2', 999), true); // 仍按确认优先
+    markAlarmHandled('loop-3', 7);
+    assert.equal(isAlarmHandled('loop-3', 8), false); // 未确认项的 at 语义不回归
 });
 
 test('isAlarmSettled: entry present in registry = still ringing; gone = externally stopped', () => {

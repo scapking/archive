@@ -5,6 +5,7 @@ import { alarm } from '@/core/alarm';
 import { notifications } from '@/core/notifications';
 import {
     ALARM_ROUTE,
+    isAlarmConfirmed,
     isAlarmSettled,
     itemIdFromAlarmPath,
     itemIdFromNotificationId,
@@ -34,10 +35,11 @@ import {
  *   notification.content.data.path → itemIdFromAlarmPath → 全屏屏；Android
  *   侧再验注册表未出账（已「停止」的残留 intent 不得复活铃屏），iOS tap 即呈。
  *
- * 全屏屏自身负责确认停止（alarm.confirm 清账），watcher 只做「发现到点/被
- * tap，只拉一次」——去重走 alarm-ladder 共享会话账（id→计划时刻指纹，
- * 页内检查/全屏屏出口写同一本账）；已在 /alarm 路由则不拉，tap 通道例外
- * （显式意图直接呈现，仅 pathname 在场挡重）。
+ * 全屏屏自身负责确认停止（acknowledge → confirmAlarmSession + alarm.confirm），
+ * watcher 只做「发现到点/被 tap，只拉一次」——去重走 alarm-ladder 共享会话
+ * 账（抢占标记 id→at 指纹；**确认出账 id 级无条件**，web 同样闭环——CDP
+ * wheel4/5/6 实锤：即时指纹兜底会覆盖 dueAt 槽位造成确认后再跳的劫持环）；
+ * 已在 /alarm 路由则不拉；tap 通道只绕抢占标记，不绕确认账。
  */
 
 /** 软计时节拍（ms）：20s 对「分钟级」行程时刻足够（同 trip-day 15s 口径量级）。 */
@@ -130,10 +132,13 @@ export function useAlarmReminderWatcher(): void {
                 // 接收器常驻通知的 tap 走 URL 深链（expo-router 原生承接），不经此。
                 if (isAlarmSettled(itemId, await alarm.listScheduled())) return;
             }
-            // tap = 用户显式意图，绕过共享账直接进闹钟屏（watcher 自动展示过
-            // 一次但未确认时，再点通知本就该再呈现；挡入口只剩「已在闹钟屏」
-            // 的 pathname 在场判定。误呈风险已由上方注册表出账检查过滤，
-            // iOS 无注册表语义、tap 即呈为预期行为）。
+            // 确认 = 出账（跨平台单源）：本会话用户亲手停过的提醒，点陈旧
+            // 通知也不得再进铃屏（native 已撤通知、iOS notification 可能滞留，
+            // JS 账是最后闸）。
+            if (isAlarmConfirmed(itemId)) return;
+            // 其余 tap = 用户显式意图，绕过「已拉起未确认」的抢占标记直接呈现
+            // （watcher 自动展示过一次但用户没停时，再点通知本就该再响；挡入口
+            // 只剩「已在闹钟屏」的 pathname 在场判定与上面的确认账）。
             if ((pathnameRef.current ?? '').startsWith(ALARM_ROUTE)) return;
             router.replace({ pathname: '/alarm/[id]', params: { id: itemId } });
         };

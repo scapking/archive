@@ -226,24 +226,45 @@ export function itemIdFromNotificationId(identifier: string): string | null {
  * 另一通道的屏后，卸载会带走其局部集，回页对同一 ongoing 项二次跳屏 =
  * 「关掉又响」复响回路（v0.5.1 纠错实测推演）。以 at 为指纹：同一行程项被
  * 重排（updateTripItem → 新 at）后天然重新在场，不会被陈旧账吞掉。
- * 纯运行时 Set/Map（本文件仍零 import，node 测试可直接驱动）。
+ * 纯运行时 Set/Map（本文件仍零 import，node 测试直接驱动）。
  */
 const handledAlarms = new Map<string, number>();
 
-/** 记入账：id 在该计划时刻已被处理（拉起确认/停止/页内跳过）。 */
+/**
+ * 「用户已确认停止」id 级账（v0.5.1 返工，CDP wheel4/5/6 实锤）：
+ * 上一轮单靠 (id→at) 指纹有一处洞——慢存储（web OPFS / native 首帧竞态）下
+ * 用户在行程项尚未 resolve 时点「停止」，出口只能用即时值兜底指纹，会**覆盖**
+ * 页内检查先记的 dueAt 槽位 → 回页判据失配 → 下一拍再跳，形成劫持环。
+ * confirm 与抢占标记分账存放、互不覆盖：**确认 = 出账**，id 级、跨平台单源
+ * （web 无原生注册表/facade no-op 不影响 JS 账本闭环），且优先于任何 at。
+ * 代价如实：同一会话内该项被重排新时刻也不再 app 内自动呈现（系统通知/FSI
+ * 通道不受影响）——用户刚亲手停过的提醒，同会话再自动弹属打扰。
+ */
+const confirmedAlarms = new Set<string>();
+
+/** 确认出口专用（全屏屏 acknowledge 唯一写主）：id 级出账，无条件、跨平台。 */
+export function confirmAlarmSession(id: string): void {
+    confirmedAlarms.add(id);
+}
+
+/** 是否已被用户确认停止（tap 通道同样受此闸：确认=离场，点陈旧通知不再回屏）。 */
+export function isAlarmConfirmed(id: string): boolean {
+    return confirmedAlarms.has(id);
+}
+
+/** 记入账：id 在该计划时刻已被**拉起/跳过**（watcher 与页内检查的抢占标记）。 */
 export function markAlarmHandled(id: string, at: number): void {
     handledAlarms.set(id, at);
 }
 
-/** 查询：id 的**该次**计划是否已处理（重排后 at 不同 → 未处理）。 */
+/** 查询：id 该次计划是否已处理——确认账优先，其次同 at 指纹。 */
 export function isAlarmHandled(id: string, at: number): boolean {
-    return handledAlarms.get(id) === at;
+    return confirmedAlarms.has(id) || handledAlarms.get(id) === at;
 }
 
 /**
- * watcher 是否应把该到点闹钟拉进全屏屏（v0.5.1 起为可测纯函数——原内联于
- * alarm-watcher 的 pushAlarm，两处「关不掉/重复弹」根因都落在这个判定上）：
- * - 会话账已记（同 at 已拉起/已处理）→ false；
+ * watcher/页内检查是否应把该到点闹钟拉进全屏屏（v0.5.1 起为可测纯函数）：
+ * - 会话账已记（已确认 或 同 at 已拉起/已跳过）→ false；
  * - 已在 /alarm 路由（含 /alarm/<id>）→ false：全屏屏在场，不叠第二张。
  */
 export function shouldPresentAlarm(

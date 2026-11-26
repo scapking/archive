@@ -26,6 +26,11 @@ const screenSource = await readFile(
     path.join(repoRoot, 'src/features/archive/trip-day-screen.tsx'),
     'utf8',
 );
+/** 键盘避让/居中卡原语（宽度定档闸跨文件读源）。 */
+const sheetPrimitiveSource = await readFile(
+    path.join(repoRoot, 'src/features/archive/ui/sheet.tsx'),
+    'utf8',
+);
 /** 表单弹层段（TripItemSheet → TripDayScreen 屏体之间）。v0.5.1 令 1：
  *  段尾锚点原为「应用内闹钟确认卡 TripItemAlarmCard」——该弹窗已整体退场
  *  （到点统一走全屏闹钟屏 /alarm/<id>），锚点随之改为 TripDayScreen 之前的
@@ -83,12 +88,13 @@ test('滚动选时性能闸：原生 ScrollView 物理 + 结束事件 settle，�
     assert.match(times, /Math\.max\(0, Math\.min\(values\.length - 1, Math\.round\(y \/ WHEEL_ROW_H\)\)\)/, 'settle 缺 clamp 取整');
 });
 
-test('双列轻量滚轮：时 0-23 × 分 5 分档、3 行 44dp 窗口、初值与「此刻」同派生', () => {
+test('双列轻量滚轮：时 0-23 × 分 5 分档、5 行 44dp 窗口、初值与「此刻」同派生', () => {
     const times = timeSection();
     const sheet = formSection();
     assert.match(times, /const WHEEL_ROW_H = 44;/, '行高必须 ≥44dp 触控下限');
-    assert.match(times, /const WHEEL_VISIBLE_ROWS = 3;/, '窗口收小到 3 行（0.4.3 的 5 行是「重」）');
-    assert.match(times, /const WHEEL_PAD_ROWS = 1;/, '垫行与 3 行窗口联动');
+    // v0.5.1 看图验收返工：3 行窗被判「像 2×2 钮格」→ 升 5 行档（iOS picker 密度）
+    assert.match(times, /const WHEEL_VISIBLE_ROWS = 5;/, '窗口必须 5 行档（3 行不像滚轮）');
+    assert.match(times, /const WHEEL_PAD_ROWS = 2;/, '垫行与 5 行窗口联动（渐隐遮罩同高）');
     assert.match(times, /HOUR_VALUES = Array\.from\(\{ length: 24 \}/, '时列值域 0-23');
     assert.match(times, /MINUTE_VALUES = Array\.from\(\{ length: 12 \}, \(_, i\) => i \* 5\)/, '分列 5 分量化（00-55）');
     assert.ok(times.includes('nextFiveMinuteSlot'), '初值/「此刻」必须共用 5 分钟档派生');
@@ -107,6 +113,34 @@ test('滚动列可达性：role/label 齐全、settle 触感、禁用态诚实�
     assert.ok(times.includes('accessibilityState={{ disabled }}'), '「此刻」缺 disabled 态播报');
     assert.ok(times.includes('hitSlop'), '小目标缺命中外扩');
     assert.ok(!/<TextInput/.test(screenSource), 'trip-day-screen 出现裸 TextInput（IME 纪律）');
+});
+
+test('滚轮呈现态（看图验收返工）：渐隐遮罩 + 中带实体底板 + settle 驱动的异级字阶', () => {
+    const times = timeSection();
+    const sheet = formSection();
+    // ① 上下缘渐隐遮罩：LinearGradient 双枚（顶 raised→透明 / 底反向），
+    //    各 2 垫行高、pointerEvents none；色走 palette 档零散写 hex
+    const maskCount = (times.match(/<LinearGradient/g) ?? []).length;
+    assert.equal(maskCount, 2, '渐隐遮罩必须上下两枚');
+    assert.ok(times.includes('`${palette.raised}00`'), '遮罩色未走 palette.raised 同色渐隐');
+    assert.ok(/height: WHEEL_PAD_ROWS \* WHEEL_ROW_H/.test(times), '遮罩高度未随垫行联动');
+    // ② 井底/中带实体分层：raised 井 + base 白条（肉眼可辨的「当前行」容器）
+    assert.ok(times.includes('bg-ink-raised dark:bg-inkd-raised'), '滚轮井底未沉 raised 档');
+    assert.ok(times.includes('bg-ink-base dark:bg-inkd-base'), '中带缺 base 实体底板');
+    // ③ 字阶异级：中行 20/600 text 档，其余 15/400 secondary 档；异级源 =
+    //    index prop（settle 一次性 setState 驱动）——不得引入逐帧滚动值
+    assert.match(times, /fontSize: i === index \? 20 : 15/, '缺中/邻行字号异级');
+    assert.match(times, /fontWeight: i === index \? '600' : '400'/, '缺中/邻行字重异级');
+    assert.match(times, /color: i === index \? palette\.text : palette\.secondary/, '缺中/邻行色阶异级');
+    assert.ok(!times.includes('scrollY'), '出现逐帧滚动值驱动的样式（性能红线）');
+    // ④ 动作行文案不折行（实拍「直接创/建」缺陷闸）
+    assert.ok((sheet.match(/numberOfLines=\{1\}/g) ?? []).length >= 2, '动作行按钮缺 numberOfLines=1');
+    // ⑤ 根因闸：CenteredSheet 宽度定档（Animated.View 全宽 + 卡体 maxWidth 档，
+    //    防卡宽再塌缩到内容固有宽）
+    assert.match(sheetPrimitiveSource, /width: '100%'/, 'sheet Animated.View 缺宽度定档（卡宽塌缩根因）');
+    assert.match(sheetPrimitiveSource, /alignItems: 'center'/, 'sheet 全宽后缺水平居中档');
+    // ⑥ 节奏：滚轮→动作行自带 pb-4 呼吸（footer pt-3 合计区块档）
+    assert.ok(sheet.includes('mt-4 flex-row gap-3 pb-4'), '滚轮与动作行之间缺区块呼吸');
 });
 
 test('快速路径字段退场 + 渐进动作：直接创建/下一步 → 改时间/添加，withAlarm 恒 true', () => {
@@ -146,7 +180,7 @@ test('居中卡 sheet 语言保持：ui/sheet 原语 + footer 钉底动作行 + 
     assert.ok(!sheet.includes('justify-end'), '表单仍是贴底弹层（居中卡契约）');
     // 动作行走 footer 槽（= 契约「容器外底部单行」且键盘弹起不被吞）
     assert.ok(sheet.includes('footer='), '动作行必须走 CenteredSheet footer 槽');
-    assert.ok(sheet.indexOf('直接创建') > sheet.indexOf('footer='), '动作行不在 footer 槽内');
+    assert.ok(sheet.indexOf("ghostBtn('直接创建'") > sheet.indexOf('footer='), '动作行不在 footer 槽内');
     // Android 返回键：第二步先回滚轮，滚轮态关闭；打开即收键盘
     assert.ok(sheet.includes('hardwareBackPress'), 'sheet 缺 Android 返回键闸');
     assert.ok(sheet.includes("step === 'detail'"), '返回键缺两步退出语义');
