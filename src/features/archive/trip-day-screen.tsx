@@ -194,7 +194,11 @@ const TripItemCardFace = memo(function TripItemCardFace({
     cover,
     media,
     editable,
+    onOpenMenu,
 }: {
+    /** v0.5.3：卡内嵌按压体（时刻/笔记位）长按 = 弹操作卡（与卡体空白区
+     *  同一入口，兑现「长按卡任意处出操作卡」）；锁定态传 undefined 关断。 */
+    onOpenMenu?: () => void;
     item: db.TripItemRow;
     /** 派生阶段（tripItemPhaseMap，与 deck 排序同源）；卡面记号唯一依据。 */
     phase: TripItemPhase;
@@ -273,6 +277,7 @@ const TripItemCardFace = memo(function TripItemCardFace({
                         params: { id: item.trip_id, itemId: item.id },
                     });
                 }}
+                onLongPress={onOpenMenu}
                 hitSlop={8}
                 accessibilityRole="button"
                 accessibilityLabel={`编辑 ${item.time} 的备注`}
@@ -318,6 +323,7 @@ const TripItemCardFace = memo(function TripItemCardFace({
             ) : (
                 <Pressable
                     onPress={startNoteEdit}
+                    onLongPress={onOpenMenu}
                     disabled={!editable}
                     accessibilityRole={editable ? 'button' : undefined}
                     accessibilityLabel={item.description ? '编辑备注' : '补一句这一时刻'}
@@ -1260,15 +1266,29 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
                 key: item.id,
                 // v0.4.9 渐变底退场：三态卡面都是纸面档，页码恒走默认 muted
                 //（'light' 白字档只属于深底卡面，本屏不再产生）
-                node: (
-                    <TripItemCardFace
-                        item={item}
-                        phase={phaseById.get(item.id) ?? 'pending'}
-                        cover={coverFor(item.id)}
-                        media={mediaByItem.get(item.id) ?? NO_MEDIA}
-                        editable={!locked}
-                    />
-                ),
+                node: (() => {
+                    // v0.5.3：同一长按 handler 双路——卡体空白走 deck 容器
+                    // 长按，时刻/笔记位内嵌按压体走 face 的 onOpenMenu 转发
+                    // （否则长按落在热点上会被点按语义吞成导航/就地编辑，
+                    // 「长按任意处出操作卡」破洞）。closure 按 item 派生，
+                    // deps 变化才重建（与 node 同周期，memo 面不空转）。
+                    const openMenu = locked
+                        ? undefined
+                        : () => {
+                              haptics.impact('medium');
+                              setActionItem(item);
+                          };
+                    return (
+                        <TripItemCardFace
+                            item={item}
+                            phase={phaseById.get(item.id) ?? 'pending'}
+                            cover={coverFor(item.id)}
+                            media={mediaByItem.get(item.id) ?? NO_MEDIA}
+                            editable={!locked}
+                            onOpenMenu={openMenu}
+                        />
+                    );
+                })(),
                 onLongPress: locked
                     ? undefined
                     : () => {

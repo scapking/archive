@@ -102,3 +102,16 @@ test('trip-detail 屏头：TripBadge 全域退场（import+JSX 清零，right �
     assert.ok(!detailSource.includes('TripBadge'), 'trip-detail 残留 TripBadge');
     assert.ok(detailSource.includes('accessibilityLabel="编辑行程"'), '编辑铅笔缺位（right 槽应有且仅有它）');
 });
+
+// v0.5.3 收口补强：卡内嵌按压体（时刻/笔记位）长按 = 弹操作卡（与卡体
+// 空白区同一入口）。否则长按落在时刻数字上被 onPress 吞成跳笔记、落正文
+// 吞成就地编辑——「长按卡任意处出操作卡」破洞。
+test('nested card pressables forward long-press to the action menu', () => {
+    const src = readFileSync(
+        path.join(repoRoot, 'src/features/archive/trip-day-screen.tsx'),
+        'utf8',
+    ).replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.match(src, /onLongPress=\{onOpenMenu\}/, '时刻/笔记位按压体必须挂 onLongPress=onOpenMenu');
+    assert.ok((src.match(/onLongPress=\{onOpenMenu\}/g) ?? []).length >= 2, '时刻 + 笔记位两处都要转发长按');
+    assert.match(src, /onOpenMenu=\{openMenu\}/, 'face 必须收到装配处同一 openMenu');
+});
