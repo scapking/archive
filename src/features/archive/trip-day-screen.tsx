@@ -359,6 +359,29 @@ function nextFiveMinuteSlot(now: Date): { hour: number; minute: number } {
  * index 的外部跳变（「此刻」）由宿主以 key 重挂本列完成定位——列内不做
  * 受控回写，省掉一次「滚动→state→回写」的往返。
  */
+/**
+ * 滚轮单行（纯静态渲染）：active 只由 settle 通道更新的 index 派生——
+ * 实体中行为 true，渐隐区邻行与回绕垫行恒 false（15/400 secondary 弱档）。
+ * 行高 = WHEEL_ROW_H（44dp 触控下限档，垫行与实体行同构，居中线公式不变）。
+ */
+function WheelValueRow({ value, active }: { value: number; active: boolean }) {
+    const palette = usePalette();
+    return (
+        <View className="items-center justify-center" style={{ height: WHEEL_ROW_H }}>
+            <Text
+                style={{
+                    fontSize: active ? 20 : 15,
+                    fontWeight: active ? '600' : '400',
+                    color: active ? palette.text : palette.secondary,
+                    fontVariant: ['tabular-nums'],
+                }}
+            >
+                {pad2(value)}
+            </Text>
+        </View>
+    );
+}
+
 function TimeScrollColumn({
     label,
     values,
@@ -384,9 +407,11 @@ function TimeScrollColumn({
 
     // settle = 滚动结束后的一次性换算（性能红线：不在 onScroll 里跑）。
     // 取模恒成立：index 先 clamp 到 [0, count-1]，「松手必落合法档」不依赖
-    // 事件顺序；吸附归位只在偏移 >1px 时发一次平滑 scrollTo（去重闸同
-    // editor.tsx 口径——scrollend 再入本函数时已对齐，收敛；快速连滑时
-    // 后续拖拽直接接管手势，无动画排队死锁）
+    // 事件顺序。吸附归位 = **animated:false 即时硬对齐**（终验 race 修正：
+    // 平滑 scrollTo 与惯性/二次 settle 竞态，500ms 测量窗口内仍未回中
+    // offCenterPx=5；settle 本就是结束事件后的最后一拍，直接落位没有
+    // 动画可抢——顺带消掉松手后再调度的滚动动画帧，drag perf 压线 jank
+    // 同根因退场）；偏移 ≤1px 不动（幂等，双通道重复回调无害）
     const settle = (y: number) => {
         const next = Math.max(0, Math.min(values.length - 1, Math.round(y / WHEEL_ROW_H)));
         if (next !== index) {
@@ -395,7 +420,7 @@ function TimeScrollColumn({
         }
         const snapped = next * WHEEL_ROW_H;
         if (Math.abs(y - snapped) > 1) {
-            scrollRef.current?.scrollTo({ y: snapped, animated: true });
+            scrollRef.current?.scrollTo({ y: snapped, animated: false });
         }
     };
 
@@ -427,26 +452,27 @@ function TimeScrollColumn({
                     onScrollEndDrag={(e) => settle(e.nativeEvent.contentOffset.y)}
                     accessibilityLabel={accessibilityLabel}
                 >
-                    <View style={{ height: WHEEL_PAD_ROWS * WHEEL_ROW_H }} />
-                    {values.map((value, i) => (
-                        <View
-                            key={value}
-                            className="items-center justify-center"
-                            style={{ height: WHEEL_ROW_H }}
-                        >
-                            <Text
-                                style={{
-                                    fontSize: i === index ? 20 : 15,
-                                    fontWeight: i === index ? '600' : '400',
-                                    color: i === index ? palette.text : palette.secondary,
-                                    fontVariant: ['tabular-nums'],
-                                }}
-                            >
-                                {pad2(value)}
-                            </Text>
-                        </View>
+                    {/* 回绕垫行（终验看图：端档时缘带全空被判「不像环」）：
+                        上垫 = 值域末 PAD 值（00 头上显 50/55），下垫 = 首 PAD
+                        值（55 脚下显 00/05）。index 映射保持线性——垫行总高仍
+                        PAD*ROW_H，行 i 居中线偏移量 i*ROW_H 一字不动；垫行
+                        只做视觉（恒弱档、不可选，settle clamp 与吸附公式零接
+                        触），环回风险面 = 无。值域 len(12/24) ≥ 2*PAD 恒成立，
+                        回绕不会与实体行同屏重复成假候选（即便重叠也只是渐隐
+                        区的邻行镜像，落位仍走 clamp） */}
+                    {Array.from({ length: WHEEL_PAD_ROWS }, (_, i) => (
+                        <WheelValueRow
+                            key={`pad-top-${i}`}
+                            value={values[values.length - WHEEL_PAD_ROWS + i]}
+                            active={false}
+                        />
                     ))}
-                    <View style={{ height: WHEEL_PAD_ROWS * WHEEL_ROW_H }} />
+                    {values.map((value, i) => (
+                        <WheelValueRow key={value} value={value} active={i === index} />
+                    ))}
+                    {Array.from({ length: WHEEL_PAD_ROWS }, (_, i) => (
+                        <WheelValueRow key={`pad-bot-${i}`} value={values[i]} active={false} />
+                    ))}
                 </ScrollView>
                 {/* 上下缘渐隐遮罩（盖在行上，pointerEvents none）：井底色 raised →
                     同色 alpha 0，各 2 行高——行滚入边缘化开，「滚轮」纵深信号；

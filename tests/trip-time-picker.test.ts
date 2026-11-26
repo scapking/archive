@@ -81,9 +81,12 @@ test('滚动选时性能闸：原生 ScrollView 物理 + 结束事件 settle，�
     assert.ok(!times.includes("addListener('scroll'"), 'scroll 事件逐帧订阅回潮');
     assert.ok(!times.includes('Animated'), '滚轮段出现 JS 驱动动画（交原生物理）');
     // web 吸附补齐：RNW 0.21 忽略 snapToInterval——settle 内偏移 >1px 时
-    // 一次平滑 scrollTo 归位（去重闸同 editor.tsx 口径，收敛不死循环）
+    // 一次 **animated:false 即时硬对齐**（终验 race：平滑动画与惯性/二次
+    // settle 竞态，500ms 测量窗口 offCenterPx=5 未归位；且动画帧正是 drag
+    // perf 压线 jank 的同根因）；≤1px 幂等不动，双通道重复回调无害
     assert.match(times, /Math\.abs\(y - snapped\) > 1/, '缺去重阈值的 scrollTo 归位');
-    assert.match(times, /scrollTo\(\{ y: snapped, animated: true \}\)/, '缺归位 scrollTo 调用');
+    assert.match(times, /scrollTo\(\{ y: snapped, animated: false \}\)/, '归位 scrollTo 必须即时硬对齐（animated:false 锁形）');
+    assert.ok(!/scrollTo\(\{ y: snapped, animated: true \}\)/.test(times), '平滑归位动画回潮（race 同根因）');
     // 取模恒成立：settle 先 clamp 再选值（松手必落合法档位）
     assert.match(times, /Math\.max\(0, Math\.min\(values\.length - 1, Math\.round\(y \/ WHEEL_ROW_H\)\)\)/, 'settle 缺 clamp 取整');
 });
@@ -127,19 +130,26 @@ test('滚轮呈现态（看图验收返工）：渐隐遮罩 + 中带实体底�
     // ② 井底/中带实体分层：raised 井 + base 白条（肉眼可辨的「当前行」容器）
     assert.ok(times.includes('bg-ink-raised dark:bg-inkd-raised'), '滚轮井底未沉 raised 档');
     assert.ok(times.includes('bg-ink-base dark:bg-inkd-base'), '中带缺 base 实体底板');
-    // ③ 字阶异级：中行 20/600 text 档，其余 15/400 secondary 档；异级源 =
-    //    index prop（settle 一次性 setState 驱动）——不得引入逐帧滚动值
-    assert.match(times, /fontSize: i === index \? 20 : 15/, '缺中/邻行字号异级');
-    assert.match(times, /fontWeight: i === index \? '600' : '400'/, '缺中/邻行字重异级');
-    assert.match(times, /color: i === index \? palette\.text : palette\.secondary/, '缺中/邻行色阶异级');
+    // ③ 字阶异级（WheelValueRow 收口）：active（=settle 后的 index 命中行）
+    //    20/600 text 档，其余与回绕垫行恒 15/400 secondary；异级源仍是
+    //    settle 一次性 setState——不得引入逐帧滚动值
+    assert.match(times, /fontSize: active \? 20 : 15/, '缺中/邻行字号异级');
+    assert.match(times, /fontWeight: active \? '600' : '400'/, '缺中/邻行字重异级');
+    assert.match(times, /color: active \? palette\.text : palette\.secondary/, '缺中/邻行色阶异级');
     assert.ok(!times.includes('scrollY'), '出现逐帧滚动值驱动的样式（性能红线）');
-    // ④ 动作行文案不折行（实拍「直接创/建」缺陷闸）
+    // ④ 端档回绕垫行（终验看图：00 顶档/55 底档缘带全空）：上垫取值域末
+    //    PAD 值、下垫取首 PAD 值；index 映射线性不变（垫行总高仍 PAD*ROW_H，
+    //    行 i 居中线公式零触碰）
+    assert.match(times, /values\[values\.length - WHEEL_PAD_ROWS \+ i\]/, '缺上缘回绕垫行（50/55 挂 00 头上）');
+    assert.match(times, /key=\{`pad-bot-\$\{i\}`\}\s+value=\{values\[i\]\}/, '缺下缘回绕垫行（00/05 挂 55 脚下）');
+    assert.match(times, /active=\{i === index\}/, '实体行 active 映射不得偏离 settle index');
+    // ⑤ 动作行文案不折行（实拍「直接创/建」缺陷闸）
     assert.ok((sheet.match(/numberOfLines=\{1\}/g) ?? []).length >= 2, '动作行按钮缺 numberOfLines=1');
-    // ⑤ 根因闸：CenteredSheet 宽度定档（Animated.View 全宽 + 卡体 maxWidth 档，
+    // ⑥ 根因闸：CenteredSheet 宽度定档（Animated.View 全宽 + 卡体 maxWidth 档，
     //    防卡宽再塌缩到内容固有宽）
     assert.match(sheetPrimitiveSource, /width: '100%'/, 'sheet Animated.View 缺宽度定档（卡宽塌缩根因）');
     assert.match(sheetPrimitiveSource, /alignItems: 'center'/, 'sheet 全宽后缺水平居中档');
-    // ⑥ 节奏：滚轮→动作行自带 pb-4 呼吸（footer pt-3 合计区块档）
+    // ⑦ 节奏：滚轮→动作行自带 pb-4 呼吸（footer pt-3 合计区块档）
     assert.ok(sheet.includes('mt-4 flex-row gap-3 pb-4'), '滚轮与动作行之间缺区块呼吸');
 });
 
