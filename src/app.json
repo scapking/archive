@@ -2,7 +2,7 @@
   "expo": {
     "name": "Archive",
     "slug": "archive",
-    "version": "0.5.2",
+    "version": "0.5.3",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "archive",
@@ -10,7 +10,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.anonymous.archive",
-      "buildNumber": "16",
+      "buildNumber": "17",
       "icon": "./assets/images/icon.png",
       "infoPlist": {
         "NSFaceIDUsageDescription": "Allow Archive to use Face ID to unlock the app."
@@ -18,7 +18,7 @@
     },
     "android": {
       "package": "com.anonymous.archive",
-      "versionCode": 16,
+      "versionCode": 17,
       "adaptiveIcon": {
         "backgroundColor": "#F7F2E8",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
