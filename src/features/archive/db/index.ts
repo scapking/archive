@@ -1057,6 +1057,25 @@ export async function listTripItemsByDay(tripId: string, date: string): Promise<
     );
 }
 
+/**
+ * 某天全部未完成行程项，跨行程（v0.5.3 令5 收口：web 端根级 watcher 软计时
+ * 数据源——web 无原生注册表/已排通知可扫，listScheduled 门面恒 []，前台到点
+ * 拉起此前只在 day 屏页内 effect 生效）。软删行程/行程项双滤；status='pending'
+ * 与页内 effect 的 ongoing 阶段判据同源（tripItemPhaseMap 把「pending 且已过点」
+ * 归 ongoing，SQL 不需要时间列比较，dueAt 由 JS 单源 tripItemDueAt 折算）。
+ */
+export async function listPendingTripItemsForDate(date: string): Promise<TripItemRow[]> {
+    const db = await getDb();
+    return db.getAll<TripItemRow>(
+        `SELECT ti.* FROM trip_items ti
+         JOIN trips t ON t.id = ti.trip_id
+         WHERE ti.deleted_at IS NULL AND t.deleted_at IS NULL
+           AND ti.status = 'pending' AND ti.local_date = ?
+         ORDER BY ti.time ASC`,
+        [date],
+    );
+}
+
 /** 某行程全部行程项（删行程前收集通知 identifier 用，对齐 deleteTrip 的先收集后级联口径）。 */
 export async function listTripItemsByTrip(tripId: string): Promise<TripItemRow[]> {
     const db = await getDb();

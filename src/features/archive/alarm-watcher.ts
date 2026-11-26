@@ -3,8 +3,12 @@ import { AppState, Platform, type AppStateStatus } from 'react-native';
 import { usePathname, useRouter } from 'expo-router';
 import { alarm } from '@/core/alarm';
 import { notifications } from '@/core/notifications';
+import * as db from './db';
+import { tripItemDueAt } from './trip-item-logic';
+import { isTripLocked, todayLocal } from './trip-logic';
 import {
     ALARM_ROUTE,
+    alarmCardContent,
     isAlarmConfirmed,
     isAlarmSettled,
     itemIdFromAlarmPath,
@@ -12,6 +16,7 @@ import {
     markAlarmHandled,
     pickDueEntries,
     shouldPresentAlarm,
+    type ScheduledAlarmEntry,
 } from './alarm-ladder';
 import { refreshAlarmMonitor } from './store';
 
@@ -37,6 +42,10 @@ import { refreshAlarmMonitor } from './store';
  *   data.path 此前无人消费，点通知只回首页不弹闹钟）与前台到点直呈：扫
  *   expo-notifications 已调度列表（identifier `trip-item-<id>`），到点即拉
  *   全屏屏并撤销该通知（避免进屏后系统横幅重复打扰）；
+ * - web（v0.5.3 令5 收口）：无系统面 = 无通知/无注册表（ladder 口径「in-app
+ *   fullscreen only」），软计时支路直查 DB 当日 pending 行程项补前台到点腿；
+ *   刷新即新会话故刻意只扫「今天」防历史积压复跳，锁定行程跳过，与 day 屏
+ *   页内 effect 共享同一会话账天然去重；
  * - 双端 tap 通道（令 3 行为一致）：onResponse 订阅 + 冷启 getLastResponse——
  *   notification.content.data.path → itemIdFromAlarmPath → 全屏屏；Android
  *   侧再验注册表未出账（已「停止」的残留 intent 不得复活铃屏），iOS tap 即呈。
@@ -68,8 +77,10 @@ export function useAlarmReminderWatcher(): void {
     const tickRef = useRef<(() => Promise<void>) | null>(null);
 
     useEffect(() => {
-        if (Platform.OS === 'web') return;
-
+        // v0.5.3 令5 收口：web 不再整体早退——软计时核心三端同跑，web 缺的
+        // 只是系统面（drainFired/listScheduled 门面恒 []、notification tap
+        // try/catch 降级），tick 的 web 支路直查 DB 当日 pending 项补齐前台
+        // 到点腿（alarm-ladder「web = in-app fullscreen only」口径的兑现）。
         const pushAlarm = (id: string, at: number): void => {
             // 去重/在场判定收口到 alarm-ladder.shouldPresentAlarm + 共享会话账
             // （纯函数与账都在 ladder，tests/alarm-ladder 有契约用例）。共享账而
@@ -110,7 +121,7 @@ export function useAlarmReminderWatcher(): void {
                 // 进程死了还有 AlarmManager 到点 + 接收器 sync / boot / sticky
                 // 三层原生兜底，JS 不在场监控面也不裸奔）
                 void refreshAlarmMonitor(scheduled);
-            } else {
+            } else if (Platform.OS === 'ios') {
                 // iOS：扫已调度本地通知（date trigger 到点 = 前台拉起全屏屏）
                 try {
                     const ExpoNotifications = await import('expo-notifications');
@@ -133,6 +144,43 @@ export function useAlarmReminderWatcher(): void {
                     }
                 } catch (error) {
                     console.warn('[alarm-watcher] iOS 调度扫描失败:', error);
+                }
+            } else {
+                // web（v0.5.3 令5）：无原生注册表/已排通知可扫 → 直查 DB 当日
+                // pending 行程项（listPendingTripItemsForDate 双滤软删），dueAt
+                // 走 tripItemDueAt 单源、文案走 alarmCardContent 单源折算进
+                // ScheduledAlarmEntry 形状（pickDueEntries 只读 at，title/body
+                // 为形状一致性顺带）。拉起/去重与原生完全同路（pushAlarm →
+                // shouldPresentAlarm + 共享会话账）。与原生的一处刻意收窄：
+                // 只扫「今天」——web 刷新即新会话，全量积压会让每个历史过点
+                // 未确认项每次 reload 都复跳一次；已结束（锁定）行程整段跳过
+                // （与 day 屏页内 effect 同闸）。页内 effect 继续在场，与根级
+                // 网通过同一账本天然去重，无双跳。
+                const today = todayLocal();
+                try {
+                    const [rows, trips] = await Promise.all([
+                        db.listPendingTripItemsForDate(today),
+                        db.listTrips(),
+                    ]);
+                    const lockedIds = new Set(
+                        trips.filter((trip) => isTripLocked(trip, today)).map((trip) => trip.id),
+                    );
+                    const entries: ScheduledAlarmEntry[] = rows
+                        .filter((row) => !lockedIds.has(row.trip_id))
+                        .map((row) => {
+                            const card = alarmCardContent(row);
+                            return {
+                                id: row.id,
+                                at: tripItemDueAt(row.local_date, row.time),
+                                title: card.title,
+                                body: card.body,
+                            };
+                        });
+                    for (const entry of pickDueEntries(entries, Date.now())) {
+                        pushAlarm(entry.id, entry.at);
+                    }
+                } catch (error) {
+                    console.warn('[alarm-watcher] web DB 扫描失败:', error);
                 }
             }
         };
@@ -228,7 +276,7 @@ export function useAlarmReminderWatcher(): void {
     // 恰好到点」要空等最多一个节拍——pathname 每次变化即跑一拍 tick（幂等，
     // 去重走共享会话账；BootScreen 窗口期 pathname 不变，不产生空转风暴）。
     useEffect(() => {
-        if (Platform.OS === 'web') return;
+        // 三端同拍（v0.5.3 令5：web 也有软计时网了，切页瞬间到点不等下一拍）
         void tickRef.current?.();
     }, [pathname]);
 }

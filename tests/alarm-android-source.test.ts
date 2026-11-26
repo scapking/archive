@@ -236,6 +236,23 @@ test('watcher soft-timer core registers before notification tap channel (v0.5.3 
     assert.match(rootLayout(), /useAlarmReminderWatcher\(\);/);
 });
 
+test('watcher web branch scans today pending items from DB (v0.5.3 令5 三端一致)', () => {
+    const src = watcher();
+    // web 不再整体早退：软计时核心三端同跑（drain/listScheduled 门面 web 恒 []
+    // 天然无操作，tap 通道 try/catch 降级），tick 有显式 web 支路直查 DB
+    assert.ok(!/if \(Platform\.OS === 'web'\) return;/.test(src), 'web 早退必须退场（令5 前台到点 web 可验）');
+    assert.match(src, /db\.listPendingTripItemsForDate\(today\)/, 'web 支路 = DB 当日 pending 扫描');
+    assert.match(src, /isTripLocked\(trip, today\)/, '锁定行程整段跳过（与 day 屏 effect 同闸）');
+    assert.match(src, /pickDueEntries\(entries, Date\.now\(\)\)/, '到点判定走 ladder 单源');
+    // SQL 面：跨行程 + status pending + 双软删过滤
+    const dbSrc = read(path.join(repoRoot, 'src', 'features', 'archive', 'db', 'index.ts'));
+    const fn = dbSrc.split('export async function listPendingTripItemsForDate')[1] ?? '';
+    assert.ok(fn.length > 0, 'db 查询函数在场');
+    for (const token of ["ti.deleted_at IS NULL", "t.deleted_at IS NULL", "ti.status = 'pending'", "ti.local_date = ?"]) {
+        assert.ok(fn.includes(token), `SQL 缺判据: ${token}`);
+    }
+});
+
 test('settings screen carries the reminder permission self-check card (Android-only, three rows)', () => {
     const src = settingsScreen();
     assert.match(src, /提醒权限自检/);
