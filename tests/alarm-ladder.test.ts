@@ -227,3 +227,35 @@ test('alarmMonitorNotificationText renders the user-ordered copy (N 监控中 ·
         { title: '1 个行程提醒监控中', body: '最近 00:00' },
     );
 });
+
+// ─── v0.5.3 轮 B：「前台任意页到点弹全屏」决策表（需求 5 纯函数闸）───────────
+
+test('foreground any-route + due + unconfirmed ⇒ present from every route (v0.5.3 轮 B)', () => {
+    const now = 10_000;
+    const routes = ['/', '/trip/t1/day/2026-11-26', '/trips', '/archive', '/settings', '/event/e1', '/journal/j1'];
+    for (const route of routes) {
+        // 未确认、无会话标记：任意前台路由的到点项都应被拉进全屏闹钟屏
+        assert.equal(shouldPresentAlarm(`due-${route}`, now - 1_000, route), true, route);
+    }
+    // 抢占标记只锁同 at 指纹（一拍一次、幂等去重；重排新 at 天然重新在场）
+    markAlarmHandled('due-marked', now - 1_000);
+    assert.equal(shouldPresentAlarm('due-marked', now - 1_000, '/settings'), false);
+    assert.equal(shouldPresentAlarm('due-marked', now, '/settings'), true);
+    // 确认 = id 级出账：任何 at 在任何路由都不再自动弹（用户刚亲手停过）
+    confirmAlarmSession('due-confirmed');
+    assert.equal(shouldPresentAlarm('due-confirmed', now - 1_000, '/'), false);
+    assert.equal(shouldPresentAlarm('due-confirmed', now + 60_000, '/'), false);
+    // 唯一路由排除 = 闹钟屏在场（不叠第二张铃屏）
+    assert.equal(shouldPresentAlarm('due-on-alarm', now - 1_000, '/alarm/x'), false);
+});
+
+test('tick feeds every due entry (at <= now, asc) to the present decision (v0.5.3 轮 B)', () => {
+    const now = 10_000;
+    const scheduled = [entry('future', now + 60_000), entry('past', now - 1_000), entry('equal', now)];
+    const due = pickDueEntries(scheduled, now);
+    assert.deepEqual(due.map((e) => e.id), ['past', 'equal']);
+    // 每个到点项在任意前台路由都过 present 闸（本用例 id 全新，会话账未记）
+    for (const e of due) assert.equal(shouldPresentAlarm(e.id, e.at, '/archive'), true);
+    // future 项不参与到点呈现（判据同源 pending：at > now）
+    assert.equal(shouldPresentAlarm('future', now + 60_000, '/archive'), true); // 纯函数不知 now——watcher 以 pickDueEntries 挡在闸前
+});

@@ -180,11 +180,27 @@ export function AlarmFullscreenScreen({ itemId }: AlarmFullscreenScreenProps) {
         };
     }, [stopPlayer, itemId]);
 
+    // 锁屏呈现面（v0.5.3 真机纠错·根因 5）：FSI 把 Activity 拉起来≠用户看得见——
+    // Activity 必须自开 showWhenLocked/turnScreenOn（AOSP 时钟同款），否则息屏
+    // 到点时全屏屏停在锁屏后面 = 「到了时间还是不能回到 app」。本项目 CNG 无
+    // android/ 工程、清单静态 flag 无处落，改由本屏挂载时经原生模块对当前
+    // Activity 开这组 flag（含 keepScreenOn，响铃期间不灭屏），卸载/停止时还原。
+    useEffect(() => {
+        if (Platform.OS !== 'android') return;
+        void alarm.setLockScreenSurface(true);
+        return () => {
+            void alarm.setLockScreenSurface(false);
+        };
+    }, []);
+
     // 回前台补响（v0.5.1 令 1：后台被拉进本屏时 Android 音频焦点可能被拒 →
     // 无声洞；用户真正进 app 的一刻必须响）
     useEffect(() => {
         const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
             if (state !== 'active') return;
+            // 锁屏 flag 幂等重申（冷启 FSI 时序里挂载 effect 先于 Activity
+            // resume 时可能拿到空 currentActivity，回前台这拍兜底补上）
+            void alarm.setLockScreenSurface(true);
             const player = playerRef.current;
             if (!player || acknowledgedRef.current) return;
             if (!player.playing) {

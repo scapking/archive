@@ -1525,7 +1525,7 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
                 return false;
             }
             if (isTripLocked(trip)) {
-                set({ error: '行程已结束，内容锁定，不能删除行程项' });
+                set({ error: '行程已结束，内容锁定，不能删除行程' });
                 return false;
             }
             await db.softDeleteTripItem(id, Date.now());

@@ -198,15 +198,16 @@ test('orderTripItemsByDayDeckPriority：全部过点后回到默认时序（合�
     assert.deepEqual(order(ongoingFirst, mid).map((i) => i.id), ['o', 't']);
 });
 
-test('v0.5.2 长按菜单两行制：进入编辑/删除行程项；旧动作梯与错误文案全域退场（含注释）', () => {
-    // 新词在场
+test('长按菜单两行制（v0.5.3 轮 A 口径）：进入编辑/删除行程；旧动作梯与旧文案全域退场（含注释）', () => {
+    // 新词在场（「进入编辑」保留但改道笔记编辑面；「删除行程」= 用户口径，
+    // 行为仍是删这条行程项——意图不变只换文案）
     assert.ok(tripDaySource.includes('进入编辑'), '长按菜单缺「进入编辑」');
-    assert.ok(tripDaySource.includes('删除行程项'), '长按菜单缺「删除行程项」');
+    assert.ok(tripDaySource.includes('删除行程'), '长按菜单缺「删除行程」');
     // 编辑通道唯一走 store 内容 API（trim/闹钟重挂/锁定拒绝单源）
     assert.ok(tripDaySource.includes('updateTripItemContent'), '编辑/笔记落库未走 updateTripItemContent');
     // 旧「砍掉」语义与名实不符文案：源码全域禁（注释复述 = 文案回流温床，
-    // 同 trip-day-deck 禁词纪律口径）
-    for (const banned of ['砍掉', '删除此行程', '进入收尾', '结束收尾', '添加图片', '添加视频']) {
+    // 同 trip-day-deck 禁词纪律口径）；「删除行程项」随 v0.5.3 文案定标退场
+    for (const banned of ['砍掉', '删除此行程', '删除行程项', '进入收尾', '结束收尾', '添加图片', '添加视频']) {
         assert.ok(!tripDaySource.includes(banned), `trip-day-screen 残留旧菜单文案「${banned}」`);
     }
     // 排序消费面：当日屏改吃优先级函数，通用时刻排序不再进本屏
@@ -253,7 +254,7 @@ test('笔记位无时间闸：卡面零时刻判据（闹钟已过、done/settle
     assert.ok(tripDaySource.includes('editable={!locked}'), '屏层未把锁定态喂给笔记位（只读语义缺接线）');
 });
 
-test('长按「进入编辑」= 创建卡同款编辑态：同组件复用、保存走内容通道、时刻只读', () => {
+test('「进入编辑」链路重构（v0.5.3 轮 A）：菜单/卡面时刻直推笔记面；创建卡同款表单编辑态保留、由回跳信号打开', () => {
     const sheetStart = tripDaySource.indexOf('function TripItemSheet(');
     const sheetEnd = tripDaySource.indexOf('export function TripDayScreen(');
     assert.ok(sheetStart > 0 && sheetEnd > sheetStart, 'TripItemSheet 段定位失败');
@@ -264,9 +265,18 @@ test('长按「进入编辑」= 创建卡同款编辑态：同组件复用、保
     assert.ok(sheet.includes("useState<'time' | 'detail'>(isEdit ? 'detail' : 'time')"), '编辑态缺默认直达表单步');
     assert.ok(sheet.includes('editItem.time'), '编辑态缺只读时刻回显');
     assert.ok(sheet.includes("if (!isEdit && step === 'detail')"), '返回键缺编辑态直出口');
-    // 屏层接线：菜单 edit → setEditItem，编辑卡按项重挂
+    // 屏层接线：编辑卡按项重挂（形态保留）
     assert.ok(tripDaySource.includes("key={`trip-item-edit-${editItem.id}`}"), '编辑卡缺按项重挂 key');
-    assert.ok(tripDaySource.includes('setEditItem(actionItem)'), '长按菜单缺进入编辑接线');
+    // v0.5.3 轮 A：菜单 edit / 卡面时刻 = 直推笔记编辑面路由（不再是表单）
+    assert.ok(
+        tripDaySource.includes("pathname: '/trip/[id]/item/[itemId]/note'"),
+        '「进入编辑」/卡面时刻缺笔记编辑面路由接线',
+    );
+    assert.ok(!tripDaySource.includes('setEditItem(actionItem)'), '长按菜单仍直通表单编辑态（应改道笔记面）');
+    // 表单编辑态由笔记面「表单编辑」回跳信号打开：信号导出 + focus 消费
+    assert.ok(tripDaySource.includes('export function requestTripItemFormEdit'), '缺表单编辑回跳信号入口');
+    assert.ok(tripDaySource.includes('useFocusEffect'), '回跳信号未在 focus 通道消费（back 不重跑普通 effect）');
+    assert.ok(tripDaySource.includes('setEditItem(seed)'), '回跳信号消费缺打开编辑卡接线');
     // 应用内闹钟在任一覆盖层（含编辑卡）展开期顺延
     assert.ok(tripDaySource.includes('createOpen || actionItem || editItem'), '闹钟顺延缺编辑态分支');
 });
@@ -278,7 +288,7 @@ test('屏头统一规格（轮 B 口径）：屏题 24px semibold、副标题描
     assert.ok(!tripDaySource.includes('tripDisplayTitle'), 'trip-day 残留行程名副行（屏头无副题口径）');
 });
 
-test('trip-detail 屏头增量（轮 B 移交）：编辑钮 44 圆底 raised、TripBadge 无题侧卡位', () => {
+test('trip-detail 屏头（v0.5.3 轮 A 令 3）：编辑钮 44 圆底 raised、行程徽章全域退场（right 槽只剩铅笔）', () => {
     assert.ok(
         detailSource.includes('h-11 w-11 items-center justify-center rounded-full bg-ink-raised dark:bg-inkd-raised'),
         'trip-detail 编辑钮未升 44 圆形 raised 底盒（event-detail 同款解剖）',
@@ -287,14 +297,6 @@ test('trip-detail 屏头增量（轮 B 移交）：编辑钮 44 圆底 raised、
         !detailSource.includes('h-9 w-9 items-center justify-center rounded-control border'),
         'trip-detail 36 描边方盒回潮',
     );
-    // 徽章无卡位：必须在标题 flex-1 之后（right 槽带），不再挂返回钮侧
-    const headerRow = detailSource.slice(
-        detailSource.indexOf('屏头（v0.5.2 轮 B 统一规格'),
-        detailSource.indexOf('核心内容主体行'),
-    );
-    assert.ok(headerRow.length > 0, 'trip-detail 屏头段定位失败');
-    assert.ok(
-        headerRow.indexOf('flex-1 text-[24px]') < headerRow.indexOf('<TripBadge'),
-        'trip-detail 徽章仍挂题侧（应收进行尾 right 槽）',
-    );
+    // 徽章退场：文件零出现（JSX 与 import 一并清；注释复述 = 回流温床，同禁词纪律）
+    assert.ok(!detailSource.includes('TripBadge'), 'trip-detail 残留 TripBadge 消费');
 });

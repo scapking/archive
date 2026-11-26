@@ -11,8 +11,17 @@
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <!-- 闹钟触发通知（Android 13+ 运行时权限） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- 到点全屏呈现（锁屏上直接弹响铃面） -->
+    <!-- 到点全屏呈现（锁屏上直接弹响铃面）。授予状况注（v0.5.3 真机纠错·根因 2）：
+         Android 14+ 该权限对非通话/闹钟类 app 不再默认授予，canUseFullScreenIntent
+         为 false 时全屏 intent 降级 heads-up——模块暴露 reminderPermissionStatus
+         查询 + openFullScreenSettings 跳授权页（设置页「提醒权限自检」卡接）。 -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- 电池优化豁免申请（v0.5.3 真机纠错·根因 4，本轮唯一新增权限）：常驻
+         监控/保活服务虽已是 FGS，但国产 ROM 的后台冻结与 Doze 白名单仍影响
+         JS watcher 的软计时与到点补账时效；ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+         需要本权限才能跳系统弹窗。Play 政策注：闹钟/提醒类 app 属允许场景，
+         若审核被拒可删本行——代码全 try/catch，跳不过去仅入口失效，功能不崩。 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- 重启后重排全部未触发闹钟 -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.VIBRATE" />

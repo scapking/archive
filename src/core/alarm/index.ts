@@ -34,7 +34,30 @@ type SystemAlarmNative = {
     drainFired(): Promise<FiredAlarmEntry[]>;
     confirm(id: string): Promise<void>;
     syncMonitor(title: string, body: string): Promise<void>;
+    reminderPermissionStatus(): Promise<ReminderPermissionStatus>;
+    openExactAlarmSettings(): Promise<boolean>;
+    openFullScreenSettings(): Promise<boolean>;
+    requestIgnoreBatteryOptimizations(): Promise<boolean>;
+    setLockScreenSurface(enabled: boolean): Promise<boolean>;
 };
+
+/**
+ * 提醒链路三项系统权限状态（v0.5.3 真机纠错；Android 语义，字段口径与
+ * AlarmModule.reminderPermissionStatus 一一对应）：
+ * - exactAlarms：精确闹钟可调度（Android 12 前无此管制，原生恒回 true）；
+ * - fullScreen：全屏通知（FSI）已授予（Android 14 前清单声明即用，原生恒回
+ *   true——低版本不存在用户授予面）；
+ * - batteryOptimized：true = **仍受电池优化**（未豁免，是坏消息）；Android 6
+ *   前无 Doze，原生恒回 false。
+ * 门面在模块缺失（iOS/web/未链接）时按「能力面不存在即无缺口可修」回
+ * { exactAlarms: true, fullScreen: true, batteryOptimized: false }——设置卡
+ * 本就 Android-only 渲染，该默认只防误用不产生 UI。
+ */
+export interface ReminderPermissionStatus {
+    exactAlarms: boolean;
+    fullScreen: boolean;
+    batteryOptimized: boolean;
+}
 
 /**
  * 到点记录/注册表条目（Android SharedPreferences 回传；JS 侧 watcher 据此
@@ -170,6 +193,74 @@ export const alarm = {
             await native.syncMonitor(title, body);
         } catch (error) {
             console.warn('[alarm] 常驻监控刷新失败（不阻塞数据面）:', error);
+        }
+    },
+
+    /**
+     * 提醒链路权限状态（v0.5.3「提醒权限自检」卡数据源）。模块缺失/查询失败
+     * 回「无缺口」默认（见 ReminderPermissionStatus 注），永不抛。
+     */
+    async reminderPermissionStatus(): Promise<ReminderPermissionStatus> {
+        if (native == null) return { exactAlarms: true, fullScreen: true, batteryOptimized: false };
+        try {
+            const s = await native.reminderPermissionStatus();
+            return {
+                exactAlarms: s?.exactAlarms === true,
+                fullScreen: s?.fullScreen === true,
+                batteryOptimized: s?.batteryOptimized === true,
+            };
+        } catch (error) {
+            console.warn('[alarm] 提醒权限状态查询失败:', error);
+            return { exactAlarms: true, fullScreen: true, batteryOptimized: false };
+        }
+    },
+
+    /** 跳系统「精确闹钟」授权页（Android 12+；iOS/web/低版本 no-op false）。 */
+    async openExactAlarmSettings(): Promise<boolean> {
+        if (native == null) return false;
+        try {
+            return await native.openExactAlarmSettings();
+        } catch (error) {
+            console.warn('[alarm] 精确闹钟设置页跳转失败:', error);
+            return false;
+        }
+    },
+
+    /** 跳系统「全屏通知」授权页（Android 14+；低版本落 app 通知设置页）。 */
+    async openFullScreenSettings(): Promise<boolean> {
+        if (native == null) return false;
+        try {
+            return await native.openFullScreenSettings();
+        } catch (error) {
+            console.warn('[alarm] 全屏通知设置页跳转失败:', error);
+            return false;
+        }
+    },
+
+    /** 申请电池优化豁免（已豁免幂等 true；iOS/web no-op false）。 */
+    async requestIgnoreBatteryOptimizations(): Promise<boolean> {
+        if (native == null) return false;
+        try {
+            return await native.requestIgnoreBatteryOptimizations();
+        } catch (error) {
+            console.warn('[alarm] 电池优化豁免申请失败:', error);
+            return false;
+        }
+    },
+
+    /**
+     * 锁屏呈现面开关（v0.5.3 根因 5）：全屏闹钟屏挂载时 true（当前 Activity
+     * 开 showWhenLocked/turnScreenOn/keepScreenOn——FSI 拉起的 Activity 不开
+     * 这组 flag 会停在锁屏后面，「到点不回 app」的直接根因），卸载时 false。
+     * iOS/web no-op false（iOS 全屏通道本就只有本地通知 tap）。
+     */
+    async setLockScreenSurface(enabled: boolean): Promise<boolean> {
+        if (native == null) return false;
+        try {
+            return await native.setLockScreenSurface(enabled);
+        } catch (error) {
+            console.warn('[alarm] 锁屏呈现面切换失败:', error);
+            return false;
         }
     },
 };

@@ -53,6 +53,17 @@ class AlarmFireReceiver : BroadcastReceiver() {
             AlarmScheduler.markFired(context, id, at, title, body)
             ensureChannel(context)
 
+            // v0.5.3 真机纠错·根因 2：Android 14+ FSI 非默认授予——
+            // canUseFullScreenIntent 为 false 时系统把全屏 intent 降级为
+            // heads-up（拉回腿失效，声音由渠道 v2 闹钟流兜底）。留痕供
+            // 真机日志排查；授予入口在设置页「提醒权限自检」卡。
+            if (Build.VERSION.SDK_INT >= 34) {
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                if (!nm.canUseFullScreenIntent()) {
+                    Log.w(TAG, "full-screen intent not granted; $id degrades to heads-up")
+                }
+            }
+
             // v0.5.1 真机纠错（用户反馈「后台到点没跳回 app」）：呈现次序改为
             // **先挂带 full-screen intent 的常驻通知，再拉保活服务**。
             // 原因：FSI 由系统在 notify 时刻评估（息屏/锁屏即拉起全屏 activity）；
@@ -88,7 +99,19 @@ class AlarmFireReceiver : BroadcastReceiver() {
         const val ACTION_FIRE = "archive.alarm.FIRE"
         const val ACTION_STOP = "archive.alarm.STOP"
         const val EXTRA_ID = "id"
-        const val CHANNEL = "archive-alarms"
+        /**
+         * 渠道 id 版本化（v0.5.3 真机纠错·根因 1「渠道不可变性陷阱」）：
+         * Android O+ 渠道创建后 sound/importance/bypassDnd **不可再改**——
+         * 用户设备上的旧渠道 `archive-alarms` 是 v0.4.4 首版创建的（当时未带
+         * setSound，锁定为默认通知铃声档，后被用户误触静音也无法程序修复）。
+         * 唯一修法是新 id 重建（v2 首次创建即全参定档：TYPE_ALARM 铃音 +
+         * AudioAttributes(USAGE_ALARM/CONTENT_TYPE_SONIFICATION) +
+         * IMPORTANCE_HIGH + bypassDnd + 锁屏可见），ensureChannel 同拍删除
+         * 全部旧代渠道，通知设置页不留僵尸条目。今后再改渠道参数 = 递增版本。
+         */
+        const val CHANNEL = "archive-alarms-v2"
+        /** 历史渠道 id（仅用于清理；tests 正则闸锁定 v2 删除旧代）。 */
+        const val LEGACY_CHANNELS = "archive-alarms"
         private const val TAG = "archive-alarm"
         private const val REQUEST_STOP_OFFSET = 1_000_000
 
@@ -156,16 +179,26 @@ class AlarmFireReceiver : BroadcastReceiver() {
             return builder.build()
         }
 
-        /** 闹钟渠道（IMPORTANCE_HIGH + 系统闹钟铃音 + 震动；创建幂等）。 */
+        /**
+         * 闹钟渠道 v2（IMPORTANCE_HIGH + 系统闹钟铃音 USAGE_ALARM + 震动 +
+         * bypassDnd + 锁屏可见；创建幂等，同拍清理不可改参数的旧代渠道——
+         * 见 CHANNEL 常量注）。
+         */
         fun ensureChannel(context: Context) {
             if (Build.VERSION.SDK_INT < 26) return
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            // 旧代渠道（参数已被用户设备固化的历史版本）先删再建 v2：
+            // deleteNotificationChannel 对不存在的 id 是幂等无操作
+            if (nm.getNotificationChannel(LEGACY_CHANNELS) != null) {
+                nm.deleteNotificationChannel(LEGACY_CHANNELS)
+            }
             nm.createNotificationChannel(
                 NotificationChannel(CHANNEL, "行程闹钟", NotificationManager.IMPORTANCE_HIGH).apply {
                     setDescription("行程项到点的系统闹钟提醒")
                     enableVibration(true)
                     // 渠道声音锁定系统闹钟铃音（O+ 渠道创建后 sound 不可再改，
-                    // 建渠道即定档；builder.setSound 仅是历史路径的兜底）
+                    // 建渠道即定档——这正是 v2 换 id 的原因；builder.setSound
+                    // 仅是 <26 历史路径的兜底）
                     setSound(
                         RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
                         AudioAttributes.Builder()
@@ -173,6 +206,11 @@ class AlarmFireReceiver : BroadcastReceiver() {
                             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                             .build(),
                     )
+                    // 免打扰下闹钟仍响（真正生效还需用户在系统 DND 访问设置里
+                    // 授权，这里先声明渠道意图）+ 锁屏直呈（与通知本体
+                    // VISIBILITY_PUBLIC 双保险）
+                    setBypassDnd(true)
+                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
                 },
             )
         }

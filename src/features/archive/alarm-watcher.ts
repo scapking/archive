@@ -17,13 +17,15 @@ import { refreshAlarmMonitor } from './store';
 
 /**
  * 闹钟提醒 watcher（v0.4.7 令 #2/#3 JS 侧薄层；v0.5.1 令 2/3 扩为统一阶梯
- * 「拉回尝试 → 本地通知兜底 → 前台呈现」的 JS 半边；接线由主控在
- * app/_layout.tsx 挂载——一行 hook）。
+ * 「拉回尝试 → 本地通知兜底 → 前台呈现」的 JS 半边；接线在 app/_layout.tsx
+ * 根级一行 hook——**任意前台路由**（非仅 day 屏）都在这张网里）。
  *
  * 职责 = 「把该响的闹钟拉/推进全屏闹钟屏，一条都不静默」：
  * - Android：冷启/回前台 drainFired（full-screen intent 之外的兜底——用户从
- *   最近任务/桌面图标进 app 也补拉起）；每 20s 软计时扫原生注册表，非精确档
- *   （SCHEDULE_EXACT_ALARM 被拒）到点即拉 /alarm/<id>；系统拉回失败（息屏外
+ *   最近任务/桌面图标进 app 也补拉起）；每 15s 软计时扫原生注册表，到点即拉
+ *   /alarm/<id>（v0.5.3 轮 B：app 亮屏前台时系统把 FSI 降级 heads-up，
+ *   「前台任意页到点必弹全屏屏」完全依赖这条 JS 软计时网——节拍内嵌 fired
+ *   账回收 + 路由切换同拍补扫，到点延迟上限 = 一个节拍）；系统拉回失败（息屏外
  *   的 heads-up 场景/OEM 吞 intent）时接收器的常驻通知卡（内容=时间+标题+
  *   描述）恒在场，其 tap 走 URL 深链由 expo-router 原生承接；挂载/回前台/tick
  *   同拍幂等刷「N 个行程提醒监控中」常驻监控通知（v0.5.2 令3，判据在原生
@@ -39,6 +41,11 @@ import { refreshAlarmMonitor } from './store';
  *   notification.content.data.path → itemIdFromAlarmPath → 全屏屏；Android
  *   侧再验注册表未出账（已「停止」的残留 intent 不得复活铃屏），iOS tap 即呈。
  *
+ * **v0.5.3 轮 B 结构纪律（真机「前台其他页到点不弹」排查结论）**：effect 内
+ * 软计时核心（interval + AppState + 首轮 drain/monitor）**先注册**，通知 tap
+ * 订阅与冷启 response 探测是增强通道、整体 try/catch——此前 onResponse 排在
+ * 定时器之前，通知面任何同步抛错都会把整张软计时网静默带死。
+ *
  * 全屏屏自身负责确认停止（acknowledge → confirmAlarmSession + alarm.confirm），
  * watcher 只做「发现到点/被 tap，只拉一次」——去重走 alarm-ladder 共享会话
  * 账（抢占标记 id→at 指纹；**确认出账 id 级无条件**，web 同样闭环——CDP
@@ -46,8 +53,9 @@ import { refreshAlarmMonitor } from './store';
  * 已在 /alarm 路由则不拉；tap 通道只绕抢占标记，不绕确认账。
  */
 
-/** 软计时节拍（ms）：20s 对「分钟级」行程时刻足够（同 trip-day 15s 口径量级）。 */
-const TICK_MS = 20_000;
+/** 软计时节拍（ms）：20s→15s（v0.5.3 轮 B，与 trip-day 页内到点检查 15s
+ *  同拍——前台到点的体感延迟上限收紧到一个节拍；路由切换另有同拍补扫）。 */
+const TICK_MS = 15_000;
 
 export function useAlarmReminderWatcher(): void {
     const router = useRouter();
@@ -56,6 +64,8 @@ export function useAlarmReminderWatcher(): void {
     const handledResponseIds = useRef<Set<string>>(new Set());
     const pathnameRef = useRef(pathname);
     pathnameRef.current = pathname;
+    /** 软计时核心对「路由切换节拍」暴露的句柄（见文件尾 pathname effect）。 */
+    const tickRef = useRef<(() => Promise<void>) | null>(null);
 
     useEffect(() => {
         if (Platform.OS === 'web') return;
@@ -86,6 +96,10 @@ export function useAlarmReminderWatcher(): void {
 
         const tick = async (): Promise<void> => {
             if (Platform.OS === 'android') {
+                // v0.5.3 轮 B：软计时每拍先收 fired 账——亮屏前台时 FSI 被系统
+                // 降级 heads-up，接收器落账的条目此前要等「切后台再回前台」才经
+                // drain 拉起；与注册表 due 扫同拍、共享账天然去重。
+                await drain();
                 // 非精确档软计时：原生注册表已到点条目（精确档由接收器到场，
                 // drainFired 同拍收账，两条路径共享账天然去重）
                 const scheduled = await alarm.listScheduled();
@@ -122,8 +136,26 @@ export function useAlarmReminderWatcher(): void {
                 }
             }
         };
+        tickRef.current = tick;
 
-        // ─── v0.5.1 令 2/3：通知 tap → 全屏闹钟屏（本地通知兜底档的「进 app」腿）───
+        // ─── 软计时核心先行注册（v0.5.3 轮 B 结构纪律，见头注）───
+        const timer = setInterval(() => void tick(), TICK_MS);
+        const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
+            // 回前台：补收 fired 账 + 补一拍 due 扫 + 收敛冻结期间过点造成的
+            // 陈旧监控计数
+            if (state === 'active') {
+                void drain();
+                void tick();
+                void refreshAlarmMonitor();
+            }
+        });
+        void drain();
+        // v0.5.2 令3：挂载即刷一次常驻监控（hydration/冷启对齐——store.loadAll
+        // 尾部同款 poke，双通道幂等；iOS/web 门面内 no-op）
+        void refreshAlarmMonitor();
+
+        // ─── 通知 tap 增强通道：失败只弃这半张网，不得带死上面的软计时 ───
+        // v0.5.1 令 2/3：通知 tap → 全屏闹钟屏（本地通知兜底档的「进 app」腿）——
         // store 调度把 data.path（alarmRoutePath 构造）写进通知 content，本函数是
         // 其唯一消费者；此前无人接 response，iOS 兜底通知「只响不可进」。identifier
         // 会话级去重：冷启 getLastResponse 探测与 warm 订阅不会双跳。
@@ -153,17 +185,19 @@ export function useAlarmReminderWatcher(): void {
             router.replace({ pathname: '/alarm/[id]', params: { id: itemId } });
         };
 
-        const responseSub = notifications.onResponse((response) => {
-            void routeAlarmNotification(
-                response.notification.request.identifier,
-                response.notification.request.content.data?.path,
-            );
-        });
-
-        void drain();
-        // v0.5.2 令3：挂载即刷一次常驻监控（hydration/冷启对齐——store.loadAll
-        // 尾部同款 poke，双通道幂等；iOS/web 门面内 no-op）
-        void refreshAlarmMonitor();
+        let responseSub: { remove(): void } | null = null;
+        try {
+            responseSub = notifications.onResponse((response) => {
+                void routeAlarmNotification(
+                    response.notification.request.identifier,
+                    response.notification.request.content.data?.path,
+                );
+            });
+        } catch (error) {
+            // tap 通道缺失（模块异常/平台差异）：到点呈现退为软计时 + 深链，
+            // 「必有通知」兜底不受影响
+            console.warn('[alarm-watcher] 通知 response 订阅失败（tap 通道降级）:', error);
+        }
         // 冷启由通知 tap 拉起（进程未活）：response 不进订阅，挂载探测一次
         void (async () => {
             try {
@@ -182,18 +216,19 @@ export function useAlarmReminderWatcher(): void {
             }
         })();
 
-        const timer = setInterval(() => void tick(), TICK_MS);
-        const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-            // 回前台：补收 fired 账 + 收敛冻结期间过点造成的陈旧监控计数
-            if (state === 'active') {
-                void drain();
-                void refreshAlarmMonitor();
-            }
-        });
         return () => {
+            tickRef.current = null;
             clearInterval(timer);
             sub.remove();
-            responseSub.remove();
+            responseSub?.remove();
         };
     }, [router]);
+
+    // 路由切换同拍补扫（v0.5.3 轮 B）：软计时只有定时器节拍时，「切页瞬间
+    // 恰好到点」要空等最多一个节拍——pathname 每次变化即跑一拍 tick（幂等，
+    // 去重走共享会话账；BootScreen 窗口期 pathname 不变，不产生空转风暴）。
+    useEffect(() => {
+        if (Platform.OS === 'web') return;
+        void tickRef.current?.();
+    }, [pathname]);
 }

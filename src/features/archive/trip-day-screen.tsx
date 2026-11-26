@@ -32,8 +32,9 @@ import Animated, {
     withTiming,
 } from 'react-native-reanimated';
 // v0.5.1 令 1：应用内到点检查的动作通道（跳全屏闹钟屏；弹窗 TripItemAlarmCard
-// 退场后本屏唯一路由出口）。
-import { router } from 'expo-router';
+// 退场后本屏唯一路由出口）。v0.5.3 轮 A：+useFocusEffect——「表单编辑」回跳
+// 信号在本屏 focus 时消费（push 笔记面时本屏保持挂载，返回不触发普通 effect）。
+import { router, useFocusEffect } from 'expo-router';
 // v0.5.1 看图验收返工：滚轮上下缘渐隐遮罩（expo-linear-gradient 双端可用，
 // web 渲染为 CSS 渐变；纯功能性 mask，非装饰色场——0.4.9「整面渐变退场」
 // 禁令不覆盖同底色渐隐）
@@ -42,7 +43,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
     LucideClock,
     LucideImage,
-    LucideSquarePen,
     LucideStickyNote,
     LucideTrash,
     LucideVideo,
@@ -113,21 +113,25 @@ import { DeadEndView } from './journal-edit-screen';
  * - deck 前卡 = 「最该看的项」：未到点（闹钟未过）的行程优先展示；无未到点项
  *   时 ongoing（已到点未结束）段最早在前，收尾/终态垫底（deck 以卡序签名重挂
  *   收口，见 deckEpoch）；
- * - 卡面（v0.5.2 令 7：卡面自带笔记编辑位）：30px tabular 报时 + 18 semibold
+ * - 卡面（v0.5.2 令 7：卡面自带笔记编辑位；v0.5.3 轮 A：卡面时刻点按直达笔记
+ *   编辑面 trip-item-note-screen）：30px tabular 报时 + 18 semibold
  *   标题（可空：空标题不渲染任何文字、禁兜底词）+ **正文区即笔记（description）
  *   就地编辑面**——常驻可点，点进 multiline 编辑，失焦即
  *   store.updateTripItemContent(id,{description}) 落库；无时间闸（闹钟已过、
  *   done/settled 相照编，「还能找到就一直在」），锁定行程只读（无编辑面）。
  *   非编辑态显示 16 两行截断备注（空则占位文案）；首图封面 + mt-auto meta 行
- *   （状态字 + 备注/图/视频小记号）。三态记号**绑阶段不绑槽位**：ongoing =
+ *   （状态字 + 备注/图/视频小记号）；报时数字 = 直达笔记编辑面的按压体
+ *   （hitSlop 补足 44 命中）。三态记号**绑阶段不绑槽位**：ongoing =
  *   亮档纸 + accent 细边 + 圆点，pending = surface 素面，settled = 沉一档
  *   弱化；卡面文字恒走 text/secondary 两档 + accent 小面积（AA 把关见
  *   deck-stack-colors）；
- * - 长按前卡 → 操作卡（ActionMenuCard，v0.5.2 两行制）：**进入编辑**（打开
- *   创建卡同款标题/备注表单的编辑态，提交走 updateTripItemContent）/
- *   **删除行程项**（danger，菜单即确认步）。旧动作梯（收尾迁移/媒体补录
- *   入口）随令 7 退场；阶段仍由 trip-item-logic 派生，锁定行程 isTripLocked
- *   时长按与 FAB 入口全部关断、卡面笔记位只读，整页只读；
+ * - 长按前卡 → 操作卡（ActionMenuCard，两行制；v0.5.3 轮 A 口径）：**进入
+ *   编辑**（直达行程项笔记编辑面 /trip/<id>/item/<itemId>/note，不再是
+ *   表单——旧创建卡表单编辑态保留，从笔记面「表单编辑」回跳进入）/
+ *   **删除行程**（用户口径去掉「项」字；danger，菜单即确认步，行为仍是删
+ *   这条行程项）。旧动作梯（收尾迁移/媒体补录入口）随令 7 退场；阶段仍由
+ *   trip-item-logic 派生，锁定行程 isTripLocked 时长按与 FAB 入口全部关断、
+ *   卡面笔记位只读，整页只读；
  * - `+` FAB → 创建行程项**居中卡**（v0.5.2 手势重建）：快速态 = 时/分双列
  *   **自绘滚轮**（RNGH Pan + Reanimated UI 线程位移，无 ScrollView/无吸附
  *   属性/无复检链——三端手势吞失的根因治理），松手按速度+位移折算落档、点击
@@ -256,18 +260,36 @@ const TripItemCardFace = memo(function TripItemCardFace({
                 backgroundColor: faceBg,
             }}
         >
-            {/* 报时主角（30px tabular，日记卡日期刻度同感；负字距收紧数字） */}
-            <Text
-                style={{
-                    fontSize: 30,
-                    fontWeight: '600',
-                    letterSpacing: -0.5,
-                    color: timeTone,
-                    fontVariant: ['tabular-nums'],
+            {/* 报时主角（30px tabular，日记卡日期刻度同感）+ v0.5.3 轮 A 令 1
+                用户原话「点击 12:00 进入编辑面」——时刻数字 = 直达编辑面的按压体。
+                命中区 = 30px 行盒 + hitSlop 8 ≥44 下限；卡内点按与 deck 翻卡
+                拖拽的共处纪律沿用备注位 Pressable 先例（位移阈值外才归卡片
+                手势，tap 直达行内钮） */}
+            <Pressable
+                onPress={() => {
+                    haptics.selection();
+                    router.push({
+                        pathname: '/trip/[id]/item/[itemId]/note',
+                        params: { id: item.trip_id, itemId: item.id },
+                    });
                 }}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={`编辑 ${item.time} 的备注`}
+                style={{ alignSelf: 'flex-start' }}
             >
-                {item.time}
-            </Text>
+                <Text
+                    style={{
+                        fontSize: 30,
+                        fontWeight: '600',
+                        letterSpacing: -0.5,
+                        color: timeTone,
+                        fontVariant: ['tabular-nums'],
+                    }}
+                >
+                    {item.time}
+                </Text>
+            </Pressable>
             {displayTitle !== '' ? (
                 <Text
                     numberOfLines={2}
@@ -706,8 +728,9 @@ function NowShortcut({
  *   动作行 = 「改时间」ghost 回滚轮 + 「添加」主钮提交）。备注位与标题
  *   明显区分：multiline 大井（minHeight 116）+ 占位「补一句这一时刻」；
  *   动作行走 footer 槽钉卡底 = 契约「容器外底部单行」，键盘弹起恒在键盘上方；
- * - **编辑态（v0.5.2 令 7，长按菜单「进入编辑」）**：同组件同表单、初始即
- *   第二步形态（标题/备注预填），提交走 store.updateTripItemContent
+ * - **编辑态（v0.5.2 令 7 立；v0.5.3 轮 A 入口下移：长按菜单直通笔记编辑面，
+ *   本形态改由笔记面「表单编辑」回跳打开，见 pendingFormEditSeed）**：
+ *   同组件同表单、初始即第二步形态（标题/备注预填），提交走 store.updateTripItemContent
  *   （trim、锁定拒绝文案、未到点 pending 自动重挂闹钟都在 store 单源）。
  *   时刻只读回显（内容通道不含时间改动），动作行 = 「关闭」ghost +
  *   「保存」主钮。选择此形态 = 改动最小、与「新建行程项」UI 完全一致；
@@ -1038,6 +1061,31 @@ const SHEET_GESTURE_ROOT: ViewStyle = {
 // 弹窗形态废止，到点呈现统一走全屏闹钟屏 /alarm/<id>（到点检查 effect 见
 // TripDayScreen 内「应用内闹钟」段，触发判定保留、动作改为路由跳转）。
 
+/* ------------------------------------------------------------------ */
+/* v0.5.3 轮 A：笔记编辑面「表单编辑」回跳信号                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 一次性回跳信号：笔记编辑面点「表单编辑」→ 置本值 → router.back()，本屏
+ * focus 时消费（useFocusEffect，见 TripDayScreen），命中则打开创建卡同款
+ * 表单编辑态。选内存账而非路由参数：expo-router web push 丢 query 是已登记
+ * 偏差（AGENTS.md 偏差表），router.back 又无法带参——路径参数通道塞不进
+ * 可选信号，纯运行时单变量才是三端一致的最小改动（alarm-ladder 共享会话账
+ * 同技法：零依赖、单点、消费即清）。
+ *
+ * 传**行快照**而非 id：快照带笔记面刚写的 description（openFormEdit 先落库
+ * 再回跳，快照即最新值），表单预填不再依赖本屏 revision 重载与 focus 的先后
+ * ——读 id 再查 items 的写法会让「重载未及完成先 focus」竞态把旧备注预填进
+ * 表单，保存即回滚笔记改动。归属与存在性以本屏 items 为准（id 不在当日项
+ * 集 = 已删/跨日错屏，静默丢弃）；行程锁定时同样丢弃，不锁存不重放。
+ */
+let pendingFormEditSeed: db.TripItemRow | null = null;
+
+/** 笔记编辑面调用：请求返回本屏后以该行快照打开表单编辑态。 */
+export function requestTripItemFormEdit(item: db.TripItemRow): void {
+    pendingFormEditSeed = item;
+}
+
 export function TripDayScreen({ tripId, date }: { tripId: string; date: string }) {
     const insets = useSafeAreaInsets();
     const palette = usePalette();
@@ -1067,7 +1115,8 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
     const [createOpen, setCreateOpen] = useState(false);
     /** 长按操作卡目标（行程项；锁定态长按入口关断）。 */
     const [actionItem, setActionItem] = useState<db.TripItemRow | null>(null);
-    /** 编辑表单卡目标（v0.5.2 令 7：长按「进入编辑」；与 createOpen 互斥）。 */
+    /** 编辑表单卡目标（v0.5.2 令 7 立在长按菜单；v0.5.3 轮 A 起由笔记面
+     *  「表单编辑」回跳信号喂入，见 pendingFormEditSeed；与 createOpen 互斥）。 */
     const [editItem, setEditItem] = useState<db.TripItemRow | null>(null);
 
     // 本屏数据重载：trip + 该天行程项 + 行程媒体（item_id 分组）。revision 漂移
@@ -1182,6 +1231,21 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
         router.replace({ pathname: '/alarm/[id]', params: { id: due.id } });
     }, [now, orderedItems, phaseById, createOpen, actionItem, editItem, locked]);
 
+    // v0.5.3 轮 A：消费笔记编辑面「表单编辑」回跳信号（信号语义见
+    // pendingFormEditSeed 注）。必须挂 focus 而非普通 effect——push 笔记面时
+    // 本屏在栈上保持挂载，返回不重跑 items/revision 效应。一次性：无论命中
+    // 与否消费即清；无本屏在栈的深链场景由下一次进入本屏时按同规则丢弃。
+    useFocusEffect(
+        useCallback(() => {
+            const seed = pendingFormEditSeed;
+            if (seed === null) return;
+            pendingFormEditSeed = null;
+            if (locked) return;
+            if (!items.some((row) => row.id === seed.id)) return; // 已删/不属于这一天
+            setEditItem(seed);
+        }, [items, locked]),
+    );
+
     const coverFor = useCallback(
         (itemId: string): db.TripMediaRow | null =>
             (mediaByItem.get(itemId) ?? []).find((media) => media.kind === 'image') ?? null,
@@ -1233,8 +1297,8 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
         [createTripItem, tripId, date],
     );
 
-    /** 删除行程项（长按操作卡，菜单即确认步）：软删 + 摘媒体关联 + 取消通知
-     *  （store 编排）。 */
+    /** 「删除行程」行（长按操作卡，菜单即确认步）：删这条行程项——软删 +
+     *  摘媒体关联 + 取消通知（store 编排）。 */
     const runDelete = useCallback(
         async (itemId: string) => {
             setActionItem(null);
@@ -1350,25 +1414,31 @@ export function TripDayScreen({ tripId, date }: { tripId: string; date: string }
                 <ActionMenuCard
                     title="行程项"
                     rows={[
-                        // v0.5.2 令 7 两行制：进入编辑（创建表单同款编辑态）/
-                        // 删除行程项（danger，菜单即确认步）。旧动作梯随令退场。
+                        // v0.5.3 轮 A 口径（两行制不变）：进入编辑 = 直达笔记
+                        // 编辑面（表单编辑态退为笔记面次级入口）/ 删除行程
+                        // （用户口径去掉「项」字，行为仍是删这条行程项，
+                        // danger，菜单即确认步）。旧动作梯随令 7 退场。
                         {
                             key: 'edit',
-                            icon: <LucideSquarePen size={18} strokeWidth={1.9} />,
+                            icon: <LucideStickyNote size={18} strokeWidth={1.9} />,
                             title: '进入编辑',
                         },
                         {
                             key: 'delete',
                             icon: <LucideTrash size={18} strokeWidth={1.9} />,
-                            title: '删除行程项',
+                            title: '删除行程',
                             danger: true,
                         },
                     ]}
                     onAction={(key) => {
                         if (!actionItem) return;
                         if (key === 'edit') {
-                            setEditItem(actionItem);
+                            const target = actionItem;
                             setActionItem(null);
+                            router.push({
+                                pathname: '/trip/[id]/item/[itemId]/note',
+                                params: { id: target.trip_id, itemId: target.id },
+                            });
                             return;
                         }
                         void runDelete(actionItem.id);

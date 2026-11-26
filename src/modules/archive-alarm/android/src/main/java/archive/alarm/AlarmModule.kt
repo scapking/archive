@@ -1,9 +1,18 @@
 package archive.alarm
 
 import android.Manifest
+import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
+import android.provider.Settings
+import android.util.Log
+import android.view.WindowManager
 import androidx.core.content.ContextCompat
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -78,7 +87,142 @@ class AlarmModule : Module() {
                 "granted"
             }
         }
+
+        /**
+         * 提醒链路三项系统权限状态（v0.5.3 真机纠错；设置页「提醒权限自检」卡
+         * 数据源；JS 门面契约见 core/alarm）：
+         * - exactAlarms：AlarmManager.canScheduleExactAlarms（Android 12 前恒 true）；
+         * - fullScreen：Android 14+ 查 NotificationManager.canUseFullScreenIntent
+         *   （清单声明 USE_FULL_SCREEN_INTENT 时低版本恒 true——授予非用户可控面）；
+         * - batteryOptimized：true = **仍受电池优化**（未豁免）；Android 6 前无
+         *   Doze 恒 false。语义字段名以「是否被优化」为准，卡面对「已豁免」显绿。
+         */
+        AsyncFunction("reminderPermissionStatus") {
+            val ctx = appContext.reactContext
+                ?: return@AsyncFunction mapOf(
+                    "exactAlarms" to true,
+                    "fullScreen" to true,
+                    "batteryOptimized" to false,
+                )
+            val fullScreen = if (Build.VERSION.SDK_INT >= 34) {
+                (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                    .canUseFullScreenIntent()
+            } else {
+                true
+            }
+            val batteryOptimized = if (Build.VERSION.SDK_INT >= 23) {
+                val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+                !pm.isIgnoringBatteryOptimizations(ctx.packageName)
+            } else {
+                false
+            }
+            mapOf(
+                "exactAlarms" to AlarmScheduler.canExact(ctx),
+                "fullScreen" to fullScreen,
+                "batteryOptimized" to batteryOptimized,
+            )
+        }
+
+        /** 跳「允许精确闹钟」设置页（Android 12+；低版本/异常 = false，不抛）。 */
+        AsyncFunction("openExactAlarmSettings") {
+            val ctx = appContext.reactContext ?: return@AsyncFunction false
+            if (Build.VERSION.SDK_INT < 31) return@AsyncFunction false
+            // 动作字符串直写 + try/catch：与 AlarmKeepAliveService 的类型选型注
+            // 同口径——不赌 compileSdk 常量池，缺失时 ActivityNotFoundException
+            // 由 sendSettingsIntent 回落应用详情页
+            sendSettingsIntent(
+                ctx,
+                "android.settings.REQUEST_SCHEDULE_EXACT_ALARM",
+                Uri.fromParts("package", ctx.packageName, null),
+            )
+        }
+
+        /**
+         * 跳「全屏通知」授权页（Android 14+ FSI 用户授予面；低版本无该页，
+         * 回落 app 通知设置——渠道静音与否也在那里修）。
+         */
+        AsyncFunction("openFullScreenSettings") {
+            val ctx = appContext.reactContext ?: return@AsyncFunction false
+            if (Build.VERSION.SDK_INT >= 34) {
+                sendSettingsIntent(
+                    ctx,
+                    "android.settings.MANAGE_APP_USE_FULL_SCREEN_INTENT",
+                    Uri.fromParts("package", ctx.packageName, null),
+                )
+            } else {
+                sendSettingsIntent(ctx, Settings.ACTION_APP_NOTIFICATION_SETTINGS, null)
+            }
+        }
+
+        /**
+         * 申请电池优化豁免（Android 6+ ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS；
+         * 已豁免幂等直返 true。厂商 ROM 自启动策略不在本页管辖，验收清单披露）。
+         */
+        AsyncFunction("requestIgnoreBatteryOptimizations") {
+            val ctx = appContext.reactContext ?: return@AsyncFunction false
+            if (Build.VERSION.SDK_INT < 23) return@AsyncFunction false
+            val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (pm.isIgnoringBatteryOptimizations(ctx.packageName)) return@AsyncFunction true
+            sendSettingsIntent(
+                ctx,
+                "android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+                Uri.fromParts("package", ctx.packageName, null),
+            )
+        }
+
+        /**
+         * 锁屏呈现面开关（v0.5.3 真机纠错·根因 5）：FSI 拉起 Activity 后，
+         * **Activity 自身必须开 showWhenLocked/turnScreenOn 才显示在锁屏之上**
+         * （AOSP 时钟同款做法）——本项目 CNG 无 android/ 工程、清单静态 flag
+         * 无处落，v0.4.x 起从未设置过这两个 flag，息屏到点 Activity 实际已在
+         * 锁屏后启动而不可见 = 「不能回到 app」的直接根因。全屏闹钟屏挂载时
+         * true、卸载/停止时 false（含 KEEP_SCREEN_ON，闹钟在响期间不灭屏）。
+         */
+        AsyncFunction("setLockScreenSurface") { enabled: Boolean ->
+            val activity = appContext.currentActivity ?: return@AsyncFunction false
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    if (Build.VERSION.SDK_INT >= 27) {
+                        activity.setShowWhenLocked(enabled)
+                        activity.setTurnScreenOn(enabled)
+                    }
+                    val flags = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                        WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                    if (enabled) activity.window.addFlags(flags) else activity.window.clearFlags(flags)
+                } catch (e: Exception) {
+                    Log.w("archive-alarm", "lock-screen surface flags failed", e)
+                }
+            }
+            true
+        }
     }
+
+    /** 系统设置页 intent 统一出口：NEW_TASK（非 Activity 上下文启动必需）；
+     *  厂商 ROM 缺动作页时回落「应用详情」设置页；全兜底不抛，返回是否已发起。 */
+    private fun sendSettingsIntent(context: Context, action: String, dataUri: Uri?): Boolean =
+        try {
+            context.startActivity(
+                // 参数名刻意 dataUri：apply 里裸 `data` 会解析到 Intent.getData()
+                // 合成属性遮蔽入参（审查实锤的坑），显式 setData(dataUri) 消歧
+                Intent(action)
+                    .apply { dataUri?.let { setData(it) } }
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+            true
+        } catch (e: Exception) {
+            try {
+                context.startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                        .setData(Uri.fromParts("package", context.packageName, null))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+                true
+            } catch (fallback: Exception) {
+                Log.w("archive-alarm", "settings intent refused: $action", fallback)
+                false
+            }
+        }
 
     private fun hasNotificationPermission(context: Context): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==

@@ -60,7 +60,6 @@ import {
     ProgressLabel,
     ScreenHeader,
     StatusChip,
-    TripBadge,
     TripCoverVideo,
     useFileUrlState,
     usePalette,
@@ -935,12 +934,11 @@ export function TripDetailScreen() {
         <View className="flex-1 bg-ink-base dark:bg-inkd-base">
             <View style={{ paddingTop: insets.top }} className="flex-1">
                 {/* 屏头（v0.5.2 轮 B 统一规格：px-6 pb-3 pt-2 / h-11 行 / 24px
-                    semibold 屏题；题侧无徽章带——徽章无卡位，收进行尾 right
-                    槽，与编辑钮同侧）。命中区核算：返回钮 = CloseButton 44
-                    圆形触感底盒（无 slop）；编辑钮 = 44 圆形 raised 底盒
-                    （event-detail 设置钮同款解剖）+ hitSlop 10；TripBadge 40
-                    非按压体，与编辑钮 ml-2 停车距；标题 flex-1 收缩让位。
-                    锁定态编辑钮整体不渲染（#7 只读），徽章是行程事实恒可见。 */}
+                    semibold 屏题；v0.5.3 轮 A 令 3：行程徽章图标从题侧
+                    退场——right 槽只剩编辑钮一个图标）。命中区核算：返回钮 =
+                    CloseButton 44 圆形触感底盒（无 slop）；编辑钮 = 44 圆形
+                    raised 底盒（event-detail 设置钮同款解剖）+ hitSlop 10；
+                    标题 flex-1 收缩让位。锁定态编辑钮整体不渲染（#7 只读）。 */}
                 <View className="px-6 pb-3 pt-2">
                     <View className="h-11 flex-row items-center">
                         <CloseButton icon="back" onPress={safeBack} />
@@ -950,9 +948,7 @@ export function TripDetailScreen() {
                         >
                             {tripDisplayTitle(trip.title)}
                         </Text>
-                        <View className="ml-2">
-                            <TripBadge icon={trip.icon} size="detail" />
-                        </View>
+                        {/* v0.5.3 轮 A 令 3：徽章退场，right 槽只剩编辑钮 */}
                         {!locked ? (
                             <BouncyPressable
                                 onPress={() =>

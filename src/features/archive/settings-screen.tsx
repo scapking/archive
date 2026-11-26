@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
     ActivityIndicator,
+    AppState,
     KeyboardAvoidingView,
     Platform,
     Pressable,
@@ -11,12 +12,17 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
     LucideShield,
+    LucideBell,
+    LucideClock,
     LucideDownload,
     LucideFileText,
     LucideLock,
     LucideUpload,
 } from '@/core/icons';
 import { haptics } from '@/core/haptics';
+// 提醒链路权限自检（v0.5.3 真机纠错）：三项系统授予状态 + 跳授权页，全走
+// core/alarm 门面（Android-only 语义，iOS/web 门面 no-op——本卡 Platform 闸不渲染）
+import { alarm, type ReminderPermissionStatus } from '@/core/alarm';
 import { localAuth } from '@/core/local-auth';
 // 防截屏（Android FLAG_SECURE / iOS 库内防护 / web 恒 no-op，平台差异见能力注）
 import { allowScreenCaptureAsync, preventScreenCaptureAsync } from '@/core/screen-capture';
@@ -48,6 +54,8 @@ import { useMediaAlignPref, type MediaAlign } from './ui/theme';
  *   选中态由「换色」改「白块浮起 + 近距投影」）；
  * - **安全**：App 锁三档分段（关闭 / 平衡 / 激进；离开 off 档前探测本机认证
  *   手段，不支持就地说明——放行一个必然把人锁在门外的配置没有意义）；
+ * - **提醒（v0.5.3 真机纠错，Android-only）**：闹钟链三项系统授予自检
+ *   （精确闹钟 / 全屏通知 / 电池优化豁免）+ 跳授权页入口；
  * - **备份与恢复（置底，用户指令「导出必须是最底部的」）**：导出全量备份
  *   （zip：全部行 + 图片/视频/音频二进制）→ 导入备份（选包自动恢复，合并
  *   语义无缝续用）→ 导出文稿（PDF，web 降级 HTML 下载）。导出/导入走系统
@@ -244,6 +252,9 @@ export function SettingsScreen() {
                         onChange={(next) => void setAppLockMode(next)}
                         onSetPreventCapture={(next) => void setPreventCapture(next)}
                     />
+                    {/* 提醒权限自检（Android-only 系统授予面：iOS/web 无对应
+                        API 也不存在「到点不回 app」问题形态，整卡不渲染） */}
+                    {Platform.OS === 'android' ? <ReminderPermissionSection /> : null}
 
                     {/* 备份与恢复（用户指令：导出置底——区块排在页面最末） */}
                     <SectionEyebrow label="备份与恢复" />
@@ -309,6 +320,101 @@ function SectionEyebrow({ label, first = false }: { label: string; first?: boole
         >
             {label}
         </Text>
+    );
+}
+
+/**
+ * 提醒权限自检卡（v0.5.3 真机纠错「到点不回 app / 不响闹钟」）：闹钟链在
+ * Android 14+ / 国产 ROM 上依赖三项**系统授予**，任一缺失到点都只剩静默——
+ * - 精确闹钟（SCHEDULE_EXACT_ALARM 被拒 → 非精确档延迟到分钟级）；
+ * - 全屏通知（Android 14+ FSI 非默认授予 → 拒后降级 heads-up 不拉 app）；
+ * - 电池优化豁免（后台冻结拖死 JS watcher 的软计时补账）。
+ * 三行同构：图标+label 左、状态右；未开启显红字「未开启」+「去开启」跳对应
+ * 系统授权页（alarm 门面 → 原生 Intent，全 best-effort），回前台自动重查。
+ * 状态字段语义见 core/alarm ReminderPermissionStatus 注（低版本 API 无授予面
+ * 时原生恒回「已开启」档，不误报）。渲染闸在调用点（Platform.OS === 'android'）
+ * ——iOS/web 无这三项系统面，本卡不渲染。
+ */
+function ReminderPermissionSection() {
+    const palette = usePalette();
+    const [status, setStatus] = useState<ReminderPermissionStatus | null>(null);
+    const refresh = useCallback(() => {
+        void alarm.reminderPermissionStatus().then(setStatus);
+    }, []);
+    useEffect(() => {
+        refresh();
+        // 去系统页授权后返回：回前台即重查，卡面跟随真实授予
+        const sub = AppState.addEventListener('change', (state) => {
+            if (state === 'active') refresh();
+        });
+        return () => sub.remove();
+    }, [refresh]);
+
+    const lines: Array<{
+        key: string;
+        icon: React.ReactNode;
+        label: string;
+        granted: boolean;
+        open: () => void;
+    }> = [
+        {
+            key: 'exact-alarms',
+            icon: <LucideClock size={18} strokeWidth={1.9} color={palette.secondary} />,
+            label: '精确闹钟',
+            granted: status?.exactAlarms ?? true,
+            open: () => void alarm.openExactAlarmSettings(),
+        },
+        {
+            key: 'full-screen',
+            icon: <LucideBell size={18} strokeWidth={1.9} color={palette.secondary} />,
+            label: '全屏通知',
+            granted: status?.fullScreen ?? true,
+            open: () => void alarm.openFullScreenSettings(),
+        },
+        {
+            key: 'battery',
+            // 字段 batteryOptimized=true 是坏消息（仍被优化 = 未豁免）
+            icon: <LucideShield size={18} strokeWidth={1.9} color={palette.secondary} />,
+            label: '电池优化豁免',
+            granted: status ? !status.batteryOptimized : true,
+            open: () => void alarm.requestIgnoreBatteryOptimizations(),
+        },
+    ];
+
+    return (
+        <>
+            <SectionEyebrow label="提醒" />
+            <View className="rounded-card bg-ink-surface px-5 py-1 dark:bg-inkd-surface" style={PAPER_CARD_SHADOW}>
+                {lines.map((line) => (
+                    // 行解剖与安全卡同款（图标 18 secondary + label 16，零 hairline）
+                    <View key={line.key} className="flex-row items-center gap-3 py-2.5">
+                        <View className="w-6 items-center">{line.icon}</View>
+                        <Text className="min-w-0 flex-1 text-[16px] text-ink-text dark:text-inkd-text">
+                            {line.label}
+                        </Text>
+                        {status === null ? (
+                            <Text className="text-[13px] text-ink-faint dark:text-inkd-faint">检查中…</Text>
+                        ) : line.granted ? (
+                            <Text className="text-[13px] text-ink-faint dark:text-inkd-faint">已开启</Text>
+                        ) : (
+                            <>
+                                <Text className="text-[13px] text-ink-negative dark:text-inkd-negative">未开启</Text>
+                                <Pressable
+                                    onPress={line.open}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`去开启${line.label}`}
+                                    className="rounded-control px-3 py-1.5 active:bg-ink-raised dark:active:bg-inkd-raised"
+                                >
+                                    <Text className="text-[13px] font-medium text-ink-secondary dark:text-inkd-secondary">
+                                        去开启
+                                    </Text>
+                                </Pressable>
+                            </>
+                        )}
+                    </View>
+                ))}
+            </View>
+        </>
     );
 }
 
