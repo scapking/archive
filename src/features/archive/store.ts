@@ -283,8 +283,9 @@ interface ArchiveStore {
      * 行程内媒体（v4，DEV.md #4）：直接落盘+落库（无块模型，不需要日记媒体那套
      * pending 占位链路——两者取简者），返回 mediaId 供卡片引用；行程已结束则拒绝（#7）。
      * opts 为 2026-11-08 落盘异步化配套（进度注册键 / 直迁语义 / 原始进度监听）；
-     * itemId（v9）传入时媒体行落 item_id（行程项图片/视频归属，仅 attachTripItemMedia
-     * 使用）。
+     * itemId（v9）传入时媒体行落 item_id（行程项图片/视频归属）。v0.5.2 起用户
+     * 裁决「补图/补视频不要了」——attachTripItemMedia 门面已删，本原语保留但当前
+     * 无 item_id 调用方；trip_media.item_id 列与卡面只读展示（存量）不受影响。
      */
     attachTripMedia(
         tripId: string,
@@ -353,19 +354,10 @@ interface ArchiveStore {
      * true = 成功。
      */
     deleteTripItem(id: string): Promise<boolean>;
-    /**
-     * 行程项媒体（图片/视频挂 trip_media 既有链路，item_id 关联到行程项）：
-     * 复用 attachTripMedia 上传管线（落盘 key 同规则 trip-media/<tripId>/…），
-     * 行程锁定（#7）与存在性预检在内部完成，返回 mediaId。
-     */
-    attachTripItemMedia(
-        tripItemId: string,
-        kind: TripMediaKind,
-        uri: string,
-        width: number | null,
-        height: number | null,
-        durationMs?: number | null,
-    ): Promise<string | null>;
+    // v0.5.2 口径（用户裁决「补图/补视频不要了」）：attachTripItemMedia 门面
+    // 已删——行程项媒体再无写入入口（旧长按菜单入口随令7 退场，不回填编辑
+    // 表单）；trip_media.item_id 列与卡面封面/记号**只读展示**保留（存量数据
+    // 不销毁），删除行程项的媒体摘关联链原样有效。
     /** 行程搜索（DEV.md #5）：标题+描述 LIKE，range 为行程区间与 [from, to] 相交。 */
     searchTrips(keyword: string, range?: { from?: string; to?: string }): Promise<TripCard[]>;
     /** 计划搜索（DEV.md #5 扩展）：正文/标题 LIKE + local_date ∈ [from, to]。
@@ -1553,22 +1545,8 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         return true;
     },
 
-    async attachTripItemMedia(tripItemId, kind, uri, width, height, durationMs = null) {
-        try {
-            // 归属预检：行程项存在（媒体没有落点则拒绝）；行程锁定闸（#7）与
-            // 落盘/落库管线全部在 attachTripMedia 内完成（itemId 落 item_id 列）
-            const item = await db.getTripItem(tripItemId);
-            if (!item) {
-                set({ error: '行程项不存在或已删除' });
-                return null;
-            }
-            return await get().attachTripMedia(item.trip_id, kind, uri, width, height, durationMs, undefined, tripItemId);
-        } catch (error) {
-            set({ error: `媒体上传失败：${toMessage(error)}` });
-            return null;
-        }
-    },
-
+    // v0.5.2：attachTripItemMedia 门面已删（见接口区口径注）；attachTripMedia
+    // （行程级）保留，item_id 参数位仍在，只是再无行程项写入调用方。
     async searchTrips(keyword, range) {
         const rangeError = invalidSearchRangeError(range);
         if (rangeError) {
