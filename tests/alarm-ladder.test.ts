@@ -1,53 +1,80 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    alarmCardContent,
     alarmDeepLink,
     alarmRoutePath,
     decideAlarmLadder,
+    isAlarmHandled,
+    isAlarmSettled,
+    itemIdFromAlarmPath,
     itemIdFromNotificationId,
+    markAlarmHandled,
     pickDueEntries,
+    shouldPresentAlarm,
     tripDeepLink,
     type ScheduledAlarmEntry,
 } from '../src/features/archive/alarm-ladder.ts';
 
-// ─── 阶梯决策（用户令 #2：先系统原生精确，做不到的档位落全屏闹钟 + 常驻通知）──
+// ─── 阶梯决策（v0.5.1 令 3：统一语义「拉回尝试 → 本地通知兜底 → 前台呈现」；
+//     拉回不可得必有通知，不留静默洞）───────────────────────────────────────
 
-test('android + exact granted leads with the native exact alarm', () => {
+test('android + exact granted: pullback via full-screen intent + notification fallback both on', () => {
     const ladder = decideAlarmLadder({ platform: 'android', exact: 'granted', notificationsGranted: true });
     assert.deepEqual(ladder.tiers, ['system-exact', 'system-notification', 'in-app-fullscreen']);
+    assert.equal(ladder.pullback, true);
+    assert.equal(ladder.notificationFallback, true);
     assert.equal(ladder.fullscreen, true);
     assert.equal(ladder.keepAlive, true);
     assert.equal(ladder.presentable, true);
 });
 
-test('android + exact denied degrades to inexact-but-delivered, keepAlive stays on', () => {
+test('android + exact denied degrades to inexact-but-delivered, pullback/keepAlive stay on', () => {
     const ladder = decideAlarmLadder({ platform: 'android', exact: 'denied', notificationsGranted: true });
     assert.deepEqual(ladder.tiers, ['system-inexact', 'system-notification', 'in-app-fullscreen']);
     assert.equal(ladder.keepAlive, true);
+    // 非精确档到点走同一接收器：拉回尝试与通知兜底不因精度降级消失
+    assert.equal(ladder.pullback, true);
+    assert.equal(ladder.notificationFallback, true);
 });
 
-test('android + module missing (unsupported) keeps only notification + fullscreen, no keepAlive', () => {
+test('android + module missing (unsupported) keeps only notification + fullscreen, no pullback/keepAlive', () => {
     const ladder = decideAlarmLadder({ platform: 'android', exact: 'unsupported', notificationsGranted: true });
     assert.deepEqual(ladder.tiers, ['system-notification', 'in-app-fullscreen']);
+    assert.equal(ladder.pullback, false);
+    assert.equal(ladder.notificationFallback, true);
     assert.equal(ladder.keepAlive, false);
 });
 
-test('android + notification permission denied drops presentability but keeps the alarm ladder', () => {
+test('android + notification permission denied drops presentability but keeps the pullback ladder', () => {
     const ladder = decideAlarmLadder({ platform: 'android', exact: 'granted', notificationsGranted: false });
     assert.equal(ladder.presentable, false);
+    assert.equal(ladder.notificationFallback, false);
     assert.deepEqual(ladder.tiers, ['system-exact', 'system-notification', 'in-app-fullscreen']);
 });
 
-test('ios has no third-party alarm API: notification ladder + foreground-only fullscreen', () => {
+test('ios has no pullback API: notification is the default fallback, not an error state', () => {
     const ladder = decideAlarmLadder({ platform: 'ios', exact: 'unsupported', notificationsGranted: true });
     assert.deepEqual(ladder.tiers, ['system-notification', 'in-app-fullscreen']);
+    assert.equal(ladder.pullback, false);
+    // 令 2 核心：后台强拉全屏不可得 → 必有本地通知兜底（进 app 腿 = 通知 tap 深链）
+    assert.equal(ladder.notificationFallback, true);
     assert.equal(ladder.keepAlive, false);
     assert.equal(ladder.presentable, true);
+});
+
+test('ios + notifications denied: nothing system-level can present (honest platform floor)', () => {
+    const ladder = decideAlarmLadder({ platform: 'ios', exact: 'unsupported', notificationsGranted: false });
+    assert.equal(ladder.pullback, false);
+    assert.equal(ladder.notificationFallback, false);
+    assert.equal(ladder.presentable, false);
 });
 
 test('web has no system surface at all: in-app fullscreen only', () => {
     const ladder = decideAlarmLadder({ platform: 'web', exact: 'unsupported', notificationsGranted: false });
     assert.deepEqual(ladder.tiers, ['in-app-fullscreen']);
+    assert.equal(ladder.pullback, false);
+    assert.equal(ladder.notificationFallback, false);
     assert.equal(ladder.keepAlive, false);
     assert.equal(ladder.presentable, false);
 });
@@ -84,4 +111,59 @@ test('pickDueEntries returns only elapsed entries sorted by due time', () => {
 test('itemIdFromNotificationId strips the trip-item prefix contract (store identifier scheme)', () => {
     assert.equal(itemIdFromNotificationId('trip-item-42'), '42');
     assert.equal(itemIdFromNotificationId('other-42'), null);
+});
+
+// ─── v0.5.1 真机纠错判定面（watcher 拉起去重 / 外部停铃收账 / tap 深链回收 /
+//     通知内容卡文案）——全部纯函数，屏层与 watcher 只消费不重复实现 ─────────
+
+// v0.5.1 复响回路防线：「本会话已处理」是 watcher/页内检查/全屏屏出口三处
+// 共写的共享账（id→计划时刻指纹）——局部 ref 集随屏卸载丢失即「确认后回页
+// 再跳、关了又响」的根因；at 指纹让重排后的闹钟重新在场。
+test('shared session ledger: keyed by (id, at); reschedule re-arms', () => {
+    markAlarmHandled('ledger-1', 5_000);
+    assert.equal(isAlarmHandled('ledger-1', 5_000), true);
+    assert.equal(isAlarmHandled('ledger-1', 9_000), false); // 重排新时刻 = 未处理
+    assert.equal(isAlarmHandled('ledger-never', 1), false);
+});
+
+test('shouldPresentAlarm: reads the shared ledger, /alarm route presence gates too', () => {
+    markAlarmHandled('w-1', 5_000);
+    assert.equal(shouldPresentAlarm('w-1', 5_000, '/'), false); // 会话账已记
+    assert.equal(shouldPresentAlarm('w-1', 6_000, '/'), true); // 重排可再呈
+    assert.equal(shouldPresentAlarm('w-2', 6_000, '/alarm/w-2'), false); // 屏在场
+    assert.equal(shouldPresentAlarm('w-2', 6_000, '/trip/t1/day/2026-11-26'), true);
+    // 判定注入位（纯函数可测性保持：handled 谓参可替换）
+    assert.equal(shouldPresentAlarm('w-3', 7_000, '/', () => true), false);
+});
+
+test('isAlarmSettled: entry present in registry = still ringing; gone = externally stopped', () => {
+    const scheduled = [entry('a', 1), entry('b', 2)];
+    assert.equal(isAlarmSettled('a', scheduled), false);
+    assert.equal(isAlarmSettled('gone', scheduled), true);
+    assert.equal(isAlarmSettled('a', []), true); // 停止后注册表出账（cancel/confirm 语义）
+});
+
+test('itemIdFromAlarmPath round-trips alarmRoutePath (notification tap contract)', () => {
+    assert.equal(itemIdFromAlarmPath(alarmRoutePath('uuid-1')), 'uuid-1');
+    assert.equal(itemIdFromAlarmPath(alarmRoutePath('a b')), 'a b'); // 编码逆运算
+    assert.equal(itemIdFromAlarmPath('/trip/t1'), null);
+    assert.equal(itemIdFromAlarmPath('/alarm/'), null);
+    assert.equal(itemIdFromAlarmPath('/alarm/a/b'), null);
+    assert.equal(itemIdFromAlarmPath('/alarm/%zz'), null); // 非法编码防御
+});
+
+test('alarmCardContent: time + title card copy, both platforms isomorphic (v0.5.1 令 2/3)', () => {
+    assert.deepEqual(
+        alarmCardContent({ time: '07:40', title: ' 赶渡轮 ', description: ' 码头 C 口 ' }),
+        { title: '07:40 赶渡轮', body: '码头 C 口' },
+    );
+    // 空标题只报时刻——禁兜底词（卡面纪律同源）；body 退标题再退空
+    assert.deepEqual(
+        alarmCardContent({ time: '09:30', title: '', description: '' }),
+        { title: '09:30', body: '' },
+    );
+    assert.deepEqual(
+        alarmCardContent({ time: '09:30', title: '还书' }),
+        { title: '09:30 还书', body: '还书' },
+    );
 });

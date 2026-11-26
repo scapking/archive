@@ -19,6 +19,16 @@ import type { TripItemStatus } from './db';
  * 时刻换算的唯一实现在这里，store.ts 重导出保持既有消费面不变。
  */
 
+/**
+ * 行程项展示标题（v0.5.1 令 1：快速路径删标题输入框，title 可空存空串）：
+ * 卡面/闹钟卡/无障碍标签的唯一取题口。**空标题返回空串——调用方据此不渲染
+ * 任何文字（时刻即主角），禁止任何兜底文案**（同 trip-day-deck「卡面禁词」
+ * 纪律：兜底词回流一律视为缺陷）。非空标题 trim 后原样返回。
+ */
+export function tripItemDisplayTitle(title: string): string {
+    return title.trim();
+}
+
 /** 运行时阶段（库里不持久化；见头注）。 */
 export type TripItemPhase = 'pending' | 'ongoing' | 'done' | 'wrap' | 'terminal';
 

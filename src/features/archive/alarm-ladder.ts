@@ -39,7 +39,21 @@ export interface AlarmLadderInput {
 export interface AlarmLadder {
     /** 可用档位（优先级降序）。 */
     tiers: AlarmTier[];
-    /** 到点是否应拉起 app 内全屏闹钟屏（阶梯里所有「非精确/系统不可达」兜底都指向它）。 */
+    /**
+     * v0.5.1 令 3 拉回尝试档：到点是否**尝试把 app 拉回前台呈现**
+     * （Android = 接收器挂 full-screen intent；iOS 无该 API = false，
+     * 进 app 的通道只剩「用户点通知深链 / 回前台 watcher」）。
+     */
+    pullback: boolean;
+    /**
+     * v0.5.1 令 2 本地通知兜底档：**拉回不可得时必有通知**（卡片内容 =
+     * 行程项内容 + 时间，文案同 alarmCardContent 契约）——Android = 接收器
+     * 与通知权限在场时的常驻通知（含 heads-up）；iOS = timeSensitive 本地
+     * 通知。web 无任何系统面 = false。
+     */
+    notificationFallback: boolean;
+    /** 到点是否应拉起 app 内全屏闹钟屏（在场呈现形态；三端路由面都在，
+     *  触达通道分平台：Android pullback/通知 tap、iOS 通知 tap/前台 watcher）。 */
     fullscreen: boolean;
     /** 到点后是否用常驻通知维持存活（Android = ongoing notification + FGS；确认后移除）。 */
     keepAlive: boolean;
@@ -48,23 +62,30 @@ export interface AlarmLadder {
 }
 
 /**
- * 阶梯决策树：
- * - android + exact granted → [system-exact, system-notification, in-app-fullscreen]，keepAlive ✓；
- * - android + exact denied → [system-inexact, system-notification, in-app-fullscreen]，keepAlive ✓
- *   （非精确到点仍走同一接收器：常驻通知 + 全屏 intent，精度降级不丢呈现）；
- * - android + unsupported（原生模块未链接，理论不该出现）→ 通知 + 全屏，无 keepAlive；
- * - ios → [system-notification, in-app-fullscreen]，无 keepAlive（iOS 无法后台拉起全屏，
- *   前台到点由 watcher/全屏屏承接——能力边界已如实注释于 core/alarm）；
- * - web → 仅 [in-app-fullscreen]（无任何系统面）。
+ * 阶梯决策树（v0.5.1 令 3 重构语义 = **一条统一产品阶梯，双端同构**：
+ * 「拉回尝试 → 本地通知兜底 → 前台呈现」，任何一档可达即该档真实在场，
+ * 拉回失败必然落进通知兜底，不留静默洞）：
+ * - android + exact granted → [system-exact(拉回尝试), system-notification(兜底),
+ *   in-app-fullscreen(前台呈现)]，pullback ✓ keepAlive ✓；
+ * - android + exact denied → [system-inexact, system-notification, in-app-fullscreen]
+ *   ——非精确到点仍走同一接收器：常驻通知 + 全屏 intent，精度降级不丢呈现与兜底；
+ * - android + unsupported（原生模块未链接，理论不该出现）→ 无拉回通道，只剩
+ *   expo 通知链兜底 + 前台呈现，无 keepAlive；
+ * - ios → 无后台强拉 API（平台上限如实）：pullback=false，到点呈现 =
+ *   timeSensitive 本地通知（critical sound 不可得，默认通知声 + 震动档），
+ *   用户点通知经 data.path 深链进全屏屏；前台到点由 watcher 直呈全屏屏；
+ * - web → 仅路由面 [in-app-fullscreen]（无系统通知、无拉回）。
  */
 export function decideAlarmLadder(input: AlarmLadderInput): AlarmLadder {
     const presentable = input.platform !== 'web' && input.notificationsGranted;
     if (input.platform === 'android') {
         if (input.exact === 'unsupported') {
             // 原生模块未链接（理论不该出现的 Android 形态）：闹钟注册表/
-            // 接收器都不在场，只剩通知链 + 前台全屏屏，不承诺 keepAlive
+            // 接收器都不在场，拉回通道随之消失；通知链 + 前台全屏屏仍在
             return {
                 tiers: ['system-notification', 'in-app-fullscreen'],
+                pullback: false,
+                notificationFallback: presentable,
                 fullscreen: true,
                 keepAlive: false,
                 presentable,
@@ -73,6 +94,11 @@ export function decideAlarmLadder(input: AlarmLadderInput): AlarmLadder {
         const lead: AlarmTier = input.exact === 'granted' ? 'system-exact' : 'system-inexact';
         return {
             tiers: [lead, 'system-notification', 'in-app-fullscreen'],
+            // Android 到点必走全屏 intent（fullScreen 传参链见 AlarmFireReceiver/
+            // AlarmKeepAliveService v0.5.1 注）；拉回不成（heads-up 场景/ROM 吞
+            // intent）→ 常驻通知 + 铃声震动兜底，两档同时在场、无静默洞
+            pullback: true,
+            notificationFallback: presentable,
             fullscreen: true,
             keepAlive: true,
             presentable,
@@ -81,6 +107,8 @@ export function decideAlarmLadder(input: AlarmLadderInput): AlarmLadder {
     if (input.platform === 'ios') {
         return {
             tiers: ['system-notification', 'in-app-fullscreen'],
+            pullback: false,
+            notificationFallback: presentable,
             fullscreen: true,
             keepAlive: false,
             presentable,
@@ -88,9 +116,30 @@ export function decideAlarmLadder(input: AlarmLadderInput): AlarmLadder {
     }
     return {
         tiers: ['in-app-fullscreen'],
+        pullback: false,
+        notificationFallback: false,
         fullscreen: true,
         keepAlive: false,
         presentable: false,
+    };
+}
+
+/**
+ * 提醒内容卡文案双端同构（v0.5.1 令 2/3：卡片内容 = 行程项内容 + 时间）。
+ * title = 「HH:mm 标题」（空标题只显时刻，禁兜底文字——v0.5.1 卡面禁词纪律
+ * 同源）；body = 描述 → 退标题 → 空。Android 注册表 title/body 快照与 iOS
+ * expo-notifications content 都应按本函数产出（消费点：store 调度接线处；
+ * 全屏屏呈现用行数据直读，同字段同事实源）。
+ */
+export function alarmCardContent(item: {
+    time: string;
+    title: string;
+    description?: string;
+}): { title: string; body: string } {
+    const trimmedTitle = item.title.trim();
+    return {
+        title: trimmedTitle ? `${item.time} ${trimmedTitle}` : item.time,
+        body: item.description?.trim() || trimmedTitle,
     };
 }
 
@@ -125,6 +174,24 @@ export function tripDeepLink(tripId: string, scheme: string = APP_SCHEME): strin
     return `${scheme}://trip/${encodeId(tripId)}`;
 }
 
+/**
+ * `/alarm/<id>` 路由路径 → 闹钟 id（alarmRoutePath 的逆运算，v0.5.1 令 2/3
+ * 「点通知进 app 呈现」接驳用：通知 content.data.path 即由 alarmRoutePath
+ * 写入，tap 后由 watcher 解析回收）。非闹钟路径 / 空段 / 非法编码 = null。
+ */
+export function itemIdFromAlarmPath(path: string): string | null {
+    const prefix = `${ALARM_ROUTE}/`;
+    if (!path.startsWith(prefix)) return null;
+    const segment = path.slice(prefix.length);
+    if (segment.length === 0 || segment.includes('/')) return null;
+    try {
+        return decodeURIComponent(segment);
+    } catch {
+        // 非法百分号编码（外部伪造路径）：按非闹钟路径处理
+        return null;
+    }
+}
+
 // ─── 到点判定（watcher 软计时与原生注册表共用）────────────────────────────
 
 /** 原生闹钟注册表条目（AlarmScheduler SharedPreferences 形态；listScheduled 回传）。 */
@@ -148,4 +215,57 @@ export function itemIdFromNotificationId(identifier: string): string | null {
     return identifier.startsWith(TRIP_ITEM_NOTIFICATION_PREFIX)
         ? identifier.slice(TRIP_ITEM_NOTIFICATION_PREFIX.length)
         : null;
+}
+
+// ─── v0.5.1 真机纠错的可测判定（watcher 拉起去重 / 全屏屏外部停铃收账）──────
+
+/**
+ * 「本会话已把该闹钟拉进全屏屏（或被用户停掉）」共享账（v0.5.1）：
+ * id → 处理时的**计划触发时刻**指纹。三通道（watcher 软计时 / 页内到点检查
+ * / 全屏屏出口）必须共用这本账——各持会话集时，任一通道 replace 导航卸载
+ * 另一通道的屏后，卸载会带走其局部集，回页对同一 ongoing 项二次跳屏 =
+ * 「关掉又响」复响回路（v0.5.1 纠错实测推演）。以 at 为指纹：同一行程项被
+ * 重排（updateTripItem → 新 at）后天然重新在场，不会被陈旧账吞掉。
+ * 纯运行时 Set/Map（本文件仍零 import，node 测试可直接驱动）。
+ */
+const handledAlarms = new Map<string, number>();
+
+/** 记入账：id 在该计划时刻已被处理（拉起确认/停止/页内跳过）。 */
+export function markAlarmHandled(id: string, at: number): void {
+    handledAlarms.set(id, at);
+}
+
+/** 查询：id 的**该次**计划是否已处理（重排后 at 不同 → 未处理）。 */
+export function isAlarmHandled(id: string, at: number): boolean {
+    return handledAlarms.get(id) === at;
+}
+
+/**
+ * watcher 是否应把该到点闹钟拉进全屏屏（v0.5.1 起为可测纯函数——原内联于
+ * alarm-watcher 的 pushAlarm，两处「关不掉/重复弹」根因都落在这个判定上）：
+ * - 会话账已记（同 at 已拉起/已处理）→ false；
+ * - 已在 /alarm 路由（含 /alarm/<id>）→ false：全屏屏在场，不叠第二张。
+ */
+export function shouldPresentAlarm(
+    id: string,
+    at: number,
+    pathname: string,
+    handled: (id: string, at: number) => boolean = isAlarmHandled,
+): boolean {
+    if (handled(id, at)) return false;
+    if (pathname.startsWith(ALARM_ROUTE)) return false;
+    return true;
+}
+
+/**
+ * 该闹钟是否已被「外部停铃」出账（v0.5.1 用户反馈『关闭后依然有声音』之二）：
+ * 通知动作「停止」/删除行程项走原生 AlarmScheduler.cancel——注册表条目移除，
+ * 但正在响的 app 内全屏屏（expo-audio loop）收不到任何 JS 侧信号（不加新原生
+ * 事件面，保守约束），由全屏屏低频回读 listScheduled：id 不在注册表 = 已被
+ * 停掉 → 屏自取静音离场。语义前提：到点未确认的条目**留在**注册表（fire 只
+ * 落 fired 账，出账唯一入口是 cancel/confirm，见 AlarmScheduler 注），
+ * 所以「不在」只可能是停止，不会是「还没响」。
+ */
+export function isAlarmSettled(id: string, scheduled: readonly ScheduledAlarmEntry[]): boolean {
+    return !scheduled.some((entry) => entry.id === id);
 }

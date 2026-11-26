@@ -31,7 +31,7 @@ import { widget } from '@/core/widget';
 // v0.4.7 D 接线：widget 快照编排收口进纯函数（status/dueAt/跨日时间格式），
 // 闹钟深链路径由 alarm-ladder 单源提供（三端一律路径参数，勿 query）。
 import { buildWidgetSnapshot } from './widget-snapshot';
-import { alarmRoutePath } from './alarm-ladder';
+import { alarmCardContent, alarmRoutePath } from './alarm-ladder';
 
 export { tripItemDueAt };
 import * as db from './db';
@@ -315,8 +315,10 @@ interface ArchiveStore {
     // mutation 成功只 bump revision——行程表页由屏层按 useArchiveRevision 局部
     // 重载（对齐事件/计划的取径）。
     /**
-     * 创建行程项（行程表页 + 表单卡）：title 必填非空、time 须合法 'HH:mm'、
-     * date 须合法本地日期（错误进 error 通道返回 null，不 throw）。成功落库 +
+     * 创建行程项（行程表页 + 表单卡）：v0.5.1 令 1 起 title 可空（trim 后空串
+     * 直接入库，快速路径无标题输入框；展示层 tripItemDisplayTitle 空标题不渲染
+     * 任何文字）；time 须合法 'HH:mm'、date 须合法本地日期（错误进 error 通道
+     * 返回 null，不 throw）。成功落库 +
      * 调度本地通知（确定性 identifier trip-item-<itemId>；权限被拒静默降级，
      * 不阻塞创建）+ withAlarm 时注册系统闹钟（core/alarm 门面，Android 真闹钟
      * /iOS·web unsupported 自动 no-op）+ bump revision。
@@ -738,12 +740,15 @@ async function scheduleTripItemNotification(
         // 正文 = 描述（Android shade 卡片 / iOS 横幅按 title+subtitle+body
         // 三段卡片式呈现；iOS 与 Android 展开态即 BigText 卡片形态）。
         const trip = await db.getTrip(item.trip_id).catch(() => null);
-        const body = item.description || item.title;
+        // v0.5.1 令2：通知文案单源 alarmCardContent——空标题只报时刻、禁兜底
+        // 词；Android 注册表 title/body 快照与 iOS content 自此同构（A 申报接线）
+        const card = alarmCardContent(item);
+        const body = card.body;
         await ExpoNotifications.cancelScheduledNotificationAsync(tripItemNotificationId(item.id));
         await ExpoNotifications.scheduleNotificationAsync({
             identifier: tripItemNotificationId(item.id),
             content: {
-                title: `${item.time} ${item.title}`,
+                title: card.title,
                 subtitle: trip ? tripDisplayTitle(trip.title) : undefined,
                 body,
                 sound: true,
@@ -1268,13 +1273,11 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
     // revision，行程表页按 useArchiveRevision 局部重载。
 
     async createTripItem({ tripId, date, time, title, description, withAlarm }) {
-        // 校验先行（错误进 error 通道，对齐 createEvent 口径）：标题必填非空、
-        // 时间合法 'HH:mm'、日期合法本地日期；超长不设截断（备注为自由短文）
+        // 校验先行（错误进 error 通道，对齐 createEvent 口径）：
+        // v0.5.1 令 1——标题校验放开：快速路径删标题输入框，trim 后空串合法
+        // 直接入库（卡面「空标题只显时刻、无兜底文字」由展示层 tripItemDisplayTitle
+        // 把关）；时间合法 'HH:mm'、日期合法本地日期照旧；超长不设截断（备注为自由短文）
         const trimmedTitle = title.trim();
-        if (trimmedTitle.length === 0) {
-            set({ error: '给行程项起个名字' });
-            return null;
-        }
         if (!isValidTripItemTime(time)) {
             set({ error: `时间格式不对，用 HH:mm（如 09:30）` });
             return null;
@@ -1327,11 +1330,14 @@ export const useArchiveStore = create<ArchiveStore>((set, get) => ({
         // 系统闹钟（用户指令 #9，创建时可选）：iOS/web 模块缺失自动 no-op，
         // 调度失败仅 warn——闹钟是提醒增强，创建照常成功
         if (withAlarm) {
+            // v0.5.1 令2：Android 注册表快照与 iOS 通知同走 alarmCardContent
+            // 单源（空标题只报时刻，双端卡片文案一致）
+            const alarmCard = alarmCardContent(row);
             void alarm.schedule({
                 id: row.id,
                 at: tripItemDueAt(row.local_date, row.time),
-                title: `${row.time} ${row.title}`,
-                body: row.description || row.title,
+                title: alarmCard.title,
+                body: alarmCard.body,
             });
         }
         set({ error: null, revision: get().revision + 1 });

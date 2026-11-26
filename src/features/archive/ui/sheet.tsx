@@ -220,16 +220,19 @@ export function CenteredSheet({
                         <SheetKeyboardContext.Provider value={api}>
                             {/* flex 列：ScrollView flexGrow+flexShrink 吃掉卡内余量，
                                 footer 钉卡底（恒在键盘上方，不随内容滚走） */}
+                            {/* 卡内边距 = 设计契约基线 p-4（16）：v0.5.1 逐处核
+                                （原 20 与 settings/事件卡内 p-4 不齐）；footer 同
+                                宽，卡头内容与钉底动作行左右缘对齐 */}
                             <ScrollView
                                 ref={scrollRef}
                                 style={{ flexGrow: 1, flexShrink: 1 }}
-                                contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 20 }}
+                                contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 16 }}
                                 keyboardShouldPersistTaps="handled"
                             >
                                 {children}
                             </ScrollView>
                             {footer ? (
-                                <View className="px-5 pb-5 pt-3">{footer}</View>
+                                <View className="px-4 pb-4 pt-3">{footer}</View>
                             ) : null}
                         </SheetKeyboardContext.Provider>
                     </View>

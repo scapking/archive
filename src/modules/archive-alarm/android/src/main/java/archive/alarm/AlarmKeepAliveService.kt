@@ -38,9 +38,18 @@ class AlarmKeepAliveService : Service() {
             return START_NOT_STICKY
         }
         try {
-            // 与接收器同一构造点：同 id 换绑不丢「停止」动作与深链
+            // 与接收器同一构造点：同 id 换绑不丢「停止」动作与深链。
+            // v0.5.1 真机纠错：fullScreen 由 false 改 true——闹钟阶梯判定
+            // （alarm-ladder：Android 在场即 fullscreen=true）要求「到点必走
+            // 全屏 intent」，而本换绑与接收器 notify 是同一通知的先后两版：
+            // 换绑版不带 FSI，等于给「服务先跑/通知后挂」的厂商 ROM 时序留了
+            // 一个剥离窗口。两构造点统一带 FSI 后，未确认的闹钟在锁屏任何一版
+            // 呈现都能拉起全屏屏（FSI 只在息屏/锁屏触发、singleTask 同路由重入
+            // 由 expo-router 幂等处理，无重复弹屏风险；服务 START_NOT_STICKY，
+            // 确认后 dismiss→stop 全链清账，不存在幽灵常驻 FSI）。
+            // 保守性：同一函数的布尔实参翻转，零新 API 引用面。
             val notification = AlarmFireReceiver.ongoingNotification(
-                this, id, titleOf(intent), bodyOf(intent), fullScreen = false,
+                this, id, titleOf(intent), bodyOf(intent), fullScreen = true,
             )
             // 类型走清单声明（service 元素 foregroundServiceType="specialUse"
             // + alarm-keep-alive subtype，0.4.7 CI 后选型，见 manifest 注释）：

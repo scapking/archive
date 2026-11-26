@@ -53,6 +53,18 @@ class AlarmFireReceiver : BroadcastReceiver() {
             AlarmScheduler.markFired(context, id, at, title, body)
             ensureChannel(context)
 
+            // v0.5.1 真机纠错（用户反馈「后台到点没跳回 app」）：呈现次序改为
+            // **先挂带 full-screen intent 的常驻通知，再拉保活服务**。
+            // 原因：FSI 由系统在 notify 时刻评估（息屏/锁屏即拉起全屏 activity）；
+            // 服务 startForeground 会以同一 id 换绑这条通知——旧次序里服务先起，
+            // 换绑版本又没带 FSI（见 AlarmKeepAliveService fullScreen 注），
+            // 任何时序/厂商 ROM 抖动都可能让「不带 FSI 的换绑」抢在系统呈现前，
+            // 到点只剩 heads-up 甚至无声。现次序保证系统第一眼看到的就是 FSI 版；
+            // 换绑版同样带 FSI（两构造点口径统一），不存在剥离窗口。
+            // 保守性：仅调换既有两调用顺序，无任何新 API 引用面。
+            NotificationManagerCompat.from(context)
+                .notify(notificationId(id), ongoingNotification(context, id, title, body, fullScreen = true))
+
             // 保活前台服务（app 存活时 JS 侧才能在到点直接拉起全屏闹钟屏）：
             // Android 12+ 从广播后台启动 FGS 受限时留痕降级——常驻通知在场，
             // 用户 tap 通知/full-screen intent 拉起后 JS drainFired 补账。
@@ -61,9 +73,6 @@ class AlarmFireReceiver : BroadcastReceiver() {
             } catch (e: Exception) {
                 Log.w(TAG, "keep-alive service start refused (FGS background limit): $id", e)
             }
-
-            NotificationManagerCompat.from(context)
-                .notify(notificationId(id), ongoingNotification(context, id, title, body, fullScreen = true))
         } catch (e: Exception) {
             // 通知失败只留痕：闹钟数据面不受影响（增强失败文档化降级口径）
             Log.w(TAG, "alarm notification failed: $id", e)

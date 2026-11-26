@@ -132,6 +132,19 @@ function DeleteTripControl({
  * 日期原值透传（#2：date-input 的自然输入归一已在组件内完成，表单不再二次
  * 加工）。已结束行程（isTripLocked）整表只读锁定：直达深链在此拦下，删除入口
  * 保留。
+ *
+ * v0.5.1 令 4 对齐新建事件语言（两处收口，语义零漂移）：
+ * - **井语言统一**：井内输入改走 FieldInput **canvas 档**（井即容器、输入体
+ *   透明，与事件向导同一解剖：canvas + h-14 justify-center 保 56dp 命中带，
+ *   描述 multiline minHeight 88 体感不变）——raised 盒中盒（卡内再套 raised
+ *   井）退役，层次只剩 surface 井底 + tone 差；
+ * - **动作行出容器**：「创建行程 / 保存修改」主钮移出 ScrollView、钉屏底
+ *   （px-6 基线 + safe-area 收口，键盘弹起随既有 KeyboardAvoidingView 通道
+ *   抬升），ScrollView 补 flex-1 撑住钉底几何；
+ * - **日期呈现不滚轮化（边界判定）**：用户否的是 trip-day 添加项的滚轮时间
+ *   选择（agent B 域）；/trip/new 的出发/返回走 DateField 井 + DatePickerSheet
+ *   **日历面板**（月历两步选定 + 手输兜底），是「另一条语言」、用户未否——
+ *   保持日期面板不动，不引入滚动档。
  */
 export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
     const router = useRouter();
@@ -383,9 +396,14 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                     自说明，placeholder/分段标签即说明，屏头只留屏题） */}
                 <ScreenHeader title={isEdit ? '编辑行程' : '新建行程'} />
             </View>
+            {/* flex-1（v0.5.1 令 4）：滚动体吃满屏头与钉底动作行之间的空间——
+                主钮出容器钉屏底后，钮行不再随内容浮动，短表单下钮也恒在屏底 */}
             <ScrollView
+                className="flex-1"
                 contentContainerStyle={{
-                    paddingBottom: insets.bottom + 32,
+                    // 屏底由动作行接管 safe-area（下钉屏底带 insets.bottom 收口），
+                    // 滚动内容只需常规 24 呼吸底距
+                    paddingBottom: 24,
                     paddingHorizontal: 24,
                 }}
                 keyboardShouldPersistTaps="handled"
@@ -409,17 +427,18 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                             <TripBadge icon={icon} size="cell" />
                         </Pressable>
                         <View className="flex-1">
-                            {/* #1 推广收口：标题输入走 FieldInput；v0.4.6 升
-                                tone raised（纸卡上的井，与日期字段同档）+ 16/24
-                                正文档（方向令 §2 字阶），容器 h-14 命中档不变 */}
+                            {/* #1 推广收口：标题输入走 FieldInput；v0.5.1 令 4
+                                对齐事件井解剖——canvas 档（井即容器，输入体透明，
+                                盒中盒 raised 退役），h-14 + justify-center 保住
+                                56dp 命中带与 16/24 正文档字阶 */}
                             <FieldInput
-                                tone="raised"
+                                tone="canvas"
                                 value={title}
                                 onChangeText={setTitle}
                                 placeholder="行程名称"
                                 maxLength={40}
                                 returnKeyType="next"
-                                containerClassName="h-14"
+                                containerClassName="h-14 justify-center"
                                 style={{ fontSize: 16, lineHeight: 24 }}
                             />
                         </View>
@@ -528,23 +547,22 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                 </View>
 
                 {/* ── 描述：默认展开的输入框（R4）——新建/编辑同一形态，不再「点击
-                    后才出现」。多行起手高度 + 顶距：容器随内容自然撑开（minHeight 80
-                    为 Yoga border-box 口径），调用侧 paddingTop 16 让首行与容器顶缘
-                    有呼吸（调用侧 style 位于合并数组末位，覆盖 INPUT_TRANSPARENT_STYLE
-                    的 paddingVertical: 0 简写）；FieldInput 口径与标题输入同源
-                    （tone surface）。不 autofocus：进表单即弹键盘盖住上部主字段 */}
+                    后才出现」。v0.5.1 令 4 对齐事件井解剖：canvas 档输入体透明，
+                    井（p-4）即容器——调用侧 paddingTop 16 的盒内呼吸随盒中盒退役
+                    （井底距已给），minHeight 88 起手体感保持；不 autofocus：
+                    进表单即弹键盘盖住上部主字段 */}
                 <View
                     className="mt-4 rounded-card bg-ink-surface p-4 dark:bg-inkd-surface"
                     style={PAPER_CARD_SHADOW}
                 >
                     <FieldInput
-                        tone="raised"
+                        tone="canvas"
                         multiline
                         value={description}
                         onChangeText={setDescription}
                         placeholder="行程描述"
                         maxLength={500}
-                        style={{ minHeight: 88, paddingTop: 16, fontSize: 16, lineHeight: 26 }}
+                        style={{ minHeight: 88, fontSize: 16, lineHeight: 26 }}
                     />
                 </View>
 
@@ -611,36 +629,46 @@ export function TripFormScreen({ trip }: { trip?: TripRow } = {}) {
                     />
                 ) : null}
 
-                {/* 错误可见性（v0.4.7 令 3 对齐 settings）：tinted 横幅卡取代
-                    裸行红字——校验错与 store 错同一语言，validation 优先
-                    （输入闸在本地，先于远端态） */}
-                {validation || storeError ? (
-                    <View className="mt-4 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">
-                        <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
-                            {validation ?? storeError}
-                        </Text>
-                    </View>
-                ) : null}
-
-                <View className="mt-6">
-                    <PrimaryButton
-                        label={isEdit ? '保存修改' : '创建行程'}
-                        onPress={() => void submit()}
-                        disabled={!canSubmit}
-                    />
-                </View>
-
-                {/* 危险区（编辑模式）：与主流程隔开 */}
+                {/* 危险区（编辑模式）：与主流程隔开（v0.5.1 主钮已钉屏底，
+                    危险区是滚动内容的收尾段，不再垫在按钮上方） */}
                 {isEdit ? (
                     <View className="mt-8 border-t border-ink-rule pt-5 dark:border-inkd-rule">
                         <DeleteTripControl confirmDelete={confirmDelete} onPress={() => void remove()} />
                     </View>
                 ) : null}
 
-                {submitting || videoBusy ? (
-                    <ActivityIndicator color={palette.spinner} style={{ marginTop: 12 }} />
-                ) : null}
             </ScrollView>
+
+            {/* ── 动作行（v0.5.1 令 4 对齐事件语言）：「创建行程 / 保存修改」
+                主钮移出全部纸卡井、钉屏底单行（px-6 与屏体边距同基线，
+                safe-area 收口），键盘弹起随既有 KeyboardAvoidingView（iOS
+                padding）通道整体抬升，不新造避让层。错误可见性一并上移到
+                钮上方（v0.4.7 令 3 语言不变：tinted 横幅，validation 优先）
+                ——主钮钉底后错误与动作必须同屏配对，否则提交失败时用户
+                停在中段看不见原因 */}
+            <View
+                className="w-full px-6"
+                style={{ paddingTop: 12, paddingBottom: insets.bottom + 16 }}
+            >
+                {validation || storeError ? (
+                    <View className="mb-3 rounded-control bg-ink-negative-bg px-4 py-3 dark:bg-inkd-negative-bg">
+                        <Text className="text-[13px] leading-5 text-ink-negative dark:text-inkd-negative">
+                            {validation ?? storeError}
+                        </Text>
+                    </View>
+                ) : null}
+                {/* 忙碌指示随动作行钉底（主钮钉屏底后内容尾部不再是它的语境；
+                    PrimaryButton 本体无 spinner 槽，钮上方即最近反馈位） */}
+                {submitting || videoBusy ? (
+                    <ActivityIndicator color={palette.spinner} style={{ marginBottom: 12 }} />
+                ) : null}
+                <PrimaryButton
+                    label={isEdit ? '保存修改' : '创建行程'}
+                    onPress={() => void submit()}
+                    disabled={!canSubmit}
+                />
+            </View>
+
             {/* 日期选择浮层（条件渲染，禁 Modal；层级在滚动容器外，scrim 盖整屏）
                 区间闸：start 无上界（出发日可任意，校验只约束相对关系）；
                 end ∈ [出发日, 出发日+365]（与 validateTripInput 的 366 天上限
