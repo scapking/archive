@@ -584,6 +584,10 @@ video {
   position: relative;
 }
 
+.sticky {
+  position: sticky;
+}
+
 .inset-0 {
   inset: 0px;
 }
@@ -929,6 +933,10 @@ video {
   min-height: 2.75rem;
 }
 
+.min-h-6 {
+  min-height: 1.5rem;
+}
+
 .min-h-\[420px\] {
   min-height: 420px;
 }
@@ -975,10 +983,6 @@ video {
 
 .w-8 {
   width: 2rem;
-}
-
-.w-9 {
-  width: 2.25rem;
 }
 
 .w-\[232px\] {
